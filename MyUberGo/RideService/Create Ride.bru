@@ -1,0 +1,27 @@
+meta {
+  name: Create Ride
+  type: http
+  seq: 1
+}
+
+post {
+  url: http://localhost:8001/request-ride
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "pickupLat": 50.075534502920426,
+    "pickupLng": 14.437493172572603,
+    "destLat": 50.526924358549294,
+    "destLng": 14.972045190728766,
+    "pickupAddress": "Lenina 2",
+    "destAddress" "Staroměstské náměstí"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

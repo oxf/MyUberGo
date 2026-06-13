@@ -1,0 +1,59 @@
+
+# General
+.DS_Store
+Thumbs.db
+*.log
+
+# Environment files
+.env
+.env.*
+
+# Go
+# Binaries for programs and plugins
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Kafka
+data/kafka/
+
+# Test binary, coverage
+*.test
+coverage.out
+
+# Build directories and outputs
+/bin/
+/pkg/
+/out/
+build/
+*.out
+
+# Generated files
+*_gen.go
+*.gen.go
+
+# Vendor (uncomment if you check in vendor)
+vendor/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.iml
+*.suo
+*.user
+*.userosscache
+*.sln
+*.swp
+
+# Docker
+docker-compose.override.yml
+docker-compose.*.yml
+
+# SQL / DB
+*.db
+*.sqlite
+
+# Misc
+node_modules/
+.cache/
