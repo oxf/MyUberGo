@@ -16,15 +16,15 @@ services:
       timeout: 5s
       retries: 5
 
-  # redis:
-  #   image: redis:7-alpine
-  #   ports:
-  #     - "6379:6379"
-  #   healthcheck:
-  #     test: ["CMD", "redis-cli", "ping"]
-  #     interval: 5s
-  #     timeout: 3s
-  #     retries: 5
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   kafka:
     image: confluentinc/cp-kafka:7.7.7
@@ -95,6 +95,40 @@ services:
       SERVICE_PORT: '8001'
     ports:
       - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
+  matching-service:
+    build:
+      context: .
+      dockerfile: services/matching-service/Dockerfile
+    environment:
+      PG_DSN: postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable
+      KAFKA_BROKER: kafka:29092
+      JWT_SECRET: secret_change_me
+      SERVICE_PORT: '8002'
+    ports:
+      - "8002:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
+  driver-service:
+    build:
+      context: .
+      dockerfile: services/driver-service/Dockerfile
+    environment:
+      PG_DSN: postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable
+      KAFKA_BROKER: kafka:29092
+      JWT_SECRET: secret_change_me
+      SERVICE_PORT: '8003'
+    ports:
+      - "8003:8003"
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,0 +1,20 @@
+meta {
+  name: Get Driver Profile List
+  type: http
+  seq: 3
+}
+
+get {
+  url: http://localhost:8003/driver-profile
+  body: json
+  auth: inherit
+}
+
+headers {
+  X-User-Id: 3023a923-8310-4a1e-b1fe-9fddd210dc26
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

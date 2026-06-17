@@ -24,6 +24,18 @@ type CreateRideResponse struct {
 	CreatedAt           string  `json:"createdAt"`
 }
 
+type RideDto struct {
+	ID                  string          `json:"id"`
+	ClientID            string          `json:"clientId"`
+	DriverID            *string         `json:"driverId,omitempty"`
+	Status              string          `json:"status"`
+	Pickup              LocationRequest `json:"pickup"`
+	Destination         LocationRequest `json:"destination"`
+	EstimatedPrice      float64         `json:"estimatedPrice"`
+	EstimatedDistanceKm float64         `json:"estimatedDistanceKm"`
+	CreatedAt           string          `json:"createdAt"`
+}
+
 type ErrorResponse struct {
 	Error string `json:"error"`
 }

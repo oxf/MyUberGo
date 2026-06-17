@@ -1,0 +1,25 @@
+meta {
+  name: Get Ride List
+  type: http
+  seq: 2
+}
+
+get {
+  url: http://localhost:8001/ride?page=0&pageSize=20
+  body: json
+  auth: inherit
+}
+
+params:query {
+  page: 0
+  pageSize: 20
+}
+
+headers {
+  X-User-Id: 4741fa01-7b4e-448b-a1e0-755bae6a5a49
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

@@ -6,6 +6,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- =============================================
 CREATE SCHEMA IF NOT EXISTS auth;
 CREATE SCHEMA IF NOT EXISTS ride;
+CREATE SCHEMA IF NOT EXISTS driver;
 
 -- =============================================
 -- AUTH SCHEMA
@@ -90,3 +91,35 @@ CREATE TABLE IF NOT EXISTS ride.outbox_message (
 );
 
 CREATE INDEX idx_outbox_processed ON ride.outbox_message(processed);
+
+-- =============================================
+-- DRIVER SCHEMA
+-- =============================================
+
+CREATE TABLE IF NOT EXISTS driver.driver_profile (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID UNIQUE NOT NULL REFERENCES auth.user(id),
+    name TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    rating DOUBLE PRECISION NOT NULL DEFAULT 5.0,
+    vehicle_type TEXT NOT NULL DEFAULT 'Sedan',
+    license_plate TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'Offline' CHECK (status IN ('Offline', 'Online')),
+    total_rides_completed INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+
+CREATE INDEX idx_driver_status ON driver.driver_profile(status);
+CREATE INDEX idx_driver_user_id ON driver.driver_profile(user_id);
+
+CREATE TABLE IF NOT EXISTS driver.shift (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    driver_id UUID NOT NULL REFERENCES driver.driver_profile(id) ON DELETE CASCADE,
+    started_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    ended_at TIMESTAMP WITH TIME ZONE,
+    total_rides INTEGER DEFAULT 0,
+    total_earnings DOUBLE PRECISION DEFAULT 0
+);
+
+CREATE INDEX idx_shift_driver_id ON driver.shift(driver_id);
+CREATE INDEX idx_shift_started_at ON driver.shift(started_at);

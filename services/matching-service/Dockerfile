@@ -7,12 +7,12 @@ RUN apk add --no-cache git
 
 # Copy go mod files from the repo root (build context is repo root)
 # and bring in the local `contracts` module used by a replace directive.
-COPY services/ride-service/go.mod services/ride-service/go.sum ./
+COPY services/matching-service/go.mod services/matching-service/go.sum ./
 COPY services/contracts /contracts
 RUN go mod download
 
 # Copy the command source
-COPY services/ride-service/cmd ./cmd
+COPY services/matching-service/cmd ./cmd
 
 # Build statically linked binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
@@ -28,6 +28,6 @@ COPY --from=builder /app/app /app/app
 # Run as non-root (template uses nonroot user)
 USER nonroot:nonroot
 
-EXPOSE 8001
+EXPOSE 8002
 
 ENTRYPOINT ["/app/app"]

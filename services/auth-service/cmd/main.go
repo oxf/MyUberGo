@@ -40,12 +40,13 @@ func main() {
 	authExp = time.Duration(aExpMin) * time.Minute
 	refreshExp = time.Duration(rExpHour) * time.Hour
 
-	http.HandleFunc("/signup", signupHandler)
-	http.HandleFunc("/login", loginHandler)
-	http.HandleFunc("/refresh", refreshHandler)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /signup", signupHandler)
+	mux.HandleFunc("POST /login", loginHandler)
+	mux.HandleFunc("POST /refresh", refreshHandler)
 
 	log.Println("auth-service listening on :8000")
-	log.Fatal(http.ListenAndServe(":8000", nil))
+	log.Fatal(http.ListenAndServe(":8000", mux))
 }
 
 func signupHandler(w http.ResponseWriter, r *http.Request) {

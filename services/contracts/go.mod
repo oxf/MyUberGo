@@ -1,3 +1,3 @@
 module github.com/oxf/MyUber/contracts
 
-go 1.22.4
+go 1.26

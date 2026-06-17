@@ -1,0 +1,26 @@
+meta {
+  name: Create Driver Shift
+  type: http
+  seq: 5
+}
+
+post {
+  url: http://localhost:8003/driver-shift/create
+  body: json
+  auth: inherit
+}
+
+headers {
+  X-User-Id: 3023a923-8310-4a1e-b1fe-9fddd210dc26
+}
+
+body:json {
+  {
+    "driverId": "882f978b-f9e5-46db-b244-b2eef153445a"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
