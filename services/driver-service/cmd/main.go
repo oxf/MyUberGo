@@ -5,7 +5,9 @@ import (
 	app "driver-service/internal/application"
 	"driver-service/internal/application/command"
 	"driver-service/internal/application/query"
+	"driver-service/internal/infrastructure/health"
 	"driver-service/internal/infrastructure/metrics"
+	"driver-service/internal/infrastructure/shutdown"
 	"driver-service/internal/interfaces/http/handler"
 	"driver-service/internal/persistence"
 	"encoding/json"
@@ -57,7 +59,18 @@ func main() {
 	profileHandler := handler.NewDriverProfileHandler(application)
 	shiftHandler := handler.NewShiftHandler(application)
 
+	// Initialize health checker
+	healthChecker := health.NewChecker(db, 5*time.Second)
+	healthChecker.Start()
+	defer healthChecker.Stop()
+
 	mux := http.NewServeMux()
+
+	// Health check endpoints
+	mux.HandleFunc("GET /health/live", healthChecker.LiveHandler)
+	mux.HandleFunc("GET /health/ready", healthChecker.ReadyHandler)
+
+	// API endpoints
 	mux.HandleFunc("POST /driver-profile", profileHandler.Create)
 	mux.HandleFunc("PUT /driver-profile/{id}", profileHandler.Update)
 	mux.HandleFunc("GET /driver-profile", profileHandler.GetList)
@@ -67,8 +80,28 @@ func main() {
 	mux.HandleFunc("GET /driver-shift", shiftHandler.GetList)
 	mux.HandleFunc("GET /driver-shift/{id}", shiftHandler.GetByID)
 
-	log.Println("driver-service listening on :8003")
-	log.Fatal(http.ListenAndServe(":8003", mux))
+	// Create HTTP server
+	server := &http.Server{
+		Addr:         ":8003",
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// Create shutdown manager with 30s timeout
+	shutdownManager := shutdown.NewManager(server, 30*time.Second)
+
+	// Start server in a goroutine
+	go func() {
+		log.Println("driver-service listening on :8003")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("Server error: %v\n", err)
+		}
+	}()
+
+	// Wait for shutdown signal and perform graceful shutdown
+	shutdownManager.WaitForShutdown()
 }
 
 func requestCreateDriverHandler(w http.ResponseWriter, r *http.Request) {
