@@ -2,6 +2,12 @@ package main
 
 import (
 	"database/sql"
+	app "driver-service/internal/application"
+	"driver-service/internal/application/command"
+	"driver-service/internal/application/query"
+	"driver-service/internal/infrastructure/metrics"
+	"driver-service/internal/interfaces/http/handler"
+	"driver-service/internal/persistence"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -12,6 +18,7 @@ import (
 
 	_ "github.com/lib/pq"
 	contracts "github.com/oxf/MyUber/contracts/http"
+	"github.com/sirupsen/logrus"
 )
 
 var db *sql.DB
@@ -25,21 +32,45 @@ func main() {
 		log.Fatal(err)
 	}
 
-	kafkaBroker = getenv("KAFKA_BROKER", "kafka:29092")
+	profileRepo := persistence.NewPostgresDriverProfileRepository(db)
+	shiftRepo := persistence.NewPostgresShiftRepository(db)
+
+	// create logger and metrics client used by decorators
+	logger := logrus.NewEntry(logrus.New())
+	metricsClient := metrics.NewLoggingMetricsClient(logger)
+
+	application := app.Application{
+		Commands: app.Commands{
+			CreateDriverProfile: command.NewCreateDriverProfileHandler(profileRepo, logger, metricsClient),
+			UpdateDriverProfile: command.NewUpdateDriverProfileHandler(profileRepo, logger, metricsClient),
+			CreateShift:         command.NewCreateShiftHandler(shiftRepo),
+			UpdateShift:         command.NewUpdateShiftHandler(shiftRepo, logger, metricsClient),
+		},
+		Queries: app.Queries{
+			GetDriverList: query.NewGetDriverListHandler(profileRepo, logger, metricsClient),
+			GetDriverByID: query.NewGetDriverByIDHandler(profileRepo, logger, metricsClient),
+			GetShiftList:  query.NewGetShiftListHandler(shiftRepo, logger, metricsClient),
+			GetShiftByID:  query.NewGetShiftByIDHandler(shiftRepo, logger, metricsClient),
+		},
+	}
+
+	profileHandler := handler.NewDriverProfileHandler(application)
+	shiftHandler := handler.NewShiftHandler(application)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /driver-profile", requestCreateDriverHandler)
-	mux.HandleFunc("PUT /driver-profile/{id}", requestCreateDriverHandler)
-	mux.HandleFunc("GET /driver-profile", requestGetDriverListHandler)
-	mux.HandleFunc("GET /driver-profile/{id}", requestGetDriverByIdHandler)
-	mux.HandleFunc("POST /driver-shift/create", requestCreateShiftHandler)
-	mux.HandleFunc("GET /driver-shift", requestGetDriverShiftListHandler)
-	mux.HandleFunc("GET /driver-shift/{id}", requestGetDriverShiftByIdHandler)
-	mux.HandleFunc("PUT /driver-shift/{id}", requestUpdateShiftHandler)
+	mux.HandleFunc("POST /driver-profile", profileHandler.Create)
+	mux.HandleFunc("PUT /driver-profile/{id}", profileHandler.Update)
+	mux.HandleFunc("GET /driver-profile", profileHandler.GetList)
+	mux.HandleFunc("GET /driver-profile/{id}", profileHandler.GetByID)
+	mux.HandleFunc("POST /driver-shift/create", shiftHandler.Create)
+	mux.HandleFunc("PUT /driver-shift/{id}", shiftHandler.Update)
+	mux.HandleFunc("GET /driver-shift", shiftHandler.GetList)
+	mux.HandleFunc("GET /driver-shift/{id}", shiftHandler.GetByID)
 
 	log.Println("driver-service listening on :8003")
 	log.Fatal(http.ListenAndServe(":8003", mux))
 }
+
 func requestCreateDriverHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, "method not allowed", http.StatusMethodNotAllowed)

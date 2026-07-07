@@ -123,3 +123,16 @@ CREATE TABLE IF NOT EXISTS driver.shift (
 
 CREATE INDEX idx_shift_driver_id ON driver.shift(driver_id);
 CREATE INDEX idx_shift_started_at ON driver.shift(started_at);
+
+
+CREATE TABLE IF NOT EXISTS driver.outbox_message (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    topic TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    processed BOOLEAN DEFAULT FALSE,
+    retries INTEGER DEFAULT 0
+    );
+
+CREATE INDEX idx_outbox_processed ON driver.outbox_message(processed);

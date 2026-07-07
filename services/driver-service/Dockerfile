@@ -11,8 +11,9 @@ COPY services/driver-service/go.mod services/driver-service/go.sum ./
 COPY services/contracts /contracts
 RUN go mod download
 
-# Copy the command source
-COPY services/driver-service/cmd ./cmd
+# Copy the driver-service source (cmd and internal packages)
+# This ensures all packages referenced by the module are available during build.
+COPY services/driver-service .
 
 # Build statically linked binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
