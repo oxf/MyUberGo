@@ -36,6 +36,8 @@ func main() {
 
 	profileRepo := persistence.NewPostgresDriverProfileRepository(db)
 	shiftRepo := persistence.NewPostgresShiftRepository(db)
+	outboxRepo := persistence.NewPostgresOutboxRepository(db)
+	transactionManager := persistence.NewPostgresTransactionManager(db)
 
 	// create logger and metrics client used by decorators
 	logger := logrus.NewEntry(logrus.New())
@@ -46,7 +48,7 @@ func main() {
 			CreateDriverProfile: command.NewCreateDriverProfileHandler(profileRepo, logger, metricsClient),
 			UpdateDriverProfile: command.NewUpdateDriverProfileHandler(profileRepo, logger, metricsClient),
 			CreateShift:         command.NewCreateShiftHandler(shiftRepo),
-			UpdateShift:         command.NewUpdateShiftHandler(shiftRepo, logger, metricsClient),
+			UpdateShift:         command.NewUpdateShiftHandler(shiftRepo, outboxRepo, transactionManager, logger, metricsClient),
 		},
 		Queries: app.Queries{
 			GetDriverList: query.NewGetDriverListHandler(profileRepo, logger, metricsClient),

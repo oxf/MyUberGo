@@ -11,6 +11,7 @@ type DriverProfileRepository interface {
 
 type ShiftRepository interface {
 	CreateShift(ctx context.Context, shift *Shift) (string, error)
+	UpdateShift(ctx context.Context, shift *Shift) error
 	HasActiveShift(ctx context.Context, driverID string) (bool, error)
 	EndShift(ctx context.Context, id string) error
 	GetShiftList(ctx context.Context, page, pageSize int) ([]*Shift, error)

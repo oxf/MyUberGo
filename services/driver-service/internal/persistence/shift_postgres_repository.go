@@ -15,35 +15,39 @@ func NewPostgresShiftRepository(db *sql.DB) *PostgresShiftRepository {
 }
 
 func (r *PostgresShiftRepository) CreateShift(ctx context.Context, s *domain.Shift) (string, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
+
+	executor := Executor(ctx, r.db)
 
 	var id string
-	err = tx.QueryRowContext(ctx, `
-        INSERT INTO driver.shift (driver_id) VALUES ($1) RETURNING id
-    `, s.DriverID).Scan(&id)
+	err := executor.QueryRowContext(
+		ctx,
+		`INSERT INTO driver.shift (driver_id) VALUES ($1) RETURNING id`,
+		s.DriverID).Scan(&id)
 
-	if err != nil {
-		tx.Rollback()
-		return "", err
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		return "", err
-	}
 	return id, err
 }
 
-func (r *PostgresShiftRepository) UpdateShift(ctx context.Context, s *domain.Shift) (string, error) {
-	var id string
-	err := r.db.QueryRowContext(ctx, `
-        INSERT INTO driver.shift (driver_id) VALUES ($1) RETURNING id
-    `, s.DriverID).Scan(&id)
-	return id, err
+func (r *PostgresShiftRepository) UpdateShift(
+	ctx context.Context,
+	s *domain.Shift,
+) error {
+
+	executor := Executor(ctx, r.db)
+
+	_, err := executor.ExecContext(
+		ctx,
+		`
+		UPDATE driver.shift 
+		SET total_rides=$1,
+		    total_earnings=$2
+		WHERE id=$3
+		`,
+		s.TotalRides,
+		s.TotalEarnings,
+		s.ID,
+	)
+
+	return err
 }
 
 func (r *PostgresShiftRepository) HasActiveShift(ctx context.Context, driverID string) (bool, error) {

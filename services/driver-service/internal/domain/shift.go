@@ -6,7 +6,7 @@ type Shift struct {
 	ID            string
 	DriverID      string
 	StartedAt     string
-	EndedAt       string
+	EndedAt       *string
 	Status        string
 	TotalRides    int
 	TotalEarnings float64
