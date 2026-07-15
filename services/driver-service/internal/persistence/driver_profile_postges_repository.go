@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"database/sql"
+	commonerrors "driver-service/internal/common/errors"
 	"driver-service/internal/domain"
 	"time"
 )
@@ -26,7 +27,7 @@ func (r *PostgresDriverProfileRepository) CreateDriverProfile(ctx context.Contex
 }
 
 func (r *PostgresDriverProfileRepository) UpdateDriverProfile(ctx context.Context, id, name, phone, vehicleType, licencePlate string) error {
-	_, err := r.db.ExecContext(ctx, `
+	res, err := r.db.ExecContext(ctx, `
         UPDATE driver.driver_profile
         SET
             name          = COALESCE(NULLIF($1,''), name),
@@ -35,7 +36,17 @@ func (r *PostgresDriverProfileRepository) UpdateDriverProfile(ctx context.Contex
             license_plate = COALESCE(NULLIF($4,''), license_plate)
         WHERE id = $5
     `, name, phone, vehicleType, licencePlate, id)
-	return err
+	if err != nil {
+		return err
+	}
+
+	if rows, err := res.RowsAffected(); err != nil {
+		return err
+	} else if rows == 0 {
+		return commonerrors.ErrNotFound
+	}
+
+	return nil
 }
 
 func (r *PostgresDriverProfileRepository) GetDriverProfileList(ctx context.Context, page, pageSize int) ([]*domain.DriverProfile, error) {
@@ -74,8 +85,11 @@ func (r *PostgresDriverProfileRepository) GetDriverProfileByID(ctx context.Conte
     `, id).Scan(&d.ID, &d.UserID, &d.DriverName, &d.Phone, &d.Rating,
 		&d.VehicleType, &d.LicencePlate, &d.Status, &d.TotalRidesCompleted, &createdAt)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, commonerrors.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
 	}
 	d.CreatedAt = createdAt.Format(time.RFC3339)
-	return &d, err
+	return &d, nil
 }

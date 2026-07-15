@@ -4,7 +4,9 @@ import (
 	app "driver-service/internal/application"
 	"driver-service/internal/application/command"
 	"driver-service/internal/application/query"
+	commonerrors "driver-service/internal/common/errors"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
@@ -42,8 +44,12 @@ func (h *ShiftHandler) Update(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&req)
 
 	err := h.app.Commands.UpdateShift.Handle(r.Context(), command.UpdateShift{
-		ID: req.DriverId, Status: req.Status,
+		ID: id, Status: req.Status,
 	})
+	if errors.Is(err, commonerrors.ErrNotFound) {
+		writeError(w, "not found", http.StatusNotFound)
+		return
+	}
 	if err != nil {
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -56,7 +62,7 @@ func (h *ShiftHandler) GetList(w http.ResponseWriter, r *http.Request) {
 	page, _ := parseIntQuery(r, "page", 0)
 	pageSize, _ := parseIntQuery(r, "pageSize", 10)
 
-	result, err := h.app.Queries.GetDriverList.Handle(r.Context(), query.GetDriverList{Page: page, PageSize: pageSize})
+	result, err := h.app.Queries.GetShiftList.Handle(r.Context(), query.GetShiftList{Page: page, PageSize: pageSize})
 	if err != nil {
 		writeError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -66,7 +72,7 @@ func (h *ShiftHandler) GetList(w http.ResponseWriter, r *http.Request) {
 
 func (h *ShiftHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	result, err := h.app.Queries.GetDriverByID.Handle(r.Context(), query.GetDriverByID{ID: id})
+	result, err := h.app.Queries.GetShiftByID.Handle(r.Context(), query.GetShiftByID{ID: id})
 	if err != nil || result == nil {
 		writeError(w, "not found", http.StatusNotFound)
 		return

@@ -110,6 +110,7 @@ services:
       KAFKA_BROKER: kafka:29092
       JWT_SECRET: secret_change_me
       SERVICE_PORT: '8002'
+      REDIS_URL: redis:6379
     ports:
       - "8002:8002"
     depends_on:

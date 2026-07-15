@@ -11,8 +11,9 @@ COPY services/matching-service/go.mod services/matching-service/go.sum ./
 COPY services/contracts /contracts
 RUN go mod download
 
-# Copy the command source
+# Copy the command source and internal packages
 COPY services/matching-service/cmd ./cmd
+COPY services/matching-service/internal ./internal
 
 # Build statically linked binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \

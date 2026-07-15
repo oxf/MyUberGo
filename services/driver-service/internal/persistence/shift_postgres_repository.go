@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"database/sql"
+	commonerrors "driver-service/internal/common/errors"
 	"driver-service/internal/domain"
 )
 
@@ -34,10 +35,10 @@ func (r *PostgresShiftRepository) UpdateShift(
 
 	executor := Executor(ctx, r.db)
 
-	_, err := executor.ExecContext(
+	res, err := executor.ExecContext(
 		ctx,
 		`
-		UPDATE driver.shift 
+		UPDATE driver.shift
 		SET total_rides=$1,
 		    total_earnings=$2
 		WHERE id=$3
@@ -46,8 +47,17 @@ func (r *PostgresShiftRepository) UpdateShift(
 		s.TotalEarnings,
 		s.ID,
 	)
+	if err != nil {
+		return err
+	}
 
-	return err
+	if rows, err := res.RowsAffected(); err != nil {
+		return err
+	} else if rows == 0 {
+		return commonerrors.ErrNotFound
+	}
+
+	return nil
 }
 
 func (r *PostgresShiftRepository) HasActiveShift(ctx context.Context, driverID string) (bool, error) {
@@ -59,10 +69,20 @@ func (r *PostgresShiftRepository) HasActiveShift(ctx context.Context, driverID s
 }
 
 func (r *PostgresShiftRepository) EndShift(ctx context.Context, id string) error {
-	_, err := r.db.ExecContext(ctx, `
+	res, err := r.db.ExecContext(ctx, `
         UPDATE driver.shift SET ended_at = NOW() WHERE id = $1 AND ended_at IS NULL
     `, id)
-	return err
+	if err != nil {
+		return err
+	}
+
+	if rows, err := res.RowsAffected(); err != nil {
+		return err
+	} else if rows == 0 {
+		return commonerrors.ErrNotFound
+	}
+
+	return nil
 }
 
 func (r *PostgresShiftRepository) GetShiftList(ctx context.Context, page, pageSize int) ([]*domain.Shift, error) {
@@ -100,8 +120,7 @@ func (r *PostgresShiftRepository) GetShiftByID(ctx context.Context, id string) (
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id, driver_id, started_at, ended_at, total_rides, total_earnings
 		FROM driver.shift
-		WHERE driver_id = $1
-		ORDER BY started_at DESC
+		WHERE id = $1
 	`, id).Scan(
 		&d.ID,
 		&d.DriverID,
@@ -112,7 +131,7 @@ func (r *PostgresShiftRepository) GetShiftByID(ctx context.Context, id string) (
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, commonerrors.ErrNotFound
 	}
 	return &d, err
 }

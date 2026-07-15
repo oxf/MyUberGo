@@ -5,13 +5,20 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log"
+	app "matching-service/internal/application"
+	"matching-service/internal/application/command"
+	"matching-service/internal/consumers"
+	"matching-service/internal/infrastructure/cache"
+	"matching-service/internal/infrastructure/metrics"
 	"os"
 	"time"
 
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
+	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
+	"github.com/sirupsen/logrus"
 )
 
 var db *sql.DB
@@ -25,9 +32,36 @@ func main() {
 		log.Fatal(err)
 	}
 
+	redisUrl := getenv("REDIS_URL", "redis:6379")
+	redisDb := redis.NewClient(&redis.Options{
+		Addr:     redisUrl,
+		Password: "",
+		DB:       0,
+	})
+
+	driverRepo := cache.NewDriverRepository(redisDb)
+	rideRepo := cache.NewRideRepository(redisDb)
+
 	kafkaBroker = getenv("KAFKA_BROKER", "kafka:29092")
 
-	go startRideRequestedConsumer()
+	// create logger and metrics client used by decorators
+	logger := logrus.NewEntry(logrus.New())
+	metricsClient := metrics.NewLoggingMetricsClient(logger)
+
+	application := app.Application{
+		Commands: app.Commands{
+
+			CreateDriver: command.NewCreateDriverHandler(driverRepo, logger, metricsClient),
+			CreateRide:   command.NewCreateRideHandler(rideRepo, logger, metricsClient),
+		},
+		Queries: app.Queries{},
+	}
+
+	rideConsumer := consumers.NewRideAcceptedConsumer(application)
+	driverConsumer := consumers.NewShiftUpdatedConsumer(application)
+
+	go rideConsumer.Run("ride.requested")
+	go driverConsumer.Run("shift.updated")
 
 	select {}
 }

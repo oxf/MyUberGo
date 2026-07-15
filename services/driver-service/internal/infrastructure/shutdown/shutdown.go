@@ -16,6 +16,7 @@ type Manager struct {
 	server  *http.Server
 	timeout time.Duration
 	wg      sync.WaitGroup
+	onStop  []func()
 }
 
 // NewManager creates a new shutdown manager
@@ -24,6 +25,13 @@ func NewManager(server *http.Server, timeout time.Duration) *Manager {
 		server:  server,
 		timeout: timeout,
 	}
+}
+
+// OnStop registers a function to be called once shutdown begins, before waiting
+// on the WaitGroup — typically a context cancel func that tells background
+// workers (e.g. outbox pollers) to stop their loop.
+func (m *Manager) OnStop(fn func()) {
+	m.onStop = append(m.onStop, fn)
 }
 
 // WaitForShutdown blocks until a shutdown signal is received, then gracefully shuts down the server
@@ -42,6 +50,11 @@ func (m *Manager) WaitForShutdown() {
 	// Shutdown the HTTP server
 	if err := m.server.Shutdown(ctx); err != nil {
 		log.Printf("HTTP server shutdown error: %v\n", err)
+	}
+
+	// Signal background workers to stop
+	for _, fn := range m.onStop {
+		fn()
 	}
 
 	// Wait for all tracked goroutines to complete or timeout

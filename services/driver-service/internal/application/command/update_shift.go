@@ -60,10 +60,6 @@ func (h *UpdateShiftHandler) Handle(
 			return err
 		}
 
-		if shift == nil {
-			return nil
-		}
-
 		// ideally:
 		// shift.UpdateStatus(cmd.Status)
 		shift.Status = cmd.Status
@@ -87,7 +83,7 @@ func (h *UpdateShiftHandler) Handle(
 		return h.outboxRepo.Insert(
 			ctx,
 			&domain.OutboxMessage{
-				Topic:     "driver.shifts.updated",
+				Topic:     "shift.updated",
 				EventType: "ShiftUpdatedEvent",
 				Payload:   payload,
 			},

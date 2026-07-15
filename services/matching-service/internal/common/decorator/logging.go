@@ -2,17 +2,16 @@ package decorator
 
 import (
 	"context"
-	commonerrors "driver-service/internal/common/errors"
-	"driver-service/internal/common/reqctx"
 	"errors"
+	commonerrors "matching-service/internal/common/errors"
+	"matching-service/internal/common/reqctx"
 	"reflect"
 
 	"github.com/sirupsen/logrus"
 )
 
-// loggerFromContext attaches the per-request correlation ID (if any) to the
-// base logger, so a single HTTP request's handler/command/query log lines
-// can be grepped together.
+// loggerFromContext attaches the per-request/per-message correlation ID (if
+// any) to the base logger, so related log lines can be grepped together.
 func loggerFromContext(ctx context.Context, base *logrus.Entry) *logrus.Entry {
 	if id, ok := reqctx.RequestID(ctx); ok {
 		return base.WithField("request_id", id)

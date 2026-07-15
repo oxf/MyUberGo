@@ -4,7 +4,9 @@ import (
 	app "driver-service/internal/application"
 	"driver-service/internal/application/command"
 	"driver-service/internal/application/query"
+	commonerrors "driver-service/internal/common/errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -48,6 +50,10 @@ func (h *DriverProfileHandler) Update(w http.ResponseWriter, r *http.Request) {
 		ID: id, DriverName: req.DriverName, Phone: req.Phone,
 		VehicleType: req.VehicleType, LicencePlate: req.LicencePlate,
 	})
+	if errors.Is(err, commonerrors.ErrNotFound) {
+		writeError(w, "not found", http.StatusNotFound)
+		return
+	}
 	if err != nil {
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
