@@ -30,6 +30,9 @@ func (a *ClientActor) Run(ctx context.Context) {
 	if acc == nil {
 		return
 	}
+	// Once, right after signup: the fresh account is guaranteed on page 1 of
+	// the createdAt-desc default sort.
+	a.verifyUserInList(ctx, acc)
 
 	for iter := 1; sleepJitter(ctx, a.Interval, a.Rnd); iter++ {
 		rideID := a.requestRide(ctx, acc)
@@ -86,19 +89,38 @@ func (a *ClientActor) verifyRide(ctx context.Context, acc *account, rideID strin
 
 func (a *ClientActor) verifyRideInList(ctx context.Context, rideID string) {
 	start := time.Now()
-	rides, err := a.Ride.ListRides(ctx, 0, 50)
+	resp, err := a.Ride.ListRides(ctx, 1, 50)
 	v := &Verify{}
 	if err == nil {
 		found := false
-		for _, r := range rides {
+		for _, r := range resp.Items {
 			if r.ID == rideID {
 				found = true
 				break
 			}
 		}
 		v.True("list", found, fmt.Sprintf("ride %s not in first 50 of GET /ride", rideID))
+		v.True("totalCount", resp.TotalCount >= 1, "expected totalCount >= 1")
 	}
 	a.record(a.ID, "ride.list", start, err, v)
+}
+
+func (a *ClientActor) verifyUserInList(ctx context.Context, acc *account) {
+	start := time.Now()
+	resp, err := a.Auth.ListUsers(ctx, 1, 50)
+	v := &Verify{}
+	if err == nil {
+		found := false
+		for _, u := range resp.Items {
+			if u.ID == acc.userID {
+				found = true
+				break
+			}
+		}
+		v.True("list", found, fmt.Sprintf("user %s not in first 50 of GET /users", acc.userID))
+		v.True("totalCount", resp.TotalCount >= 1, "expected totalCount >= 1")
+	}
+	a.record(a.ID, "auth.users.list", start, err, v)
 }
 
 func (a *ClientActor) randomRideRequest() contracts.CreateRideRequest {

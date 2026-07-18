@@ -32,8 +32,8 @@ func (c *RideClient) GetRide(ctx context.Context, id string) (contracts.RideDto,
 	return resp, err
 }
 
-func (c *RideClient) ListRides(ctx context.Context, page, pageSize int) ([]contracts.RideDto, error) {
-	var resp []contracts.RideDto
+func (c *RideClient) ListRides(ctx context.Context, page, pageSize int) (contracts.PagedResponse[contracts.RideDto], error) {
+	var resp contracts.PagedResponse[contracts.RideDto]
 	path := fmt.Sprintf("/ride?page=%d&pageSize=%d", page, pageSize)
 	err := c.doJSON(ctx, http.MethodGet, path, nil, nil, &resp)
 	return resp, err

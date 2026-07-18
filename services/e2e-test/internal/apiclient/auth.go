@@ -2,6 +2,7 @@ package apiclient
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
@@ -30,5 +31,12 @@ func (c *AuthClient) Login(ctx context.Context, req contracts.LoginRequest) (con
 func (c *AuthClient) Refresh(ctx context.Context, req contracts.RefreshRequest) (contracts.RefreshResponse, error) {
 	var resp contracts.RefreshResponse
 	err := c.doJSON(ctx, http.MethodPost, "/refresh", nil, req, &resp)
+	return resp, err
+}
+
+func (c *AuthClient) ListUsers(ctx context.Context, page, pageSize int) (contracts.PagedResponse[contracts.UserDto], error) {
+	var resp contracts.PagedResponse[contracts.UserDto]
+	path := fmt.Sprintf("/users?page=%d&pageSize=%d", page, pageSize)
+	err := c.doJSON(ctx, http.MethodGet, path, nil, nil, &resp)
 	return resp, err
 }

@@ -45,6 +45,11 @@ func (a *DriverActor) Run(ctx context.Context) {
 			continue
 		}
 		a.verifyOpenShift(ctx, shiftID)
+		if cycle%5 == 0 {
+			// Right after opening, the shift is the newest — guaranteed on
+			// page 1 of the startedAt-desc default sort.
+			a.verifyShiftInList(ctx, shiftID)
+		}
 		a.setShiftStatus(ctx, shiftID, "Online", "driver.shift.online")
 
 		// Simulated work period before ending the shift.
@@ -151,6 +156,24 @@ func (a *DriverActor) verifyEndedShift(ctx context.Context, shiftID string) {
 		v.True("endedAt", shift.EndedAt != nil && *shift.EndedAt != "", "expected endedAt to be set")
 	}
 	a.record(a.ID, "driver.shift.get", start, err, v)
+}
+
+func (a *DriverActor) verifyShiftInList(ctx context.Context, shiftID string) {
+	start := time.Now()
+	resp, err := a.Driver.ListShifts(ctx, 1, 50)
+	v := &Verify{}
+	if err == nil {
+		found := false
+		for _, s := range resp.Items {
+			if s.Id == shiftID {
+				found = true
+				break
+			}
+		}
+		v.True("list", found, fmt.Sprintf("shift %s not in first 50 of GET /driver-shift", shiftID))
+		v.True("totalCount", resp.TotalCount >= 1, "expected totalCount >= 1")
+	}
+	a.record(a.ID, "driver.shift.list", start, err, v)
 }
 
 func (a *DriverActor) updateAndVerifyPhone(ctx context.Context) {

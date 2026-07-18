@@ -8,10 +8,8 @@ import (
 	contracts "github.com/oxf/MyUber/contracts/http"
 )
 
-// DriverClient calls driver-service. GET endpoints encode the service's
-// domain entities (PascalCase keys like "DriverID"), not the contracts DTOs;
-// decoding into the DTOs below still works because encoding/json matches
-// field names case-insensitively.
+// DriverClient calls driver-service. All GET endpoints return the camelCase
+// contracts DTOs (list endpoints wrap them in PagedResponse).
 type DriverClient struct {
 	baseClient
 }
@@ -52,8 +50,8 @@ func (c *DriverClient) GetShift(ctx context.Context, id string) (contracts.Shift
 	return resp, err
 }
 
-func (c *DriverClient) ListShifts(ctx context.Context, page, pageSize int) ([]contracts.ShiftDto, error) {
-	var resp []contracts.ShiftDto
+func (c *DriverClient) ListShifts(ctx context.Context, page, pageSize int) (contracts.PagedResponse[contracts.ShiftDto], error) {
+	var resp contracts.PagedResponse[contracts.ShiftDto]
 	path := fmt.Sprintf("/driver-shift?page=%d&pageSize=%d", page, pageSize)
 	err := c.doJSON(ctx, http.MethodGet, path, nil, nil, &resp)
 	return resp, err
