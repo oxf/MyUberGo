@@ -1,11 +1,11 @@
 meta {
-  name: Get Ride List
+  name: Get Users
   type: http
-  seq: 2
+  seq: 5
 }
 
 get {
-  url: http://localhost:8001/ride?page=1&pageSize=20&sortBy=createdAt&sortDir=desc
+  url: http://localhost:8000/users?page=1&pageSize=20&sortBy=createdAt&sortDir=desc
   body: json
   auth: inherit
 }
@@ -15,10 +15,6 @@ params:query {
   pageSize: 20
   sortBy: createdAt
   sortDir: desc
-}
-
-headers {
-  X-User-Id: 4741fa01-7b4e-448b-a1e0-755bae6a5a49
 }
 
 settings {
