@@ -125,7 +125,7 @@ func requestRideHandler(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	var payload, _ = json.Marshal(rideRequestedEvent)
+	payload, err := json.Marshal(rideRequestedEvent)
 
 	if err != nil {
 		log.Println("failed to serialize event:", err)
@@ -163,8 +163,13 @@ func requestRideHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(map[string]any{
-		"ride_id": rideID,
+	if err := json.NewEncoder(w).Encode(contracts.CreateRideResponse{
+		RideID:              rideID,
+		ClientID:            uid,
+		Status:              "Requested",
+		EstimatedPrice:      price,
+		EstimatedDistanceKm: distanceKm,
+		CreatedAt:           time.Now().UTC().Format(time.RFC3339),
 	}); err != nil {
 		log.Println("failed to write response:", err)
 	}

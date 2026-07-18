@@ -114,9 +114,9 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Fetch user
-	var id int
+	var id string
 	var hash string
-	row := db.QueryRow("SELECT id, password_hash FROM \"user\" WHERE email=$1", req.Email)
+	row := db.QueryRow("SELECT id, password_hash FROM auth.\"user\" WHERE email=$1", req.Email)
 	if err := row.Scan(&id, &hash); err != nil {
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
@@ -142,7 +142,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 4. Store refresh token
 	expiresAt := time.Now().Add(refreshExp)
-	_, err = db.Exec("INSERT INTO refresh_token (user_id, token, expires_at) VALUES ($1,$2,$3)", id, refreshToken, expiresAt)
+	_, err = db.Exec("INSERT INTO auth.refresh_token (user_id, token, expires_at) VALUES ($1,$2,$3)", id, refreshToken, expiresAt)
 	if err != nil {
 		log.Println("failed store refresh", err)
 	}
@@ -173,12 +173,15 @@ func refreshHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	claims := token.Claims.(jwt.MapClaims)
-	uidFloat := claims["user_id"].(float64)
-	uid := int(uidFloat)
+	uid, ok := claims["user_id"].(string)
+	if !ok || uid == "" {
+		http.Error(w, "invalid token", http.StatusUnauthorized)
+		return
+	}
 
 	// 2. Check token exists in DB
 	var exists bool
-	row := db.QueryRow("SELECT exists(SELECT 1 FROM refresh_token WHERE token=$1 AND user_id=$2 AND expires_at > now())", req.RefreshToken, uid)
+	row := db.QueryRow("SELECT exists(SELECT 1 FROM auth.refresh_token WHERE token=$1 AND user_id=$2 AND expires_at > now())", req.RefreshToken, uid)
 	_ = row.Scan(&exists)
 	if !exists {
 		http.Error(w, "invalid or expired refresh token", http.StatusUnauthorized)
@@ -192,10 +195,13 @@ func refreshHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(accessToken)
+	json.NewEncoder(w).Encode(contracts.RefreshResponse{
+		AccessToken: accessToken,
+		ExpiresIn:   int(authExp.Seconds()),
+	})
 }
 
-func createToken(userID int, ttl time.Duration) (string, error) {
+func createToken(userID string, ttl time.Duration) (string, error) {
 	claims := jwt.MapClaims{
 		"user_id": userID,
 		"exp":     time.Now().Add(ttl).Unix(),

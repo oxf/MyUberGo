@@ -1,0 +1,139 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"math/rand"
+	"os"
+	"os/signal"
+	"strconv"
+	"sync"
+	"syscall"
+	"time"
+
+	"e2e-test/internal/actors"
+	"e2e-test/internal/apiclient"
+	"e2e-test/internal/stats"
+)
+
+type config struct {
+	authURL   string
+	rideURL   string
+	driverURL string
+
+	clients int
+	drivers int
+
+	rideInterval   time.Duration
+	shiftInterval  time.Duration
+	reportInterval time.Duration
+	runFor         time.Duration
+
+	seed int64
+}
+
+func main() {
+	cfg := loadConfig()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// -run-for > 0 bounds the run (timed/CI runs); shutdown goes through the
+	// same context cancellation as Ctrl-C.
+	if cfg.runFor > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.runFor)
+		defer cancel()
+	}
+
+	deps := actors.Deps{
+		Auth:   apiclient.NewAuthClient(cfg.authURL),
+		Driver: apiclient.NewDriverClient(cfg.driverURL),
+		Ride:   apiclient.NewRideClient(cfg.rideURL),
+		Stats:  stats.NewCollector(256),
+	}
+
+	go deps.Stats.Run(cfg.reportInterval)
+
+	// runID makes emails unique across runs — auth.user.email is unique and
+	// the DB persists between simulator runs.
+	runID := time.Now().Unix()
+
+	log.Printf("starting simulator: %d clients, %d drivers (run %d, seed %d) — Ctrl-C to stop",
+		cfg.clients, cfg.drivers, runID, cfg.seed)
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < cfg.clients; i++ {
+		actor := &actors.ClientActor{
+			Deps:     deps,
+			ID:       fmt.Sprintf("client-%d", i),
+			Email:    fmt.Sprintf("client-%d-%d@e2e.local", runID, i),
+			Interval: cfg.rideInterval,
+			Rnd:      rand.New(rand.NewSource(cfg.seed + int64(i))),
+		}
+		wg.Go(func() { actor.Run(ctx) })
+	}
+
+	for i := 0; i < cfg.drivers; i++ {
+		actor := &actors.DriverActor{
+			Deps:     deps,
+			ID:       fmt.Sprintf("driver-%d", i),
+			Email:    fmt.Sprintf("driver-%d-%d@e2e.local", runID, i),
+			Interval: cfg.shiftInterval,
+			Rnd:      rand.New(rand.NewSource(cfg.seed + 1000 + int64(i))),
+		}
+		wg.Go(func() { actor.Run(ctx) })
+	}
+
+	<-ctx.Done()
+	log.Println("shutting down: waiting for actors to finish...")
+	wg.Wait()
+	deps.Stats.Close()
+	log.Println("done")
+}
+
+func loadConfig() config {
+	cfg := config{}
+
+	flag.StringVar(&cfg.authURL, "auth-url", getenv("E2E_AUTH_URL", "http://localhost:8000"), "auth-service base URL")
+	flag.StringVar(&cfg.rideURL, "ride-url", getenv("E2E_RIDE_URL", "http://localhost:8001"), "ride-service base URL")
+	flag.StringVar(&cfg.driverURL, "driver-url", getenv("E2E_DRIVER_URL", "http://localhost:8003"), "driver-service base URL")
+	flag.IntVar(&cfg.clients, "clients", getenvInt("E2E_CLIENTS", 5), "number of virtual clients")
+	flag.IntVar(&cfg.drivers, "drivers", getenvInt("E2E_DRIVERS", 3), "number of virtual drivers")
+	flag.DurationVar(&cfg.rideInterval, "ride-interval", getenvDuration("E2E_RIDE_INTERVAL", 5*time.Second), "base interval between rides per client (jittered +/-50%)")
+	flag.DurationVar(&cfg.shiftInterval, "shift-interval", getenvDuration("E2E_SHIFT_INTERVAL", 15*time.Second), "base interval between shift cycles per driver (jittered +/-50%)")
+	flag.DurationVar(&cfg.reportInterval, "report-interval", getenvDuration("E2E_REPORT_INTERVAL", 10*time.Second), "stats report interval")
+	flag.DurationVar(&cfg.runFor, "run-for", getenvDuration("E2E_RUN_FOR", 0), "stop after this duration (0 = run until Ctrl-C)")
+	flag.Int64Var(&cfg.seed, "seed", time.Now().UnixNano(), "base random seed (per-actor seeds derive from it)")
+	flag.Parse()
+
+	return cfg
+}
+
+func getenv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func getenvInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func getenvDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return def
+}
