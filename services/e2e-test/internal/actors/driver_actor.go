@@ -128,7 +128,7 @@ func (a *DriverActor) verifyOpenShift(ctx context.Context, shiftID string) {
 	if err == nil {
 		v.Eq("id", shift.Id, shiftID)
 		v.Eq("driverId", shift.DriverId, a.profileID)
-		v.Eq("endedAt", shift.EndedAt, "")
+		v.True("endedAt", shift.EndedAt == nil, "expected open shift (endedAt null)")
 	}
 	a.record(a.ID, "driver.shift.get", start, err, v)
 }
@@ -148,7 +148,7 @@ func (a *DriverActor) verifyEndedShift(ctx context.Context, shiftID string) {
 	v := &Verify{}
 	if err == nil {
 		v.Eq("id", shift.Id, shiftID)
-		v.NotEmpty("endedAt", shift.EndedAt)
+		v.True("endedAt", shift.EndedAt != nil && *shift.EndedAt != "", "expected endedAt to be set")
 	}
 	a.record(a.ID, "driver.shift.get", start, err, v)
 }

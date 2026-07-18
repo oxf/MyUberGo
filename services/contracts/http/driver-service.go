@@ -36,9 +36,8 @@ type UpdateDriverProfileDto struct {
 type ShiftDto struct {
 	Id            string  `json:"id"`
 	DriverId      string  `json:"driverId"`
-	Status        string  `json:"status"`
 	StartedAt     string  `json:"startedAt"`
-	EndedAt       string  `json:"endedAt"`
+	EndedAt       *string `json:"endedAt,omitempty"`
 	TotalRides    int     `json:"totalRides"`
 	TotalEarnings float64 `json:"totalEarnings"`
 }

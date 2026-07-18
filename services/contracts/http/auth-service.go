@@ -39,10 +39,11 @@ type RefreshResponse struct {
 	ExpiresIn   int    `json:"expiresIn"`
 }
 
-type UserProfileResponse struct {
-	ID    string   `json:"id"`
-	Email string   `json:"email"`
-	Name  string   `json:"name"`
-	Phone string   `json:"phone"`
-	Role  UserRole `json:"role"`
+type UserDto struct {
+	ID        string   `json:"id"`
+	Email     string   `json:"email"`
+	Name      string   `json:"name"`
+	Phone     string   `json:"phone"`
+	Role      UserRole `json:"role"`
+	CreatedAt string   `json:"createdAt"`
 }
