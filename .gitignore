@@ -57,3 +57,6 @@ docker-compose.*.yml
 # Misc
 node_modules/
 .cache/
+
+# Git worktrees
+.worktrees/
