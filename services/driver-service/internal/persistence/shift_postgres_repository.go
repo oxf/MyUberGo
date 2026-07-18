@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	commonerrors "driver-service/internal/common/errors"
 	"driver-service/internal/domain"
+	"fmt"
+	"time"
 )
 
 type PostgresShiftRepository struct {
@@ -85,14 +87,24 @@ func (r *PostgresShiftRepository) EndShift(ctx context.Context, id string) error
 	return nil
 }
 
-func (r *PostgresShiftRepository) GetShiftList(ctx context.Context, page, pageSize int) ([]*domain.Shift, error) {
-	offset := page * pageSize
-	rows, err := r.db.QueryContext(ctx, `
+func (r *PostgresShiftRepository) GetShiftList(ctx context.Context, req domain.PageRequest) ([]*domain.Shift, error) {
+	col, ok := domain.ShiftSortColumns[req.SortBy]
+	if !ok {
+		col = "started_at" // handler validates; this is a defensive fallback
+	}
+	dir := req.SortDir
+	if dir != "ASC" && dir != "DESC" {
+		dir = "DESC"
+	}
+
+	query := fmt.Sprintf(`
         SELECT id, driver_id, started_at, ended_at, total_rides, total_earnings
         FROM driver.shift
-        ORDER BY started_at DESC
+        ORDER BY %s %s
         LIMIT $1 OFFSET $2
-    `, pageSize, offset)
+    `, col, dir)
+
+	rows, err := r.db.QueryContext(ctx, query, req.PageSize, (req.Page-1)*req.PageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -100,38 +112,50 @@ func (r *PostgresShiftRepository) GetShiftList(ctx context.Context, page, pageSi
 
 	var result []*domain.Shift
 	for rows.Next() {
-		var d domain.Shift
-		if err := rows.Scan(&d.ID,
-			&d.DriverID,
-			&d.StartedAt,
-			&d.EndedAt,
-			&d.TotalRides,
-			&d.TotalEarnings); err != nil {
+		s, err := scanShift(rows)
+		if err != nil {
 			return nil, err
 		}
-		result = append(result, &d)
+		result = append(result, s)
 	}
-	return result, nil
+	return result, rows.Err()
+}
+
+func (r *PostgresShiftRepository) CountShifts(ctx context.Context) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM driver.shift`).Scan(&n)
+	return n, err
 }
 
 func (r *PostgresShiftRepository) GetShiftByID(ctx context.Context, id string) (*domain.Shift, error) {
-	var d domain.Shift
-
-	err := r.db.QueryRowContext(ctx, `
+	row := r.db.QueryRowContext(ctx, `
 		SELECT id, driver_id, started_at, ended_at, total_rides, total_earnings
 		FROM driver.shift
 		WHERE id = $1
-	`, id).Scan(
-		&d.ID,
-		&d.DriverID,
-		&d.StartedAt,
-		&d.EndedAt,
-		&d.TotalRides,
-		&d.TotalEarnings,
-	)
+	`, id)
 
+	s, err := scanShift(row)
 	if err == sql.ErrNoRows {
 		return nil, commonerrors.ErrNotFound
 	}
-	return &d, err
+	return s, err
+}
+
+// scanShift reads one shift row, normalizing timestamps to RFC3339 (matching
+// driver-profile CreatedAt) instead of the driver's raw time encoding.
+func scanShift(row interface{ Scan(dest ...any) error }) (*domain.Shift, error) {
+	var d domain.Shift
+	var startedAt time.Time
+	var endedAt sql.NullTime
+
+	if err := row.Scan(&d.ID, &d.DriverID, &startedAt, &endedAt, &d.TotalRides, &d.TotalEarnings); err != nil {
+		return nil, err
+	}
+
+	d.StartedAt = startedAt.Format(time.RFC3339)
+	if endedAt.Valid {
+		s := endedAt.Time.Format(time.RFC3339)
+		d.EndedAt = &s
+	}
+	return &d, nil
 }

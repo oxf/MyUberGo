@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	commonerrors "driver-service/internal/common/errors"
 	"driver-service/internal/domain"
+	"fmt"
 	"time"
 )
 
@@ -49,14 +50,24 @@ func (r *PostgresDriverProfileRepository) UpdateDriverProfile(ctx context.Contex
 	return nil
 }
 
-func (r *PostgresDriverProfileRepository) GetDriverProfileList(ctx context.Context, page, pageSize int) ([]*domain.DriverProfile, error) {
-	offset := page * pageSize
-	rows, err := r.db.QueryContext(ctx, `
+func (r *PostgresDriverProfileRepository) GetDriverProfileList(ctx context.Context, req domain.PageRequest) ([]*domain.DriverProfile, error) {
+	col, ok := domain.DriverProfileSortColumns[req.SortBy]
+	if !ok {
+		col = "created_at" // handler validates; this is a defensive fallback
+	}
+	dir := req.SortDir
+	if dir != "ASC" && dir != "DESC" {
+		dir = "DESC"
+	}
+
+	query := fmt.Sprintf(`
         SELECT id, user_id, name, phone, rating, vehicle_type, license_plate, status, total_rides_completed, created_at
         FROM driver.driver_profile
-        ORDER BY created_at DESC
+        ORDER BY %s %s
         LIMIT $1 OFFSET $2
-    `, pageSize, offset)
+    `, col, dir)
+
+	rows, err := r.db.QueryContext(ctx, query, req.PageSize, (req.Page-1)*req.PageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +84,13 @@ func (r *PostgresDriverProfileRepository) GetDriverProfileList(ctx context.Conte
 		d.CreatedAt = createdAt.Format(time.RFC3339)
 		result = append(result, &d)
 	}
-	return result, nil
+	return result, rows.Err()
+}
+
+func (r *PostgresDriverProfileRepository) CountDriverProfiles(ctx context.Context) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM driver.driver_profile`).Scan(&n)
+	return n, err
 }
 
 func (r *PostgresDriverProfileRepository) GetDriverProfileByID(ctx context.Context, id string) (*domain.DriverProfile, error) {
