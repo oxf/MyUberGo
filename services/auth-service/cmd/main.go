@@ -3,10 +3,12 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -44,6 +46,7 @@ func main() {
 	mux.HandleFunc("POST /signup", signupHandler)
 	mux.HandleFunc("POST /login", loginHandler)
 	mux.HandleFunc("POST /refresh", refreshHandler)
+	mux.HandleFunc("GET /users", getUsersHandler)
 
 	log.Println("auth-service listening on :8000")
 	log.Fatal(http.ListenAndServe(":8000", mux))
@@ -218,3 +221,133 @@ func getenv(k, d string) string {
 	return d
 }
 func atoi(s string) int { v, _ := strconv.Atoi(s); return v }
+
+var userSortColumns = map[string]string{
+	"email":     "email",
+	"name":      "name",
+	"role":      "role",
+	"createdAt": "created_at",
+}
+
+// listParams is a validated set of paging/sorting query params. sortCol is a
+// SQL column straight from a whitelist map and sortDir is "ASC"/"DESC" — the
+// only values ever interpolated into ORDER BY.
+type listParams struct {
+	page     int
+	pageSize int
+	sortCol  string
+	sortDir  string
+}
+
+func parseIntQuery(r *http.Request, key string, defaultValue int) (int, error) {
+	valStr := r.URL.Query().Get(key)
+
+	if valStr == "" {
+		return defaultValue, nil
+	}
+
+	val, err := strconv.Atoi(valStr)
+	if err != nil {
+		return 0, err
+	}
+
+	if val < 0 {
+		return 0, fmt.Errorf("%s cannot be negative", key)
+	}
+
+	return val, nil
+}
+
+func parseListParams(r *http.Request, sortColumns map[string]string, defaultSortKey string) (listParams, error) {
+	page, err := parseIntQuery(r, "page", 1)
+	if err != nil {
+		return listParams{}, err
+	}
+	if page < 1 {
+		return listParams{}, fmt.Errorf("page must be >= 1")
+	}
+
+	pageSize, err := parseIntQuery(r, "pageSize", 20)
+	if err != nil {
+		return listParams{}, err
+	}
+	if pageSize < 1 {
+		return listParams{}, fmt.Errorf("pageSize must be >= 1")
+	}
+	if pageSize > 100 {
+		return listParams{}, fmt.Errorf("pageSize cannot exceed 100")
+	}
+
+	sortKey := r.URL.Query().Get("sortBy")
+	if sortKey == "" {
+		sortKey = defaultSortKey
+	}
+	sortCol, ok := sortColumns[sortKey]
+	if !ok {
+		return listParams{}, fmt.Errorf("unknown sortBy %q", sortKey)
+	}
+
+	sortDir := strings.ToLower(r.URL.Query().Get("sortDir"))
+	switch sortDir {
+	case "":
+		sortDir = "desc"
+	case "asc", "desc":
+	default:
+		return listParams{}, fmt.Errorf("sortDir must be asc or desc")
+	}
+
+	return listParams{page: page, pageSize: pageSize, sortCol: sortCol, sortDir: strings.ToUpper(sortDir)}, nil
+}
+
+func getUsersHandler(w http.ResponseWriter, r *http.Request) {
+	params, err := parseListParams(r, userSortColumns, "createdAt")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var total int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM auth."user"`).Scan(&total); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// password_hash is deliberately never selected here.
+	query := fmt.Sprintf(`
+		SELECT id, email, name, phone, role, created_at
+		FROM auth."user"
+		ORDER BY %s %s
+		LIMIT $1 OFFSET $2
+	`, params.sortCol, params.sortDir)
+
+	rows, err := db.Query(query, params.pageSize, (params.page-1)*params.pageSize)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	users := []contracts.UserDto{}
+	for rows.Next() {
+		var u contracts.UserDto
+		var createdAt time.Time
+		if err := rows.Scan(&u.ID, &u.Email, &u.Name, &u.Phone, &u.Role, &createdAt); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		u.CreatedAt = createdAt.Format(time.RFC3339)
+		users = append(users, u)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(contracts.PagedResponse[contracts.UserDto]{
+		Items:      users,
+		Page:       params.page,
+		PageSize:   params.pageSize,
+		TotalCount: total,
+	})
+}
