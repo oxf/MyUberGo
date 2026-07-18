@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -176,36 +177,19 @@ func requestRideHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func getRideListHandler(w http.ResponseWriter, r *http.Request) {
-	page, err := parseIntQuery(r, "page", 1)
+	params, err := parseListParams(r, rideSortColumns, "createdAt")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	pageSize, err := parseIntQuery(r, "pageSize", 10)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	var total int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM ride.ride`).Scan(&total); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if page < 0 {
-		http.Error(w, "page must be >= 0", http.StatusBadRequest)
-		return
-	}
-
-	if pageSize < 1 {
-		http.Error(w, "pageSize must be >= 1", http.StatusBadRequest)
-		return
-	}
-
-	if pageSize > 100 {
-		http.Error(w, "pageSize cannot exceed 100", http.StatusBadRequest)
-		return
-	}
-
-	offset := page * pageSize
-
-	rows, err := db.Query(`
+	query := fmt.Sprintf(`
 		SELECT
 			id,
 			client_id,
@@ -221,9 +205,11 @@ func getRideListHandler(w http.ResponseWriter, r *http.Request) {
 			estimated_distance_km,
 			created_at
 		FROM ride.ride
-		ORDER BY created_at DESC
+		ORDER BY %s %s
 		LIMIT $1 OFFSET $2
-	`, pageSize, offset)
+	`, params.sortCol, params.sortDir)
+
+	rows, err := db.Query(query, params.pageSize, (params.page-1)*params.pageSize)
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -231,7 +217,7 @@ func getRideListHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var rides []contracts.RideDto
+	rides := []contracts.RideDto{}
 
 	for rows.Next() {
 		var ride contracts.RideDto
@@ -293,7 +279,12 @@ func getRideListHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 
-	if err := json.NewEncoder(w).Encode(rides); err != nil {
+	if err := json.NewEncoder(w).Encode(contracts.PagedResponse[contracts.RideDto]{
+		Items:      rides,
+		Page:       params.page,
+		PageSize:   params.pageSize,
+		TotalCount: total,
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -402,6 +393,64 @@ func parseIntQuery(r *http.Request, key string, defaultValue int) (int, error) {
 	}
 
 	return val, nil
+}
+
+var rideSortColumns = map[string]string{
+	"createdAt":           "created_at",
+	"status":              "status",
+	"estimatedPrice":      "estimated_price",
+	"estimatedDistanceKm": "estimated_distance_km",
+}
+
+// listParams is a validated set of paging/sorting query params. sortCol is a
+// SQL column straight from a whitelist map and sortDir is "ASC"/"DESC" — the
+// only values ever interpolated into ORDER BY.
+type listParams struct {
+	page     int
+	pageSize int
+	sortCol  string
+	sortDir  string
+}
+
+func parseListParams(r *http.Request, sortColumns map[string]string, defaultSortKey string) (listParams, error) {
+	page, err := parseIntQuery(r, "page", 1)
+	if err != nil {
+		return listParams{}, err
+	}
+	if page < 1 {
+		return listParams{}, fmt.Errorf("page must be >= 1")
+	}
+
+	pageSize, err := parseIntQuery(r, "pageSize", 20)
+	if err != nil {
+		return listParams{}, err
+	}
+	if pageSize < 1 {
+		return listParams{}, fmt.Errorf("pageSize must be >= 1")
+	}
+	if pageSize > 100 {
+		return listParams{}, fmt.Errorf("pageSize cannot exceed 100")
+	}
+
+	sortKey := r.URL.Query().Get("sortBy")
+	if sortKey == "" {
+		sortKey = defaultSortKey
+	}
+	sortCol, ok := sortColumns[sortKey]
+	if !ok {
+		return listParams{}, fmt.Errorf("unknown sortBy %q", sortKey)
+	}
+
+	sortDir := strings.ToLower(r.URL.Query().Get("sortDir"))
+	switch sortDir {
+	case "":
+		sortDir = "desc"
+	case "asc", "desc":
+	default:
+		return listParams{}, fmt.Errorf("sortDir must be asc or desc")
+	}
+
+	return listParams{page: page, pageSize: pageSize, sortCol: sortCol, sortDir: strings.ToUpper(sortDir)}, nil
 }
 
 func startRideRequestOutboxWorker() {
