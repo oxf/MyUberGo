@@ -46,7 +46,7 @@ func main() {
 			CreateDriverProfile: command.NewCreateDriverProfileHandler(profileRepo, logger, metricsClient),
 			UpdateDriverProfile: command.NewUpdateDriverProfileHandler(profileRepo, logger, metricsClient),
 			CreateShift:         command.NewCreateShiftHandler(shiftRepo),
-			UpdateShift:         command.NewUpdateShiftHandler(shiftRepo, outboxRepo, transactionManager, logger, metricsClient),
+			UpdateShift:         command.NewUpdateShiftHandler(shiftRepo, profileRepo, outboxRepo, transactionManager, logger, metricsClient),
 		},
 		Queries: app.Queries{
 			GetDriverList: query.NewGetDriverListHandler(profileRepo, logger, metricsClient),

@@ -19,9 +19,10 @@ import (
 )
 
 type config struct {
-	authURL   string
-	rideURL   string
-	driverURL string
+	authURL     string
+	rideURL     string
+	driverURL   string
+	matchingURL string
 
 	clients int
 	drivers int
@@ -49,10 +50,11 @@ func main() {
 	}
 
 	deps := actors.Deps{
-		Auth:   apiclient.NewAuthClient(cfg.authURL),
-		Driver: apiclient.NewDriverClient(cfg.driverURL),
-		Ride:   apiclient.NewRideClient(cfg.rideURL),
-		Stats:  stats.NewCollector(256),
+		Auth:     apiclient.NewAuthClient(cfg.authURL),
+		Driver:   apiclient.NewDriverClient(cfg.driverURL),
+		Ride:     apiclient.NewRideClient(cfg.rideURL),
+		Matching: apiclient.NewMatchingClient(cfg.matchingURL),
+		Stats:    stats.NewCollector(256),
 	}
 
 	go deps.Stats.Run(cfg.reportInterval)
@@ -101,6 +103,7 @@ func loadConfig() config {
 	flag.StringVar(&cfg.authURL, "auth-url", getenv("E2E_AUTH_URL", "http://localhost:8000"), "auth-service base URL")
 	flag.StringVar(&cfg.rideURL, "ride-url", getenv("E2E_RIDE_URL", "http://localhost:8001"), "ride-service base URL")
 	flag.StringVar(&cfg.driverURL, "driver-url", getenv("E2E_DRIVER_URL", "http://localhost:8003"), "driver-service base URL")
+	flag.StringVar(&cfg.matchingURL, "matching-url", getenv("E2E_MATCHING_URL", "http://localhost:8002"), "matching-service base URL")
 	flag.IntVar(&cfg.clients, "clients", getenvInt("E2E_CLIENTS", 5), "number of virtual clients")
 	flag.IntVar(&cfg.drivers, "drivers", getenvInt("E2E_DRIVERS", 3), "number of virtual drivers")
 	flag.DurationVar(&cfg.rideInterval, "ride-interval", getenvDuration("E2E_RIDE_INTERVAL", 5*time.Second), "base interval between rides per client (jittered +/-50%)")

@@ -1,17 +1,18 @@
-package main
+package handler
 
 import (
 	"net/http/httptest"
+	"ride-service/internal/domain"
 	"testing"
 )
 
 func TestParseListParams_Defaults(t *testing.T) {
 	r := httptest.NewRequest("GET", "/ride", nil)
-	p, err := parseListParams(r, rideSortColumns, "createdAt")
+	p, err := parseListParams(r, domain.RideSortColumns, "createdAt")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p.page != 1 || p.pageSize != 20 || p.sortCol != "created_at" || p.sortDir != "DESC" {
+	if p.page != 1 || p.pageSize != 20 || p.sortBy != "createdAt" || p.sortDir != "DESC" {
 		t.Fatalf("unexpected defaults: %+v", p)
 	}
 }
@@ -26,7 +27,7 @@ func TestParseListParams_RejectsBadInput(t *testing.T) {
 		"/ride?sortDir=sideways",
 	} {
 		r := httptest.NewRequest("GET", url, nil)
-		if _, err := parseListParams(r, rideSortColumns, "createdAt"); err == nil {
+		if _, err := parseListParams(r, domain.RideSortColumns, "createdAt"); err == nil {
 			t.Errorf("expected error for %s", url)
 		}
 	}
@@ -34,11 +35,11 @@ func TestParseListParams_RejectsBadInput(t *testing.T) {
 
 func TestParseListParams_ExplicitSortAndPaging(t *testing.T) {
 	r := httptest.NewRequest("GET", "/ride?page=3&pageSize=50&sortBy=estimatedPrice&sortDir=asc", nil)
-	p, err := parseListParams(r, rideSortColumns, "createdAt")
+	p, err := parseListParams(r, domain.RideSortColumns, "createdAt")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p.page != 3 || p.pageSize != 50 || p.sortCol != "estimated_price" || p.sortDir != "ASC" {
+	if p.page != 3 || p.pageSize != 50 || p.sortBy != "estimatedPrice" || p.sortDir != "ASC" {
 		t.Fatalf("unexpected params: %+v", p)
 	}
 }

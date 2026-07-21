@@ -15,9 +15,10 @@ The target system has **8 services**; only **4 are implemented** (auth, ride, ma
 There is no root build tool, Makefile, or CI config — each service is built/run independently.
 
 ```bash
-# Full stack (Postgres, Redis, Kafka, Kafka UI, and all 4 services)
+# Full stack (Postgres, Redis, Kafka, Kafka UI, all 4 services, and the admin dashboard)
 docker-compose up --build
 
+# Admin dashboard: http://localhost:5173
 # Kafka UI (inspect topics/consumer groups): http://localhost:8080
 # Postgres: localhost:5432 (postgres/postgres/postgres)
 ```
@@ -42,15 +43,15 @@ Dockerfiles build with the **repo root as build context** (see `docker-compose.y
 
 ## Admin dashboard
 
-`web/` at the repo root is a Vite + React + TypeScript read-only admin dashboard (Users / Drivers / Shifts / Rides tables with server-side paging + sorting via the shared `PagedResponse[T]` envelope in `contracts/http`). Deliberately **not** in docker-compose — run it manually against the running stack:
+`web/` at the repo root is a Vite + React + TypeScript read-only admin dashboard (Users / Drivers / Shifts / Rides tables with server-side paging + sorting via the shared `PagedResponse[T]` envelope in `contracts/http`). It's in `docker-compose.yml` as the `web` service — a multi-stage build (`web/Dockerfile`) that runs `npm run build` and serves the static bundle from nginx on port 5173 (mapped to container port 80), matching the other services' build-a-lean-image-from-repo-context pattern rather than shipping the Vite dev server. For active frontend development (hot reload) run it manually instead, against a stack already up via `docker-compose up`:
 
 ```bash
 cd web
 npm install
-npm run dev   # http://localhost:5173
+npm run dev   # http://localhost:5173 — stop/exclude the `web` compose service first, or use a different port, to avoid a 5173 clash
 ```
 
-The Vite dev server proxies `/api/auth` → :8000, `/api/ride` → :8001, `/api/driver` → :8003 (`web/vite.config.ts`), so the Go services need no CORS headers — keep it that way. TypeScript DTOs in `web/src/api/types.ts` mirror `services/contracts/http` json tags — update them whenever contracts change. List-endpoint paging contract (all services): 1-based `page`, `pageSize` (default 20, cap 100), `sortBy` validated against a per-endpoint whitelist, `sortDir` asc|desc.
+Same-origin API proxying is implemented twice, deliberately kept in sync: the Vite dev server proxies `/api/auth` → :8000, `/api/ride` → :8001, `/api/driver` → :8003 (`web/vite.config.ts`) using `localhost`, since `npm run dev` runs on the host; the containerized build does the same proxying in `web/nginx.conf` using the compose service names (`auth-service`, `ride-service`, `driver-service`) instead of `localhost`, since nginx runs inside the compose network. Either way the Go services need no CORS headers — keep it that way, and update both proxy configs together if a service's routing changes. TypeScript DTOs in `web/src/api/types.ts` mirror `services/contracts/http` json tags — update them whenever contracts change. List-endpoint paging contract (all services): 1-based `page`, `pageSize` (default 20, cap 100), `sortBy` validated against a per-endpoint whitelist, `sortDir` asc|desc.
 
 ## e2e-test simulator
 
@@ -64,12 +65,12 @@ The Vite dev server proxies `/api/auth` → :8000, `/api/ride` → :8001, `/api/
 |---|---|---|
 | auth-service | 8000 | User signup/login, JWT issuance (access + refresh), refresh-token rotation |
 | ride-service | 8001 | Ride requests, fare/distance estimation, ride lifecycle, publishes `ride.requested` |
-| matching-service | 8002 | Consumes `ride.requested`/`shift.updated`, matches rides to available drivers |
+| matching-service | 8002 | Consumes `ride.requested`/`shift.updated`, matches rides to available drivers, publishes `ride.accepted`; `POST /rides/{rideId}/accept` + `GET /drivers/{driverId}/offer` |
 | driver-service | 8003 | Driver profiles and shifts (login/logout, rides, earnings), publishes `shift.updated` |
 
 `services/contracts` is a shared Go module (no `replace` of its own) holding the wire contracts every service depends on:
-- `contracts/http` — REST request/response DTOs per service (`auth-service.go`, `driver-service.go`, `ride-service.go`)
-- `contracts/kafka` — Kafka event payloads (`ride-service.go` has `RideRequestedEvent`; `driver-service.go` has `ShiftUpdatedEvent`)
+- `contracts/http` — REST request/response DTOs per service (`auth-service.go`, `driver-service.go`, `ride-service.go`, `matching-service.go` — `AcceptRideRequest`/`AcceptRideResponse`/`DriverOfferDto`)
+- `contracts/kafka` — Kafka event payloads (`ride-service.go` has `RideRequestedEvent`; `driver-service.go` has `ShiftUpdatedEvent`, now with a `Rating` field; `matching-service.go` has `RideAcceptedEvent`)
 
 Changing a field used across services means editing it once in `contracts` — both the producer and consumer(s) pick it up through the `replace` directive.
 
@@ -79,7 +80,7 @@ A single Postgres instance hosts one schema per service (`auth`, `ride`, `driver
 
 ### Transactional outbox pattern
 
-`ride-service` and `driver-service` write domain state and an outbox row in the same DB transaction, then a background worker (`internal/workers`, ticker + `select` loop) polls `outbox_message` (`FOR UPDATE SKIP LOCKED` inside `TransactionManager.WithinTransaction`), publishes to Kafka via an `EventPublisher` port/adapter, and marks rows processed (or increments `retries` on publish failure — no dead-letter handling yet). This is how `ride.requested` and `shift.updated` events get published reliably. `matching-service` is a pure Kafka consumer (via `segmentio/kafka-go`) on the other end, reacting to those topics; it also caches driver/ride state in Redis (`internal/infrastructure/cache`).
+`ride-service` and `driver-service` write domain state and an outbox row in the same DB transaction, then a background worker (`internal/workers`, ticker + `select` loop) polls `outbox_message` (`FOR UPDATE SKIP LOCKED` inside `TransactionManager.WithinTransaction`), publishes to Kafka via an `EventPublisher` port/adapter, and marks rows processed (or increments `retries` on publish failure — no dead-letter handling yet). This is how `ride.requested` and `shift.updated` events get published reliably. `matching-service` consumes both topics on the other end (caching driver/ride state in Redis, `internal/infrastructure/cache`) and publishes its own `ride.accepted` event, but without an outbox: it publishes directly from the `AcceptRideHandler` at the point a ride is matched, since Redis has no transaction to hide a dual write behind the way Postgres does here — see "Matching algorithm status" below for that tradeoff.
 
 ### Architectural maturity: the 3-stage learning progression (intentional, not inconsistency)
 
@@ -94,7 +95,7 @@ Every service is deliberately built through 3 stages, and different services cur
 | auth-service | Stage 1 | signup/login/refresh, all in `cmd/main.go` |
 | ride-service | Stage 1 | request-ride/list/get + an outbox-polling goroutine, all in `cmd/main.go` |
 | driver-service | Stage 2 (+ early Stage-3 features) | the reference Stage-2 implementation; already has graceful shutdown, health checks, logging/metrics decorators, and a working transactional-outbox worker grafted on, but metrics is a logging stub and health's liveness check is a no-op (see infra notes below) |
-| matching-service | Stage 2, in progress, most complex | partial CQRS layering (commands wrapped with decorators, Redis-backed repos) but `cmd/main.go` still carries ~110 lines of dead/unreachable Stage-1 code (`startRideRequestedConsumer`/`handleRideRequested`, unused `db`/`kafkaBroker` vars); no query handlers yet; `domain/outbox.go`/`internal/application/services/transaction_manager.go`/`internal/common/errors` are scaffolded but have zero implementations or usages; no Kafka producer exists (service only consumes/caches, never publishes) |
+| matching-service | Stage 2, complete for its current scope | full CQRS layering: command/query handlers wrapped with decorators, Redis-backed repos, an HTTP layer (`POST /rides/{rideId}/accept`, `GET /drivers/{driverId}/offer`), a Kafka producer (`ride.accepted`), graceful shutdown, and a Redis-based health checker. Dead Stage-1 code and the Postgres dependency are gone. Implements a simplified version of the README's matching algorithm — see "Matching algorithm status" below for exactly what's simplified. |
 
 See `PLAN.md` for the ordered, checkable steps to move each service forward. Location, Billing, and Notification services described in the README's target design don't exist in `services/` yet at all (Phase 3 of the README roadmap) — don't assume their directories, schemas, or Kafka topics are present.
 
@@ -104,25 +105,31 @@ The README's per-service target design is ahead of what's actually in `services/
 - `auth.user`: no `updated_at`/`deleted_at` (soft delete) columns.
 - `driver.driver_profile`: no `license_number`/`license_expiry`/`vehicle_color`; no `driver.driver_rating` table.
 - `ride.ride`: no `cancelled_at`, no separate `RIDE_REQUEST` table, no time-windowed tariffs (only one flat rate is used, `ride.tariff` isn't read by the handler).
-- **No `matching` schema anywhere, full stop** — not just "not yet defined": `init.sql` only declares `auth`/`ride`/`driver`, and the one place matching-service's code references `matching.ride_offer` is dead code (`handleRideRequested` in `cmd/main.go`) that's never called from `main()`. Don't add code that assumes this table exists.
-- `services/contracts/kafka` only defines `RideRequestedEvent`/`ShiftUpdatedEvent` — `ride.cancelled`, `ride.started`, `ride.finished`, `payment.completed`, `shift.started`, `shift.ended`, `ride.accepted` (and their Go structs) don't exist yet.
+- **No `matching` schema anywhere, full stop** — not just "not yet defined": `init.sql` only declares `auth`/`ride`/`driver`; matching-service has never had a Postgres dependency in its live code, and the module no longer imports `lib/pq` at all. Don't add code that assumes a `matching` schema exists.
+- `services/contracts/kafka` defines `RideRequestedEvent`, `ShiftUpdatedEvent` (now with a `Rating float64` field, populated by driver-service and consumed by matching-service's rating-only ranking), and `RideAcceptedEvent` (matching-service's first Kafka producer output — `{rideId, driverId, acceptedAt}`). `ride.cancelled`, `ride.started`, `ride.finished`, `payment.completed`, `shift.started`, `shift.ended` still don't exist yet. `ride.accepted` is published but has no consumer anywhere yet (`ride-service` would need it to flip a ride to `Matched`, but is still Stage 1).
 
 Check `init.sql`/`contracts` directly before writing code against any field/topic mentioned in the README that isn't confirmed there.
 
 List endpoints (`GET /users` on auth-service, `GET /ride`, `GET /driver-profile`, `GET /driver-shift`) now return `contracts.PagedResponse[T]` (`{items, page, pageSize, totalCount}`), not a bare array — bare-array list responses documented elsewhere in this repo's history are stale. driver-service's `GetList`/`GetByID` handlers now serialize the camelCase `contracts.DriverProfileDto`/`ShiftDto`, not raw `domain.*` structs — the PascalCase wire-format quirk mentioned in older notes no longer applies.
 
-Several real bugs were found and fixed while verifying docs against code (2026-07-14) — mentioned here so they aren't "rediscovered" as still-open issues: `ShiftUpdatedEvent.DriverID`'s json tag was `clientId` (now `driverId`); `driver-service`'s `ShiftHandler.GetList`/`GetByID` were calling the driver-profile queries instead of the shift queries (copy-paste bug); `ShiftHandler.Update` was using the request body's `DriverId` field as the shift ID instead of the path `{id}`; the outbox worker (`internal/workers/shift_updated_outbox_worker.go`) was a non-compiling Stage-1 stub never wired into `main()` — it's now a real Stage-2 `OutboxWorker` (see "Transactional outbox pattern" above and `PLAN.md`); and the producer/consumer topic name mismatch (`driver.shifts.updated` vs. `shift.updated`) is resolved in favor of `shift.updated`. A second pass (2026-07-18, prompted by building the e2e-test simulator) fixed auth-service's login/refresh, which had never worked: unqualified `"user"`/`refresh_token` table names (no search_path in the DSN), the UUID user id scanned into an `int` and stuffed into the JWT as a number, and `/refresh` returning a bare string instead of `RefreshResponse` — see PLAN.md's 2026-07-18 section.
+Several real bugs were found and fixed while verifying docs against code (2026-07-14) — mentioned here so they aren't "rediscovered" as still-open issues: `ShiftUpdatedEvent.DriverID`'s json tag was `clientId` (now `driverId`); `driver-service`'s `ShiftHandler.GetList`/`GetByID` were calling the driver-profile queries instead of the shift queries (copy-paste bug); `ShiftHandler.Update` was using the request body's `DriverId` field as the shift ID instead of the path `{id}`; the outbox worker (`internal/workers/shift_updated_outbox_worker.go`) was a non-compiling Stage-1 stub never wired into `main()` — it's now a real Stage-2 `OutboxWorker` (see "Transactional outbox pattern" above and `PLAN.md`); and the producer/consumer topic name mismatch (`driver.shifts.updated` vs. `shift.updated`) is resolved in favor of `shift.updated`. A second pass (2026-07-18, prompted by building the e2e-test simulator) fixed auth-service's login/refresh, which had never worked: unqualified `"user"`/`refresh_token` table names (no search_path in the DSN), the UUID user id scanned into an `int` and stuffed into the JWT as a number, and `/refresh` returning a bare string instead of `RefreshResponse` — see PLAN.md's 2026-07-18 section. A third pass (2026-07-19, building the matching algorithm) fixed driver-service's `UpdateShiftHandler`: setting a shift to `Ended` short-circuited before the outbox insert, so ending a shift never published a `shift.updated` event at all — matching-service's online-driver pool would only ever grow, never shrink, since it never learned a driver went offline. Both branches now share the same transaction and outbox-insert flow.
 
 ### Matching algorithm status
 
-The README documents a full target matching algorithm (radius discovery → weighted ranking → tiered broadcast → atomic Redis accept → expanding-radius retry → per-driver rate limiting). None of that exists yet. Current `matching-service` (verified in detail):
-- Consumes `ride.requested` (via `RideAcceptedConsumer` — misnamed, it doesn't consume `ride.accepted`) and `shift.updated` (via `ShiftUpdatedConsumer`); both hardcode their topic string internally and ignore the `topic` argument passed to `Run(...)`.
-- On `ride.requested`, `CreateRideHandler` just caches the full event into Redis as a hash at `ride:{rideId}` (fields include a hardcoded `status:"searching", radius:3000, attempt:1`) — no ranking, offering, or acceptance logic at all.
-- On `shift.updated`, `CreateDriverHandler` caches `{shiftID, status, updatedAt}` into Redis at `driver:{driverID}`.
-- No query handlers, no Kafka producer (nothing is ever published), no `POST /rides/{rideId}/accept` HTTP endpoint, no HTTP layer at all in this service yet.
-- Postgres is opened in `cmd/main.go` but never used by the live code path — only by the dead `handleRideRequested` function.
+The README documents a full target matching algorithm (radius discovery → weighted ranking → tiered broadcast → atomic Redis accept → expanding-radius retry → per-driver rate limiting). `matching-service` now implements a simplified version of that same shape, entirely against Redis (no Postgres anywhere in this service — removed from `go.mod`, `cmd/main.go`, and `docker-compose.yml`):
 
-Building that algorithm and cleaning up the dead code is the immediate next step — see `PLAN.md`.
+- **Consumers**: `RideRequestedConsumer` (renamed from the misleading `RideAcceptedConsumer`) consumes `ride.requested`; `ShiftUpdatedConsumer` consumes `shift.updated`. Both honor the `topic` argument passed to `Run(ctx, topic)` (no longer hardcoded) and use a cancellable context for graceful shutdown.
+- **Discovery is rating-only, not geo**: no Location service exists, so there's no real distance data. `ShiftUpdatedEvent` now carries the driver's `rating`; `UpsertDriver` (renamed from `CreateDriver`) maintains a `drivers:online` Redis ZSET (driverID → rating), adding a driver on `status:"Online"` and removing them on any other status.
+- **On `ride.requested`**: `CreateRideHandler` caches the ride into Redis (`ride:{rideId}` hash, `status:"searching"`), then `BroadcastOffersHandler` immediately runs the first offer round: pulls the top `attempt×5` rating-ranked online drivers, filters out already-offered/busy/rate-limited candidates, offers to the top 5 (`ride:{rideId}:offered_drivers` SET, `driver:{driverId}:current_offer` STRING with a 30s TTL), and arms a retry deadline (`pending_ride:{rideId}` hash).
+- **Broadcasting is BROADCAST-only** (top 5 at once, first accept wins) — the README's TIERED strategy and Stage-3 concurrent goroutine/channel fan-out for the broadcast step are not implemented yet.
+- **Atomic accept**: `POST /rides/{rideId}/accept` → `AcceptRideHandler` does a Redis `SET ride:{rideId}:accepted_by driverId NX` (first writer wins); 409 on a lost race, 400 on an expired/cancelled/not-offered-to-this-driver claim, 404 if the ride doesn't exist. On success it marks the ride `matched`, clears the offer/pending state, removes the driver from `drivers:online`, and publishes `ride.accepted` directly (no outbox — a deliberate at-most-once tradeoff, since Redis has no transaction to hide a dual write behind and the match itself is already durable).
+- **Retry** is a background `MatchRetryWorker` (ticker+select loop) sweeping `pending_ride:*`; a ride whose deadline lapsed without an accept gets `BroadcastOffers` re-run with `attempt+1` (widening the candidate pool instead of expanding a geo radius), capped at 5 attempts before the ride is marked `failed` and the retry gives up.
+- **Rate limiting**: `driver:{driverId}:notifications:minute` INCR/EXPIRE, capped at 3/minute — implemented as a sliding window (each offer resets the 60s TTL) rather than a strict fixed window.
+- **`ride:{rideId}:cancelled`** is checked on accept but nothing sets it yet — no `ride.cancelled` consumer exists anywhere in the codebase.
+- **`GET /drivers/{driverId}/offer`** lets a driver poll for their current offer (404 if none) — there's no Notification service to push offers, so polling is the only delivery mechanism for now.
+- **Not yet wired end-to-end**: `ride-service` doesn't consume `ride.accepted` (still Stage 1), so a matched ride's Postgres row never actually flips to `Matched` status — `ride.accepted` is published correctly but has no consumer yet.
+
+Remaining work toward the README's full target: geo-based discovery (needs the Location service), TIERED broadcast escalation, and the Stage-3 concurrent fan-out conversion (goroutines/channels/`select` for broadcasting offers) — see `PLAN.md`.
 
 ### The layered pattern (driver-service, and the direction matching-service is moving)
 

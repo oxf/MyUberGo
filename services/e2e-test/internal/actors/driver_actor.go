@@ -2,11 +2,15 @@ package actors
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"time"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
+
+	"e2e-test/internal/apiclient"
 )
 
 // DriverActor simulates a driver: signup, login, create a profile, then
@@ -52,8 +56,9 @@ func (a *DriverActor) Run(ctx context.Context) {
 		}
 		a.setShiftStatus(ctx, shiftID, "Online", "driver.shift.online")
 
-		// Simulated work period before ending the shift.
-		if !sleepJitter(ctx, a.Interval/2, a.Rnd) {
+		// Simulated work period before ending the shift: poll for matching
+		// offers and accept the first one seen.
+		if !a.pollForOffer(ctx, a.Interval/2) {
 			return
 		}
 
@@ -196,4 +201,78 @@ func (a *DriverActor) updateAndVerifyPhone(ctx context.Context) {
 		v.Eq("driverName", profile.DriverName, "E2E "+a.ID)
 	}
 	a.record(a.ID, "driver.profile.get", start, getErr, v)
+}
+
+// pollForOffer polls the matching service during the Online work window and
+// accepts the first offer it sees. Returns false when ctx is done. 404 on the
+// offer endpoint means "no offer yet" — normal, not recorded as a failure.
+//
+// Known limitation: ride-service doesn't consume ride.accepted yet, so the
+// client actor can't verify its ride reaching Matched in Postgres from here
+// — that lands once ride-service adopts Stage 2.
+func (a *DriverActor) pollForOffer(ctx context.Context, window time.Duration) bool {
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		start := time.Now()
+		offer, err := a.Matching.GetDriverOffer(ctx, a.profileID)
+		if err != nil {
+			var apiErr *apiclient.APIError
+			if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+				if !sleepJitter(ctx, 2*time.Second, a.Rnd) {
+					return false
+				}
+				continue
+			}
+			a.record(a.ID, "matching.offer.get", start, err, nil)
+			return ctx.Err() == nil
+		}
+
+		v := &Verify{}
+		v.NotEmpty("rideId", offer.RideId)
+		v.True("price", offer.Price > 0, "expected positive price")
+		v.NotEmpty("expiresAt", offer.ExpiresAt)
+		a.record(a.ID, "matching.offer.get", start, nil, v)
+
+		a.acceptOffer(ctx, offer.RideId)
+		return ctx.Err() == nil
+	}
+	return ctx.Err() == nil
+}
+
+func (a *DriverActor) acceptOffer(ctx context.Context, rideID string) {
+	start := time.Now()
+	resp, err := a.Matching.AcceptRide(ctx, rideID, contracts.AcceptRideRequest{DriverId: a.profileID})
+
+	var apiErr *apiclient.APIError
+	if err != nil && errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict {
+		// Lost the race to another driver — a legitimate outcome.
+		a.record(a.ID, "matching.ride.accept", start, nil, nil)
+		return
+	}
+
+	v := &Verify{}
+	if err == nil {
+		v.Eq("rideId", resp.RideId, rideID)
+		v.Eq("driverId", resp.DriverId, a.profileID)
+		v.Eq("status", resp.Status, "matched")
+	}
+	a.record(a.ID, "matching.ride.accept", start, err, v)
+	if err != nil {
+		return
+	}
+
+	// Deep verification: offer is gone, and a duplicate accept must 409.
+	start = time.Now()
+	_, err = a.Matching.GetDriverOffer(ctx, a.profileID)
+	v = &Verify{}
+	v.True("offer cleared", errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound,
+		"expected 404 for current offer after accept")
+	a.record(a.ID, "matching.offer.get", start, nil, v)
+
+	start = time.Now()
+	_, err = a.Matching.AcceptRide(ctx, rideID, contracts.AcceptRideRequest{DriverId: a.profileID})
+	v = &Verify{}
+	v.True("duplicate accept", errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict,
+		"expected 409 on duplicate accept")
+	a.record(a.ID, "matching.ride.accept.dup", start, nil, v)
 }

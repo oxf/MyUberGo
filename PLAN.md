@@ -17,7 +17,7 @@ Every service moves through the same 3 stages, deliberately, one at a time:
 | auth-service | 1 | signup/login/refresh, all in `cmd/main.go` |
 | ride-service | 1 | request-ride/list/get + outbox-polling goroutine, all in `cmd/main.go` |
 | driver-service | 2 (+ early Stage 3 features) | full CQRS/DDD layering; graceful shutdown + health checks + logging/metrics decorators + a working transactional-outbox worker already present, but metrics is a logging-only stub (no Prometheus) and health's liveness check is hardcoded `true` (never fails) — real Stage 3 work still needed there |
-| matching-service | 2, in progress, most complex | partial CQRS layering (Redis-backed commands wrapped w/ decorators) but no query handlers, no Kafka producer, no HTTP layer, and `cmd/main.go` still carries dead Stage-1 code |
+| matching-service | 2, complete for its current scope | full CQRS layering, HTTP layer, Kafka producer, graceful shutdown, Redis health checks; implements a simplified version of the README's matching algorithm (rating-only ranking, BROADCAST-only, pool-widening retry) — see the 2026-07-19 section below |
 | e2e-test | n/a (tooling, not a service) | continuous client-activity simulator: N virtual clients + M virtual drivers (goroutine-per-actor) drive auth/driver/ride over HTTP with deep read-back verification and periodic stats; run manually via `go run ./cmd` against the compose stack — deliberately NOT in docker-compose. See `services/e2e-test/README.md` |
 
 ## Admin dashboard + paged/sorted list endpoints (2026-07-18)
@@ -66,23 +66,38 @@ Follow-ups not done yet: max-retry/dead-letter handling for permanently-failing 
 Small, ordered, checkable steps. Do them roughly in order; each should be independently buildable/runnable.
 
 ### A. Stage 2 cleanup (finish the CQRS migration)
-1. Delete the dead code in `cmd/main.go`: `startRideRequestedConsumer`, `handleRideRequested`, and the now-unused `db *sql.DB` / `kafkaBroker string` package vars and their `sql.Open`/`lib/pq` import.
-2. Matching-service's target design (README) is **Redis-only** — no Postgres. Confirm and drop the Postgres dependency entirely once step 1 is done (no other file in this service uses `db`).
-3. Fix consumer naming/behavior: rename `RideAcceptedConsumer` → something accurate (it consumes `ride.requested`) or split so a future real `ride.accepted`-consuming type isn't confused with this one. Stop hardcoding the topic inside `Run()`; use the `topic` parameter that's already passed in (it's currently accepted and ignored).
-4. Add query handlers as needed once the accept endpoint (below) requires reading offer/ride state back out of Redis.
+1. [x] Delete the dead code in `cmd/main.go`: `startRideRequestedConsumer`, `handleRideRequested`, and the now-unused `db *sql.DB` / `kafkaBroker string` package vars and their `sql.Open`/`lib/pq` import.
+2. [x] Matching-service's target design (README) is **Redis-only** — no Postgres. Confirm and drop the Postgres dependency entirely once step 1 is done (no other file in this service uses `db`).
+3. [x] Fix consumer naming/behavior: rename `RideAcceptedConsumer` → something accurate (it consumes `ride.requested`) or split so a future real `ride.accepted`-consuming type isn't confused with this one. Stop hardcoding the topic inside `Run()`; use the `topic` parameter that's already passed in (it's currently accepted and ignored). Done as `RideRequestedConsumer`, now `ctx`-aware for graceful shutdown too.
+4. [x] Add query handlers as needed once the accept endpoint (below) requires reading offer/ride state back out of Redis. Done as `GetDriverOffer` (backs the `GET /drivers/{driverId}/offer` polling endpoint).
 
 ### B. Build the matching algorithm incrementally
 Implement in this order, each as its own small command/handler:
 
-5. **Discovery (simplified)** — no Location service exists yet, so there's no real geo data. Start with rating-only ranking (skip the distance component of the README's scoring formula for now; note this simplification in code comments). Query available drivers straight from `driver.driver_profile` (still the one place this service legitimately needs Postgres read access — reconsider step 2 if so, or have driver-service expose this via HTTP instead of matching-service reading its table directly).
-6. **Offer state in Redis** — implement the README's target key schema: `ride:{rideId}:offered_drivers`, `ride:{rideId}:accepted_by` (TTL, NX-set), `ride:{rideId}:cancelled`, `driver:{driverId}:current_offer`.
-7. **Atomic accept endpoint** — first HTTP surface in this service: `POST /rides/{rideId}/accept`. Use Redis `SET ... NX` for the atomic claim per the README's Phase 4 design; 409 on race loss, 400 on expired/cancelled.
-8. **Retry with expanding attempts** — simplified version without real geo radius (e.g. widen the candidate pool or lower the rating threshold instead of expanding a radius in km); cap attempts, give up and log after the max.
-9. **Rate limiting** — `driver:{driverId}:notifications:minute` via Redis `INCR`/`EXPIRE`, skip over-limit drivers when broadcasting.
-10. **Publish `ride.accepted`** — first Kafka producer in this service. Needs a new `contracts.RideAcceptedEvent` struct in `services/contracts/kafka`.
+5. [x] **Discovery (simplified)** — done via the third option this step raised, not the two originally listed: rather than reading `driver.driver_profile` directly (keeps Postgres, rejected) or adding a driver-service HTTP endpoint (extra service call), `ShiftUpdatedEvent` was enriched with `Rating float64`, and matching-service maintains its own `drivers:online` Redis ZSET (driverID → rating) kept in sync by `UpsertDriver` (renamed from `CreateDriver`). Fully Redis-only, no cross-service read. Ranking is rating-only, no distance component (no Location service yet).
+6. [x] **Offer state in Redis** — implemented the target key schema (`ride:{rideId}:offered_drivers`, `ride:{rideId}:accepted_by`, `ride:{rideId}:cancelled`, `driver:{driverId}:current_offer`) plus two additions not in the original list: `driver:{driverId}:notifications:minute` (rate limit) and `pending_ride:{rideId}` (retry state: attempt + deadline) — both needed once retry/rate-limiting (steps 8-9) were designed in.
+7. [x] **Atomic accept endpoint** — `POST /rides/{rideId}/accept` via Redis `SET ... NX`; 409 on race loss, 400 on expired/cancelled/not-offered-to-this-driver, 404 if the ride doesn't exist.
+8. [x] **Retry with expanding attempts** — implemented as pool-widening (`attempt × 5` candidates queried, not a shrinking rating threshold as this step originally suggested — pool-widening turned out simpler and reuses the same ranking path). Capped at 5 attempts via a background `MatchRetryWorker` (ticker+`select` sweep over `pending_ride:*`); gives up and marks the ride `failed` after the max.
+9. [x] **Rate limiting** — `driver:{driverId}:notifications:minute` via Redis `INCR`/`EXPIRE`, cap 3/minute, skips over-limit drivers when broadcasting. Implemented as a sliding window (TTL resets on each offer) rather than a strict fixed window — simpler, and the difference doesn't matter at this scale.
+10. [x] **Publish `ride.accepted`** — first Kafka producer in this service, published directly from `AcceptRideHandler` (no outbox — Redis has no transaction to hide a dual write behind; log-and-continue on publish failure is an accepted at-most-once tradeoff since the match itself is already durable in Redis). `contracts.RideAcceptedEvent{RideID, DriverID, AcceptedAt}` added to `services/contracts/kafka`.
 
 ### C. Stage 3 preview (once A+B work end-to-end)
-11. Convert the offer broadcast (step 6/7) to use goroutines + a channel + `select`: fan out push-style "you've been offered this ride" sends to the top-N ranked drivers concurrently, and `select` between an acceptance signal and a timeout instead of blocking sequentially. This is the natural first place to apply the concurrency patterns from Stage 3.
+11. [ ] Convert the offer broadcast (step 6/7) to use goroutines + a channel + `select`: fan out push-style "you've been offered this ride" sends to the top-N ranked drivers concurrently, and `select` between an acceptance signal and a timeout instead of blocking sequentially. This is the natural first place to apply the concurrency patterns from Stage 3. Not started — A+B are done end-to-end now, so this is unblocked.
+
+---
+
+## matching-service: Stage 2 complete + simplified matching algorithm (2026-07-19)
+
+All of §A and §B above landed in one pass. Also fixed along the way: `driver-service`'s `UpdateShiftHandler` set-to-`Ended` path returned before reaching the outbox insert, so ending a shift never published a `shift.updated` event — matching-service's `drivers:online` pool would only ever grow. Both the `Ended` and normal-status paths now share one transaction and one outbox-insert tail.
+
+End-to-end flow now working: `ride.requested` → cache ride + broadcast top-5 rating-ranked online drivers → driver polls `GET /drivers/{driverId}/offer` → `POST /rides/{rideId}/accept` (atomic claim) → `ride.accepted` published. Unmatched rides retry (widening pool) up to 5 attempts before being marked `failed`. e2e-test simulator's driver actors now exercise this whole loop (`matching.offer.get`, `matching.ride.accept`, `matching.ride.accept.dup` ops) with 404/409 deep verification.
+
+Follow-ups not done yet (tracked, not urgent):
+- `ride-service` doesn't consume `ride.accepted` yet (still Stage 1) — a matched ride's Postgres row never flips to `Matched`. Natural to pick up when ride-service moves to Stage 2.
+- No `ride.cancelled` producer/consumer anywhere — `ride:{rideId}:cancelled` is checked on accept but nothing ever sets it.
+- TIERED broadcast strategy (README's recommended design) and geo-radius discovery both need infrastructure that doesn't exist yet (Location service for geo; TIERED needs per-tier timer state beyond what BROADCAST needs).
+- Step 11 above (Stage-3 concurrent fan-out) — next natural step once someone picks this back up.
+- Minor code-quality items from task review (not blocking): `TopOnlineDrivers(limit=0)` returns the whole pool due to Redis's `-1`-means-"last element" semantics on `ZREVRANGE` — only matters if this is ever called with `limit=0`, which nothing currently does; a couple of small DRY/dead-code nits in the Redis repository files.
 
 ---
 

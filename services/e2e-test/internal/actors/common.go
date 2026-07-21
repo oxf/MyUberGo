@@ -16,10 +16,11 @@ const password = "e2e-password-123"
 
 // Deps groups the API clients and the stats collector shared by all actors.
 type Deps struct {
-	Auth   *apiclient.AuthClient
-	Driver *apiclient.DriverClient
-	Ride   *apiclient.RideClient
-	Stats  *stats.Collector
+	Auth     *apiclient.AuthClient
+	Driver   *apiclient.DriverClient
+	Ride     *apiclient.RideClient
+	Matching *apiclient.MatchingClient
+	Stats    *stats.Collector
 }
 
 // account is the authenticated identity an actor operates as.

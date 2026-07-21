@@ -106,15 +106,13 @@ services:
       context: .
       dockerfile: services/matching-service/Dockerfile
     environment:
-      PG_DSN: postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable
       KAFKA_BROKER: kafka:29092
-      JWT_SECRET: secret_change_me
       SERVICE_PORT: '8002'
       REDIS_URL: redis:6379
     ports:
       - "8002:8002"
     depends_on:
-      postgres:
+      redis:
         condition: service_healthy
       kafka:
         condition: service_started
@@ -135,6 +133,17 @@ services:
         condition: service_healthy
       kafka:
         condition: service_started
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - auth-service
+      - ride-service
+      - driver-service
 
 networks:
   default:
