@@ -4,20 +4,23 @@ meta {
   seq: 6
 }
 
-post {
-  url: http://localhost:8003/driver-shift/create
+put {
+  url: http://localhost:8003/driver-shift/f7069420-c34d-4ace-a7d7-e021b800ba53
   body: json
   auth: inherit
 }
 
 headers {
-  X-User-Id: 3023a923-8310-4a1e-b1fe-9fddd210dc26
+  X-User-Id: f1277eb3-fb7c-4484-9870-791c07c7f9ab
 }
 
 body:json {
   {
-    "driverId": "882f978b-f9e5-46db-b244-b2eef153445a"
+    "driverId": "304530ed-ca25-416d-a3d9-a3d7ce0e5f0f",
+    "status": "active"
   }
+  
+  
 }
 
 settings {

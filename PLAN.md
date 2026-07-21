@@ -15,7 +15,7 @@ Every service moves through the same 3 stages, deliberately, one at a time:
 | Service | Stage | Notes |
 |---|---|---|
 | auth-service | 1 | signup/login/refresh, all in `cmd/main.go` |
-| ride-service | 1 | request-ride/list/get + outbox-polling goroutine, all in `cmd/main.go` |
+| ride-service | 2 | full CQRS/DDD layering (`domain`/`application`/`persistence`/`interfaces`/`workers`), decorator-wrapped handlers, transactional-outbox worker for `ride.requested`, plus a `ride.accepted` consumer (see 2026-07-21 section below) |
 | driver-service | 2 (+ early Stage 3 features) | full CQRS/DDD layering; graceful shutdown + health checks + logging/metrics decorators + a working transactional-outbox worker already present, but metrics is a logging-only stub (no Prometheus) and health's liveness check is hardcoded `true` (never fails) — real Stage 3 work still needed there |
 | matching-service | 2, complete for its current scope | full CQRS layering, HTTP layer, Kafka producer, graceful shutdown, Redis health checks; implements a simplified version of the README's matching algorithm (rating-only ranking, BROADCAST-only, pool-widening retry) — see the 2026-07-19 section below |
 | e2e-test | n/a (tooling, not a service) | continuous client-activity simulator: N virtual clients + M virtual drivers (goroutine-per-actor) drive auth/driver/ride over HTTP with deep read-back verification and periodic stats; run manually via `go run ./cmd` against the compose stack — deliberately NOT in docker-compose. See `services/e2e-test/README.md` |
@@ -93,7 +93,7 @@ All of §A and §B above landed in one pass. Also fixed along the way: `driver-s
 End-to-end flow now working: `ride.requested` → cache ride + broadcast top-5 rating-ranked online drivers → driver polls `GET /drivers/{driverId}/offer` → `POST /rides/{rideId}/accept` (atomic claim) → `ride.accepted` published. Unmatched rides retry (widening pool) up to 5 attempts before being marked `failed`. e2e-test simulator's driver actors now exercise this whole loop (`matching.offer.get`, `matching.ride.accept`, `matching.ride.accept.dup` ops) with 404/409 deep verification.
 
 Follow-ups not done yet (tracked, not urgent):
-- `ride-service` doesn't consume `ride.accepted` yet (still Stage 1) — a matched ride's Postgres row never flips to `Matched`. Natural to pick up when ride-service moves to Stage 2.
+- ~~`ride-service` doesn't consume `ride.accepted` yet~~ — done, see the 2026-07-21 section below.
 - No `ride.cancelled` producer/consumer anywhere — `ride:{rideId}:cancelled` is checked on accept but nothing ever sets it.
 - TIERED broadcast strategy (README's recommended design) and geo-radius discovery both need infrastructure that doesn't exist yet (Location service for geo; TIERED needs per-tier timer state beyond what BROADCAST needs).
 - Step 11 above (Stage-3 concurrent fan-out) — next natural step once someone picks this back up.
@@ -101,9 +101,20 @@ Follow-ups not done yet (tracked, not urgent):
 
 ---
 
+## ride-service + driver-service: consume `ride.accepted` (2026-07-21)
+
+Closed the gap noted in the 2026-07-19 section and in `CLAUDE.md`'s "Matching algorithm status": matching-service was publishing `ride.accepted` to no one.
+
+- `ride-service`: new `internal/consumers/ride_accepted_consumer.go` (same reader-loop shape as matching-service's own consumers, `GroupID: "ride-service"`) decodes the event and calls a new `MarkRideMatched` command (`internal/application/command/mark_ride_matched.go`), which does a single guarded `UPDATE ride.ride SET driver_id, status='Matched', matched_at WHERE id=$1 AND status='Requested'` (`internal/persistence/ride_postgres_repository.go`) — the `status='Requested'` guard makes it idempotent against at-most-once redelivery. `domain.RideRepository` gained the `MarkRideMatched` method; wired into `app.Commands` and started in `cmd/main.go` alongside the existing outbox worker.
+- `driver-service`: new `internal/consumers/ride_accepted_consumer.go` (`GroupID: "driver-service"`) calls a new `ProcessRideAccepted` command (`internal/application/command/process_ride_accepted.go`) — currently a **placeholder that only logs**, since there's no persisted "driver is on a ride" state today (`driver_profile.status` CHECK only allows `Offline`/`Online`, and no `ride.completed`/`ride.cancelled` event exists yet to ever flip it back). The seam (consumer → command) is in place so real logic has somewhere to go once that flow exists.
+- Also discovered while investigating: `ride-service` was already fully Stage-2 (CQRS/DDD layered) — `CLAUDE.md`/`PLAN.md`'s "Stage 1, all in `cmd/main.go`" description was stale, just missing a `consumers` package. Corrected in the status table above.
+
+Follow-up not done yet: extending `services/e2e-test`'s ride actor to assert a ride flips to `Matched` after an accept (per CLAUDE.md's guidance to keep the simulator covering new behavior) — flagged, not started.
+
+---
+
 ## Later (not detailed yet — revisit after matching-service)
 
-- **ride-service → Stage 2**: same domain/application/persistence/interfaces layering as driver-service; keep the existing transactional-outbox worker (it already works) but move it and the handlers into the layered structure.
-- **auth-service → Stage 2**: same layering; move JWT/bcrypt logic into an application/domain service.
+- **auth-service → Stage 2**: same layering as driver-service/ride-service; move JWT/bcrypt logic into an application/domain service.
 - **Cross-cutting Stage 3**: OpenAPI spec + codegen for HTTP contracts (replacing hand-written `contracts/http` structs), one gRPC call as a learning exercise (e.g. matching-service → driver-service for available drivers, alongside/instead of direct Postgres/HTTP access), a real Prometheus metrics client (replacing the logging stub), a real liveness probe for driver-service's health checker.
 - **Phase 3 of README's product roadmap**: Location, Billing, Notification services, and the API Gateway — new services, start each at Stage 1 like the others did.

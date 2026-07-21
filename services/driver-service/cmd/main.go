@@ -6,6 +6,7 @@ import (
 	app "driver-service/internal/application"
 	"driver-service/internal/application/command"
 	"driver-service/internal/application/query"
+	"driver-service/internal/consumers"
 	"driver-service/internal/infrastructure/health"
 	kafkainfra "driver-service/internal/infrastructure/kafka"
 	"driver-service/internal/infrastructure/metrics"
@@ -47,6 +48,7 @@ func main() {
 			UpdateDriverProfile: command.NewUpdateDriverProfileHandler(profileRepo, logger, metricsClient),
 			CreateShift:         command.NewCreateShiftHandler(shiftRepo),
 			UpdateShift:         command.NewUpdateShiftHandler(shiftRepo, profileRepo, outboxRepo, transactionManager, logger, metricsClient),
+			ProcessRideAccepted: command.NewProcessRideAcceptedHandler(logger, metricsClient),
 		},
 		Queries: app.Queries{
 			GetDriverList: query.NewGetDriverListHandler(profileRepo, logger, metricsClient),
@@ -104,6 +106,15 @@ func main() {
 	go func() {
 		defer shutdownManager.Done()
 		outboxWorker.Run(workerCtx)
+	}()
+
+	// ride.accepted consumer: currently a placeholder (logs only) — no
+	// persisted driver-side state exists yet to update on a match.
+	rideAcceptedConsumer := consumers.NewRideAcceptedConsumer(application, kafkaBroker)
+	shutdownManager.Add(1)
+	go func() {
+		defer shutdownManager.Done()
+		rideAcceptedConsumer.Run(workerCtx, "ride.accepted")
 	}()
 
 	// Start server in a goroutine

@@ -9,6 +9,7 @@ import (
 	app "ride-service/internal/application"
 	"ride-service/internal/application/command"
 	"ride-service/internal/application/query"
+	"ride-service/internal/consumers"
 	"ride-service/internal/infrastructure/health"
 	kafkainfra "ride-service/internal/infrastructure/kafka"
 	"ride-service/internal/infrastructure/metrics"
@@ -42,7 +43,8 @@ func main() {
 
 	application := app.Application{
 		Commands: app.Commands{
-			CreateRide: command.NewCreateRideHandler(rideRepo, outboxRepo, transactionManager, logger, metricsClient),
+			CreateRide:      command.NewCreateRideHandler(rideRepo, outboxRepo, transactionManager, logger, metricsClient),
+			MarkRideMatched: command.NewMarkRideMatchedHandler(rideRepo, logger, metricsClient),
 		},
 		Queries: app.Queries{
 			GetRideList: query.NewGetRideListHandler(rideRepo, logger, metricsClient),
@@ -92,6 +94,15 @@ func main() {
 	go func() {
 		defer shutdownManager.Done()
 		outboxWorker.Run(workerCtx)
+	}()
+
+	// ride.accepted consumer: flips a matched ride's driver_id/status/matched_at
+	// once matching-service publishes the match.
+	rideAcceptedConsumer := consumers.NewRideAcceptedConsumer(application, kafkaBroker)
+	shutdownManager.Add(1)
+	go func() {
+		defer shutdownManager.Done()
+		rideAcceptedConsumer.Run(workerCtx, "ride.accepted")
 	}()
 
 	// Start server in a goroutine

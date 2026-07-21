@@ -17,6 +17,7 @@ type Commands struct {
 	UpdateDriverProfile decorator.CommandHandlerNoResult[command.UpdateDriverProfile]
 	CreateShift         decorator.CommandHandler[command.CreateShift, command.CreateShiftResult]
 	UpdateShift         decorator.CommandHandlerNoResult[command.UpdateShift]
+	ProcessRideAccepted decorator.CommandHandlerNoResult[command.ProcessRideAccepted]
 }
 
 type Queries struct {

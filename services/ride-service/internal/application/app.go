@@ -13,7 +13,8 @@ type Application struct {
 }
 
 type Commands struct {
-	CreateRide decorator.CommandHandler[command.CreateRide, command.CreateRideResult]
+	CreateRide      decorator.CommandHandler[command.CreateRide, command.CreateRideResult]
+	MarkRideMatched decorator.CommandHandlerNoResult[command.MarkRideMatched]
 }
 
 type Queries struct {

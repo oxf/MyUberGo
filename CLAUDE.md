@@ -127,7 +127,7 @@ The README documents a full target matching algorithm (radius discovery → weig
 - **Rate limiting**: `driver:{driverId}:notifications:minute` INCR/EXPIRE, capped at 3/minute — implemented as a sliding window (each offer resets the 60s TTL) rather than a strict fixed window.
 - **`ride:{rideId}:cancelled`** is checked on accept but nothing sets it yet — no `ride.cancelled` consumer exists anywhere in the codebase.
 - **`GET /drivers/{driverId}/offer`** lets a driver poll for their current offer (404 if none) — there's no Notification service to push offers, so polling is the only delivery mechanism for now.
-- **Not yet wired end-to-end**: `ride-service` doesn't consume `ride.accepted` (still Stage 1), so a matched ride's Postgres row never actually flips to `Matched` status — `ride.accepted` is published correctly but has no consumer yet.
+- **Now wired end-to-end on the ride side**: `ride-service` consumes `ride.accepted` (`internal/consumers/ride_accepted_consumer.go`) and flips the matched ride's Postgres row to `driver_id`/`status='Matched'`/`matched_at` via a new `MarkRideMatched` command, guarded to be idempotent against redelivery. `driver-service` also consumes it (`internal/consumers/ride_accepted_consumer.go` → `ProcessRideAccepted` command), but that handler is currently a logging-only placeholder — there's no persisted "driver is on a ride" state today (`driver_profile.status` only allows `Offline`/`Online`) and no `ride.completed`/`ride.cancelled` event yet to ever reverse it.
 
 Remaining work toward the README's full target: geo-based discovery (needs the Location service), TIERED broadcast escalation, and the Stage-3 concurrent fan-out conversion (goroutines/channels/`select` for broadcasting offers) — see `PLAN.md`.
 

@@ -101,6 +101,20 @@ func (r *PostgresRideRepository) GetRideByID(ctx context.Context, id string) (*d
 	return ride, err
 }
 
+// MarkRideMatched flips a ride to Matched and assigns its driver. The
+// "AND status = 'Requested'" guard makes this idempotent against Kafka's
+// at-most-once redelivery of ride.accepted: a duplicate/late delivery
+// matches zero rows and is a no-op rather than an error.
+func (r *PostgresRideRepository) MarkRideMatched(ctx context.Context, rideID, driverID string, matchedAt time.Time) error {
+	executor := Executor(ctx, r.db)
+	_, err := executor.ExecContext(ctx, `
+		UPDATE ride.ride
+		SET driver_id = $1, status = 'Matched', matched_at = $2
+		WHERE id = $3 AND status = 'Requested'
+	`, driverID, matchedAt, rideID)
+	return err
+}
+
 // scanRide reads one ride row, normalizing created_at to RFC3339 and the
 // nullable driver_id column to a *string (nil until a ride is matched).
 func scanRide(row interface{ Scan(dest ...any) error }) (*domain.Ride, error) {
