@@ -20,8 +20,8 @@ type Commands struct {
 }
 
 type Queries struct {
-	GetDriverList decorator.QueryHandler[query.GetDriverList, []*domain.DriverProfile]
+	GetDriverList decorator.QueryHandler[query.GetDriverList, query.PagedResult[*domain.DriverProfile]]
 	GetDriverByID decorator.QueryHandler[query.GetDriverByID, *domain.DriverProfile]
-	GetShiftList  decorator.QueryHandler[query.GetShiftList, []*domain.Shift]
+	GetShiftList  decorator.QueryHandler[query.GetShiftList, query.PagedResult[*domain.Shift]]
 	GetShiftByID  decorator.QueryHandler[query.GetShiftByID, *domain.Shift]
 }

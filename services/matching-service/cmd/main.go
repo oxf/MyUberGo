@@ -2,36 +2,29 @@ package main
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"log"
-	app "matching-service/internal/application"
-	"matching-service/internal/application/command"
-	"matching-service/internal/consumers"
-	"matching-service/internal/infrastructure/cache"
-	"matching-service/internal/infrastructure/metrics"
+	"net/http"
 	"os"
 	"time"
 
-	"github.com/google/uuid"
-	_ "github.com/lib/pq"
-	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
+	app "matching-service/internal/application"
+	"matching-service/internal/application/command"
+	"matching-service/internal/application/query"
+	"matching-service/internal/consumers"
+	"matching-service/internal/infrastructure/cache"
+	"matching-service/internal/infrastructure/health"
+	kafkainfra "matching-service/internal/infrastructure/kafka"
+	"matching-service/internal/infrastructure/metrics"
+	"matching-service/internal/infrastructure/shutdown"
+	"matching-service/internal/interfaces/http/handler"
+	"matching-service/internal/interfaces/http/middleware"
+	"matching-service/internal/workers"
+
 	"github.com/redis/go-redis/v9"
-	"github.com/segmentio/kafka-go"
 	"github.com/sirupsen/logrus"
 )
 
-var db *sql.DB
-var kafkaBroker string
-
 func main() {
-	dsn := getenv("PG_DSN", "postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable")
-	var err error
-	db, err = sql.Open("postgres", dsn)
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	redisUrl := getenv("REDIS_URL", "redis:6379")
 	redisDb := redis.NewClient(&redis.Options{
 		Addr:     redisUrl,
@@ -39,144 +32,97 @@ func main() {
 		DB:       0,
 	})
 
+	kafkaBroker := getenv("KAFKA_BROKER", "kafka:29092")
+	port := getenv("SERVICE_PORT", "8002")
+
 	driverRepo := cache.NewDriverRepository(redisDb)
 	rideRepo := cache.NewRideRepository(redisDb)
-
-	kafkaBroker = getenv("KAFKA_BROKER", "kafka:29092")
+	offerRepo := cache.NewOfferRepository(redisDb)
 
 	// create logger and metrics client used by decorators
 	logger := logrus.NewEntry(logrus.New())
 	metricsClient := metrics.NewLoggingMetricsClient(logger)
 
+	publisher := kafkainfra.NewPublisher(kafkaBroker)
+	defer publisher.Close()
+
 	application := app.Application{
 		Commands: app.Commands{
-
-			CreateDriver: command.NewCreateDriverHandler(driverRepo, logger, metricsClient),
-			CreateRide:   command.NewCreateRideHandler(rideRepo, logger, metricsClient),
+			UpsertDriver:    command.NewUpsertDriverHandler(driverRepo, logger, metricsClient),
+			CreateRide:      command.NewCreateRideHandler(rideRepo, logger, metricsClient),
+			BroadcastOffers: command.NewBroadcastOffersHandler(rideRepo, driverRepo, offerRepo, logger, metricsClient),
+			AcceptRide:      command.NewAcceptRideHandler(rideRepo, driverRepo, offerRepo, publisher, logger, metricsClient),
 		},
-		Queries: app.Queries{},
+		Queries: app.Queries{
+			GetDriverOffer: query.NewGetDriverOfferHandler(rideRepo, offerRepo, logger, metricsClient),
+		},
 	}
 
-	rideConsumer := consumers.NewRideAcceptedConsumer(application)
-	driverConsumer := consumers.NewShiftUpdatedConsumer(application)
+	matchingHandler := handler.NewMatchingHandler(application)
 
-	go rideConsumer.Run("ride.requested")
-	go driverConsumer.Run("shift.updated")
+	// Initialize health checker (Redis-backed — matching-service has no Postgres)
+	healthChecker := health.NewChecker(redisDb, 5*time.Second)
+	healthChecker.Start()
+	defer healthChecker.Stop()
 
-	select {}
-}
+	mux := http.NewServeMux()
 
-func startRideRequestedConsumer() {
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: []string{kafkaBroker},
-		Topic:   "ride.requested",
-		GroupID: "matching-service",
-	})
+	// Health check endpoints
+	mux.HandleFunc("GET /health/live", healthChecker.LiveHandler)
+	mux.HandleFunc("GET /health/ready", healthChecker.ReadyHandler)
 
-	defer reader.Close()
+	// API endpoints
+	mux.HandleFunc("POST /rides/{rideId}/accept", matchingHandler.AcceptRide)
+	mux.HandleFunc("GET /drivers/{driverId}/offer", matchingHandler.GetDriverOffer)
 
-	log.Println("ride-requested consumer started")
+	// Create HTTP server
+	server := &http.Server{
+		Addr:         ":" + port,
+		Handler:      middleware.RequestID(mux),
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
 
-	for {
-		msg, err := reader.ReadMessage(context.Background())
-		if err != nil {
-			log.Println("consumer error:", err)
-			continue
+	// Create shutdown manager with 30s timeout
+	shutdownManager := shutdown.NewManager(server, 30*time.Second)
+
+	// Cancellable context for background goroutines (Kafka consumers + retry worker)
+	bgCtx, cancelBg := context.WithCancel(context.Background())
+	shutdownManager.OnStop(cancelBg)
+
+	rideConsumer := consumers.NewRideRequestedConsumer(application, kafkaBroker)
+	driverConsumer := consumers.NewShiftUpdatedConsumer(application, kafkaBroker)
+
+	shutdownManager.Add(2)
+	go func() {
+		defer shutdownManager.Done()
+		rideConsumer.Run(bgCtx, "ride.requested")
+	}()
+	go func() {
+		defer shutdownManager.Done()
+		driverConsumer.Run(bgCtx, "shift.updated")
+	}()
+
+	// Match retry worker: sweeps pending_ride:* and re-broadcasts offers for
+	// rides whose deadline lapsed without an accept.
+	retryWorker := workers.NewMatchRetryWorker(offerRepo, application.Commands.BroadcastOffers, logger, 5*time.Second)
+	shutdownManager.Add(1)
+	go func() {
+		defer shutdownManager.Done()
+		retryWorker.Run(bgCtx)
+	}()
+
+	// Start server in a goroutine
+	go func() {
+		log.Println("matching-service listening on :" + port)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("Server error: %v\n", err)
 		}
+	}()
 
-		var event contractsKafka.RideRequestedEvent
-
-		err = json.Unmarshal(msg.Value, &event)
-		if err != nil {
-			log.Println("failed to deserialize event:", err)
-			continue
-		}
-
-		log.Printf(
-			"Ride request received. RideID=%s ClientID=%s Price=%.2f",
-			event.RideID,
-			event.ClientID,
-			event.Price,
-		)
-
-		if err := handleRideRequested(event); err != nil {
-			log.Println("handle error:", err)
-		}
-	}
-}
-
-func handleRideRequested(event contractsKafka.RideRequestedEvent) error {
-
-	// 1. Get 5 available drivers. First version - by rating TODO add ordering by location
-	rows, err := db.Query(`
-		SELECT id
-		FROM driver.driver_profile
-		WHERE status = 'Online'
-		ORDER BY rating DESC
-		LIMIT 5
-	`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	type driver struct {
-		id string
-	}
-
-	var drivers []driver
-
-	for rows.Next() {
-		var d driver
-		if err := rows.Scan(&d.id); err != nil {
-			return err
-		}
-		drivers = append(drivers, d)
-	}
-
-	if len(drivers) == 0 {
-		log.Println("no drivers available for ride:", event.RideID)
-		return nil
-	}
-
-	// 2. Insert offers into DB
-	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{
-		Isolation: sql.LevelReadCommitted,
-	})
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	for i, d := range drivers {
-
-		_, err := tx.Exec(`
-			INSERT INTO matching.ride_offer
-			(id, ride_id, driver_id, status, expires_at, offer_rank)
-			VALUES
-			($1,$2,$3,'Pending',$4,$5)
-		`,
-			uuid.New().String(),
-			event.RideID,
-			d.id,
-			time.Now().Add(30*time.Second),
-			i,
-		)
-
-		if err != nil {
-			return err
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-
-	log.Printf("created %d ride offers for ride %s", len(drivers), event.RideID)
-
-	// 3. TODO: send notifications (later via Kafka)
-
-	return nil
+	// Wait for shutdown signal and perform graceful shutdown
+	shutdownManager.WaitForShutdown()
 }
 
 func getenv(k, d string) string {

@@ -19,12 +19,14 @@ type UpdateShift struct {
 
 type UpdateShiftHandler struct {
 	repo        domain.ShiftRepository
+	profileRepo domain.DriverProfileRepository
 	outboxRepo  domain.OutboxRepository
 	transaction services.TransactionManager
 }
 
 func NewUpdateShiftHandler(
 	repo domain.ShiftRepository,
+	profileRepo domain.DriverProfileRepository,
 	outboxRepo domain.OutboxRepository,
 	transaction services.TransactionManager,
 	logger *logrus.Entry,
@@ -33,6 +35,7 @@ func NewUpdateShiftHandler(
 
 	handler := &UpdateShiftHandler{
 		repo:        repo,
+		profileRepo: profileRepo,
 		outboxRepo:  outboxRepo,
 		transaction: transaction,
 	}
@@ -49,10 +52,6 @@ func (h *UpdateShiftHandler) Handle(
 	cmd UpdateShift,
 ) error {
 
-	if cmd.Status == "Ended" {
-		return h.repo.EndShift(ctx, cmd.ID)
-	}
-
 	return h.transaction.WithinTransaction(ctx, func(ctx context.Context) error {
 
 		shift, err := h.repo.GetShiftByID(ctx, cmd.ID)
@@ -60,11 +59,21 @@ func (h *UpdateShiftHandler) Handle(
 			return err
 		}
 
-		// ideally:
-		// shift.UpdateStatus(cmd.Status)
-		shift.Status = cmd.Status
+		if cmd.Status == "Ended" {
+			// Previously this returned early without an outbox row, so
+			// matching-service never learned a driver went offline.
+			if err := h.repo.EndShift(ctx, cmd.ID); err != nil {
+				return err
+			}
+		} else {
+			shift.Status = cmd.Status
+			if err := h.repo.UpdateShift(ctx, shift); err != nil {
+				return err
+			}
+		}
 
-		if err := h.repo.UpdateShift(ctx, shift); err != nil {
+		profile, err := h.profileRepo.GetDriverProfileByID(ctx, shift.DriverID)
+		if err != nil {
 			return err
 		}
 
@@ -72,6 +81,7 @@ func (h *UpdateShiftHandler) Handle(
 			ShiftID:   shift.ID,
 			DriverID:  shift.DriverID,
 			Status:    cmd.Status,
+			Rating:    profile.Rating,
 			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 		}
 

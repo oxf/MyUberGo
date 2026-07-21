@@ -2,7 +2,9 @@ package app
 
 import (
 	"matching-service/internal/application/command"
+	"matching-service/internal/application/query"
 	"matching-service/internal/common/decorator"
+	"matching-service/internal/domain"
 )
 
 type Application struct {
@@ -11,9 +13,12 @@ type Application struct {
 }
 
 type Commands struct {
-	CreateDriver decorator.CommandHandlerNoResult[command.CreateDriver]
-	CreateRide   decorator.CommandHandlerNoResult[command.CreateRide]
+	UpsertDriver    decorator.CommandHandlerNoResult[command.UpsertDriver]
+	CreateRide      decorator.CommandHandlerNoResult[command.CreateRide]
+	BroadcastOffers decorator.CommandHandlerNoResult[command.BroadcastOffers]
+	AcceptRide      decorator.CommandHandlerNoResult[command.AcceptRide]
 }
 
 type Queries struct {
+	GetDriverOffer decorator.QueryHandler[query.GetDriverOffer, *domain.DriverOffer]
 }

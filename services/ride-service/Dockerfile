@@ -11,8 +11,9 @@ COPY services/ride-service/go.mod services/ride-service/go.sum ./
 COPY services/contracts /contracts
 RUN go mod download
 
-# Copy the command source
-COPY services/ride-service/cmd ./cmd
+# Copy the ride-service source (cmd and internal packages)
+# This ensures all packages referenced by the module are available during build.
+COPY services/ride-service .
 
 # Build statically linked binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \

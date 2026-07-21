@@ -5,6 +5,7 @@ import (
 	"driver-service/internal/application/command"
 	"driver-service/internal/application/query"
 	commonerrors "driver-service/internal/common/errors"
+	"driver-service/internal/domain"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,15 +64,27 @@ func (h *DriverProfileHandler) Update(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *DriverProfileHandler) GetList(w http.ResponseWriter, r *http.Request) {
-	page, _ := parseIntQuery(r, "page", 0)
-	pageSize, _ := parseIntQuery(r, "pageSize", 10)
+	params, err := parseListParams(r, domain.DriverProfileSortColumns, "createdAt")
+	if err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
-	result, err := h.app.Queries.GetDriverList.Handle(r.Context(), query.GetDriverList{Page: page, PageSize: pageSize})
+	result, err := h.app.Queries.GetDriverList.Handle(r.Context(), query.GetDriverList{
+		Page: params.page, PageSize: params.pageSize, SortBy: params.sortBy, SortDir: params.sortDir,
+	})
 	if err != nil {
 		writeError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, result)
+
+	items := make([]contracts.DriverProfileDto, 0, len(result.Items))
+	for _, d := range result.Items {
+		items = append(items, toDriverProfileDto(d))
+	}
+	writeJSON(w, contracts.PagedResponse[contracts.DriverProfileDto]{
+		Items: items, Page: params.page, PageSize: params.pageSize, TotalCount: result.TotalCount,
+	})
 }
 
 func (h *DriverProfileHandler) GetByID(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +94,7 @@ func (h *DriverProfileHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, result)
+	writeJSON(w, toDriverProfileDto(result))
 }
 
 func writeError(w http.ResponseWriter, msg string, code int) {

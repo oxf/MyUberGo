@@ -1,0 +1,22 @@
+meta {
+  name: Accept Ride
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://localhost:8002/rides/00000000-0000-0000-0000-000000000000/accept
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "driverId": "9e8bbaad-4314-4983-af88-f5a56b3806bc"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

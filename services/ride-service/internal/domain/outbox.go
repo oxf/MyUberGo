@@ -13,11 +13,7 @@ type OutboxMessage struct {
 
 type OutboxRepository interface {
 	Insert(ctx context.Context, message *OutboxMessage) error
-}
-
-// Event interfaces for domain events
-type DomainEvent interface {
-	EventType() string
-	Topic() string
-	Payload() interface{}
+	GetUnprocessedBatch(ctx context.Context, limit int) ([]*OutboxMessage, error)
+	MarkProcessed(ctx context.Context, id string) error
+	IncrementRetries(ctx context.Context, id string) error
 }
