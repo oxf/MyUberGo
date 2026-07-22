@@ -72,7 +72,9 @@ CREATE TABLE IF NOT EXISTS ride.ride (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     matched_at TIMESTAMP WITH TIME ZONE,
     started_at TIMESTAMP WITH TIME ZONE,
-    finished_at TIMESTAMP WITH TIME ZONE
+    finished_at TIMESTAMP WITH TIME ZONE,
+    cancelled_at TIMESTAMP WITH TIME ZONE,
+    cancellation_reason TEXT
 );
 
 CREATE INDEX idx_ride_client_id ON ride.ride(client_id);

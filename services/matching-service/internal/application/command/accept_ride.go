@@ -86,7 +86,15 @@ func (h *AcceptRideHandler) Handle(ctx context.Context, cmd AcceptRide) error {
 		return cmnerrors.ErrRideTaken
 	}
 
-	if err := h.rides.MarkMatched(ctx, cmd.RideID, cmd.DriverID); err != nil {
+	// Captured before RemoveOnline erases the ZSET score, and cached on the
+	// ride so a later cancellation can restore the driver without a
+	// cross-service lookup.
+	rating, err := h.drivers.Rating(ctx, cmd.DriverID)
+	if err != nil {
+		return err
+	}
+
+	if err := h.rides.MarkMatched(ctx, cmd.RideID, cmd.DriverID, rating); err != nil {
 		return err
 	}
 	if err := h.offers.DeletePending(ctx, cmd.RideID); err != nil {
@@ -96,7 +104,8 @@ func (h *AcceptRideHandler) Handle(ctx context.Context, cmd AcceptRide) error {
 		return err
 	}
 	// Matched drivers leave the pool; they re-enter on their next
-	// shift.updated with status Online (no ride start/finish flow exists yet).
+	// shift.updated with status Online, or immediately if the ride gets
+	// cancelled (see CancelRideHandler).
 	if err := h.drivers.RemoveOnline(ctx, cmd.DriverID); err != nil {
 		return err
 	}

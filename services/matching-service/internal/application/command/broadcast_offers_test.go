@@ -13,9 +13,10 @@ import (
 
 type fakeRides struct {
 	domain.RideRepository
-	ride    *domain.Ride
-	failed  []string
-	matched []string
+	ride      *domain.Ride
+	failed    []string
+	matched   []string
+	cancelled []string
 }
 
 func (f *fakeRides) GetRide(ctx context.Context, id string) (*domain.Ride, error) { return f.ride, nil }
@@ -23,15 +24,20 @@ func (f *fakeRides) MarkFailed(ctx context.Context, id string) error {
 	f.failed = append(f.failed, id)
 	return nil
 }
-func (f *fakeRides) MarkMatched(ctx context.Context, rideID, driverID string) error {
+func (f *fakeRides) MarkMatched(ctx context.Context, rideID, driverID string, driverRating float64) error {
 	f.matched = append(f.matched, rideID+"/"+driverID)
+	return nil
+}
+func (f *fakeRides) MarkCancelled(ctx context.Context, id string) error {
+	f.cancelled = append(f.cancelled, id)
 	return nil
 }
 
 type fakeDrivers struct {
 	domain.DriverRepository
-	pool    []domain.Candidate
-	removed []string
+	pool      []domain.Candidate
+	removed   []string
+	addedBack map[string]float64
 }
 
 func (f *fakeDrivers) TopOnlineDrivers(ctx context.Context, limit int) ([]domain.Candidate, error) {
@@ -42,6 +48,16 @@ func (f *fakeDrivers) TopOnlineDrivers(ctx context.Context, limit int) ([]domain
 }
 func (f *fakeDrivers) RemoveOnline(ctx context.Context, id string) error {
 	f.removed = append(f.removed, id)
+	return nil
+}
+func (f *fakeDrivers) Rating(ctx context.Context, id string) (float64, error) {
+	return 0, nil
+}
+func (f *fakeDrivers) AddOnline(ctx context.Context, id string, rating float64) error {
+	if f.addedBack == nil {
+		f.addedBack = map[string]float64{}
+	}
+	f.addedBack[id] = rating
 	return nil
 }
 
@@ -86,6 +102,10 @@ func (f *fakeOffers) CurrentOffer(ctx context.Context, driverID string) (string,
 }
 func (f *fakeOffers) IsCancelled(ctx context.Context, rideID string) (bool, error) {
 	return f.cancelled, nil
+}
+func (f *fakeOffers) SetCancelled(ctx context.Context, rideID string) error {
+	f.cancelled = true
+	return nil
 }
 func (f *fakeOffers) AcceptedBy(ctx context.Context, rideID string) (string, error) {
 	return f.acceptedBy, nil

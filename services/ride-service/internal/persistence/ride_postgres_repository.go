@@ -115,6 +115,38 @@ func (r *PostgresRideRepository) MarkRideMatched(ctx context.Context, rideID, dr
 	return err
 }
 
+// GetRideForUpdate locks the ride row within the current transaction so its
+// status/ownership can be checked and then mutated atomically.
+func (r *PostgresRideRepository) GetRideForUpdate(ctx context.Context, id string) (*domain.Ride, error) {
+	executor := Executor(ctx, r.db)
+	row := executor.QueryRowContext(ctx, `
+		SELECT id, client_id, driver_id, status, pickup_lat, pickup_lng, pickup_address,
+		       dest_lat, dest_lng, dest_address, estimated_price, estimated_distance_km, created_at
+		FROM ride.ride
+		WHERE id = $1
+		FOR UPDATE
+	`, id)
+
+	ride, err := scanRide(row)
+	if err == sql.ErrNoRows {
+		return nil, commonerrors.ErrNotFound
+	}
+	return ride, err
+}
+
+// CancelRide flips a ride to Cancelled. Callers are expected to have already
+// validated ownership/current status via GetRideForUpdate in the same
+// transaction, so this is an unconditional write.
+func (r *PostgresRideRepository) CancelRide(ctx context.Context, id, reason string) error {
+	executor := Executor(ctx, r.db)
+	_, err := executor.ExecContext(ctx, `
+		UPDATE ride.ride
+		SET status = 'Cancelled', cancelled_at = NOW(), cancellation_reason = $2
+		WHERE id = $1
+	`, id, reason)
+	return err
+}
+
 // scanRide reads one ride row, normalizing created_at to RFC3339 and the
 // nullable driver_id column to a *string (nil until a ride is matched).
 func scanRide(row interface{ Scan(dest ...any) error }) (*domain.Ride, error) {

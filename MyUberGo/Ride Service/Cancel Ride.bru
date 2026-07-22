@@ -1,0 +1,26 @@
+meta {
+  name: Cancel Ride
+  type: http
+  seq: 4
+}
+
+delete {
+  url: http://localhost:8001/ride/e8152750-0947-4c0b-8342-97869a9a9dac
+  body: json
+  auth: inherit
+}
+
+headers {
+  X-User-Id: 4741fa01-7b4e-448b-a1e0-755bae6a5a49
+}
+
+body:json {
+  {
+    "reason": "Changed my mind"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

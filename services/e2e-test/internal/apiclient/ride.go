@@ -38,3 +38,13 @@ func (c *RideClient) ListRides(ctx context.Context, page, pageSize int) (contrac
 	err := c.doJSON(ctx, http.MethodGet, path, nil, nil, &resp)
 	return resp, err
 }
+
+// CancelRide takes the caller's user ID explicitly (rather than reusing the
+// ride's own client) so callers can deep-verify the ownership check by
+// cancelling as a different user.
+func (c *RideClient) CancelRide(ctx context.Context, userID, rideID string, req contracts.CancelRideRequest) (contracts.CancelRideResponse, error) {
+	var resp contracts.CancelRideResponse
+	headers := map[string]string{"X-User-Id": userID}
+	err := c.doJSON(ctx, http.MethodDelete, "/ride/"+rideID, headers, req, &resp)
+	return resp, err
+}

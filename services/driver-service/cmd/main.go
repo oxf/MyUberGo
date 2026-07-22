@@ -44,11 +44,12 @@ func main() {
 
 	application := app.Application{
 		Commands: app.Commands{
-			CreateDriverProfile: command.NewCreateDriverProfileHandler(profileRepo, logger, metricsClient),
-			UpdateDriverProfile: command.NewUpdateDriverProfileHandler(profileRepo, logger, metricsClient),
-			CreateShift:         command.NewCreateShiftHandler(shiftRepo),
-			UpdateShift:         command.NewUpdateShiftHandler(shiftRepo, profileRepo, outboxRepo, transactionManager, logger, metricsClient),
-			ProcessRideAccepted: command.NewProcessRideAcceptedHandler(logger, metricsClient),
+			CreateDriverProfile:  command.NewCreateDriverProfileHandler(profileRepo, logger, metricsClient),
+			UpdateDriverProfile:  command.NewUpdateDriverProfileHandler(profileRepo, logger, metricsClient),
+			CreateShift:          command.NewCreateShiftHandler(shiftRepo),
+			UpdateShift:          command.NewUpdateShiftHandler(shiftRepo, profileRepo, outboxRepo, transactionManager, logger, metricsClient),
+			ProcessRideAccepted:  command.NewProcessRideAcceptedHandler(logger, metricsClient),
+			ProcessRideCancelled: command.NewProcessRideCancelledHandler(logger, metricsClient),
 		},
 		Queries: app.Queries{
 			GetDriverList: query.NewGetDriverListHandler(profileRepo, logger, metricsClient),
@@ -115,6 +116,14 @@ func main() {
 	go func() {
 		defer shutdownManager.Done()
 		rideAcceptedConsumer.Run(workerCtx, "ride.accepted")
+	}()
+
+	// ride.cancelled consumer: same placeholder rationale as above.
+	rideCancelledConsumer := consumers.NewRideCancelledConsumer(application, kafkaBroker)
+	shutdownManager.Add(1)
+	go func() {
+		defer shutdownManager.Done()
+		rideCancelledConsumer.Run(workerCtx, "ride.cancelled")
 	}()
 
 	// Start server in a goroutine

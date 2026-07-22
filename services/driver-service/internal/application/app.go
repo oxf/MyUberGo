@@ -13,11 +13,12 @@ type Application struct {
 }
 
 type Commands struct {
-	CreateDriverProfile decorator.CommandHandler[command.CreateDriverProfile, command.CreateDriverProfileResult]
-	UpdateDriverProfile decorator.CommandHandlerNoResult[command.UpdateDriverProfile]
-	CreateShift         decorator.CommandHandler[command.CreateShift, command.CreateShiftResult]
-	UpdateShift         decorator.CommandHandlerNoResult[command.UpdateShift]
-	ProcessRideAccepted decorator.CommandHandlerNoResult[command.ProcessRideAccepted]
+	CreateDriverProfile  decorator.CommandHandler[command.CreateDriverProfile, command.CreateDriverProfileResult]
+	UpdateDriverProfile  decorator.CommandHandlerNoResult[command.UpdateDriverProfile]
+	CreateShift          decorator.CommandHandler[command.CreateShift, command.CreateShiftResult]
+	UpdateShift          decorator.CommandHandlerNoResult[command.UpdateShift]
+	ProcessRideAccepted  decorator.CommandHandlerNoResult[command.ProcessRideAccepted]
+	ProcessRideCancelled decorator.CommandHandlerNoResult[command.ProcessRideCancelled]
 }
 
 type Queries struct {

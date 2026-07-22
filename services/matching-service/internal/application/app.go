@@ -17,6 +17,7 @@ type Commands struct {
 	CreateRide      decorator.CommandHandlerNoResult[command.CreateRide]
 	BroadcastOffers decorator.CommandHandlerNoResult[command.BroadcastOffers]
 	AcceptRide      decorator.CommandHandlerNoResult[command.AcceptRide]
+	CancelRide      decorator.CommandHandlerNoResult[command.CancelRide]
 }
 
 type Queries struct {

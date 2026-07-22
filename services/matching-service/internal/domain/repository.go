@@ -11,8 +11,9 @@ type RideRepository interface {
 	SaveRide(ctx context.Context, event contracts.RideRequestedEvent) error
 	// GetRide returns cmnerrors.ErrNotFound when the ride hash doesn't exist.
 	GetRide(ctx context.Context, rideID string) (*Ride, error)
-	MarkMatched(ctx context.Context, rideID, driverID string) error
+	MarkMatched(ctx context.Context, rideID, driverID string, driverRating float64) error
 	MarkFailed(ctx context.Context, rideID string) error
+	MarkCancelled(ctx context.Context, rideID string) error
 }
 
 type DriverRepository interface {
@@ -20,6 +21,12 @@ type DriverRepository interface {
 	// TopOnlineDrivers returns up to limit candidates, best rating first.
 	TopOnlineDrivers(ctx context.Context, limit int) ([]Candidate, error)
 	RemoveOnline(ctx context.Context, driverID string) error
+	// Rating returns a driver's cached score from drivers:online, or 0 if
+	// they're not currently a member (e.g. already removed).
+	Rating(ctx context.Context, driverID string) (float64, error)
+	// AddOnline re-adds a driver to drivers:online, e.g. after a matched
+	// ride they were reserved for gets cancelled.
+	AddOnline(ctx context.Context, driverID string, rating float64) error
 }
 
 type OfferRepository interface {
@@ -36,6 +43,9 @@ type OfferRepository interface {
 	// AcceptedBy returns "" when nobody has claimed the ride.
 	AcceptedBy(ctx context.Context, rideID string) (string, error)
 	IsCancelled(ctx context.Context, rideID string) (bool, error)
+	// SetCancelled marks the ride as cancelled so any in-flight AcceptRide
+	// racing the cancellation is rejected by IsCancelled.
+	SetCancelled(ctx context.Context, rideID string) error
 	OfferCount(ctx context.Context, driverID string) (int64, error)
 	IncrOfferCount(ctx context.Context, driverID string) error
 	SetPending(ctx context.Context, p PendingRide) error

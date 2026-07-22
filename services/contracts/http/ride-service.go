@@ -36,6 +36,15 @@ type RideDto struct {
 	CreatedAt           string          `json:"createdAt"`
 }
 
+type CancelRideRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+type CancelRideResponse struct {
+	Status string  `json:"status"`
+	Fee    float64 `json:"fee"`
+}
+
 type ErrorResponse struct {
 	Error string `json:"error"`
 }

@@ -7,7 +7,7 @@ import (
 
 func TestToDriverProfileDto(t *testing.T) {
 	dto := toDriverProfileDto(&domain.DriverProfile{
-		ID: "p1", UserID: "u1", DriverName: "Ann", Phone: "+380501234567",
+		ID: "p1", UserID: "u1", DriverName: "Ann", Phone: "+357501234567",
 		Rating: 4.9, VehicleType: "Sedan", LicencePlate: "AA1234BB",
 		Status: "Online", TotalRidesCompleted: 7, CreatedAt: "2026-07-18T10:00:00Z",
 	})

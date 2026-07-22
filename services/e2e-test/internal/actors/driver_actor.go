@@ -33,7 +33,7 @@ type DriverActor struct {
 }
 
 func (a *DriverActor) Run(ctx context.Context) {
-	a.phone = fmt.Sprintf("+38050%07d", a.Rnd.Intn(10000000))
+	a.phone = fmt.Sprintf("+35750%07d", a.Rnd.Intn(10000000))
 
 	acc := a.signupAndLogin(ctx, a.ID, a.Email, "E2E "+a.ID, a.phone, contracts.RoleDriver, a.Rnd)
 	if acc == nil {
@@ -182,7 +182,7 @@ func (a *DriverActor) verifyShiftInList(ctx context.Context, shiftID string) {
 }
 
 func (a *DriverActor) updateAndVerifyPhone(ctx context.Context) {
-	a.phone = fmt.Sprintf("+38050%07d", a.Rnd.Intn(10000000))
+	a.phone = fmt.Sprintf("+35750%07d", a.Rnd.Intn(10000000))
 
 	start := time.Now()
 	err := a.Driver.UpdateProfile(ctx, a.profileID, contracts.UpdateDriverProfileDto{
@@ -272,7 +272,12 @@ func (a *DriverActor) acceptOffer(ctx context.Context, rideID string) {
 	start = time.Now()
 	_, err = a.Matching.AcceptRide(ctx, rideID, contracts.AcceptRideRequest{DriverId: a.profileID})
 	v = &Verify{}
-	v.True("duplicate accept", errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict,
-		"expected 409 on duplicate accept")
+	// 409 = ride already taken (the expected case). 400 is also legitimate:
+	// the rider can cancel a just-matched ride at any moment, and if that
+	// race lands between the two accept calls, IsCancelled short-circuits
+	// AcceptRideHandler before it reaches the "already taken" check.
+	legitimate := errors.As(err, &apiErr) && (apiErr.Status == http.StatusConflict || apiErr.Status == http.StatusBadRequest)
+	v.True("duplicate accept rejected", legitimate,
+		"expected 409 (already taken) or 400 (ride cancelled) on duplicate accept")
 	a.record(a.ID, "matching.ride.accept.dup", start, nil, v)
 }

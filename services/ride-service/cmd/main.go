@@ -10,6 +10,7 @@ import (
 	"ride-service/internal/application/command"
 	"ride-service/internal/application/query"
 	"ride-service/internal/consumers"
+	"ride-service/internal/infrastructure/fee"
 	"ride-service/internal/infrastructure/health"
 	kafkainfra "ride-service/internal/infrastructure/kafka"
 	"ride-service/internal/infrastructure/metrics"
@@ -36,6 +37,7 @@ func main() {
 	rideRepo := persistence.NewPostgresRideRepository(db)
 	outboxRepo := persistence.NewPostgresOutboxRepository(db)
 	transactionManager := persistence.NewPostgresTransactionManager(db)
+	feeCalculator := fee.NewStubCalculator()
 
 	// create logger and metrics client used by decorators
 	logger := logrus.NewEntry(logrus.New())
@@ -45,6 +47,7 @@ func main() {
 		Commands: app.Commands{
 			CreateRide:      command.NewCreateRideHandler(rideRepo, outboxRepo, transactionManager, logger, metricsClient),
 			MarkRideMatched: command.NewMarkRideMatchedHandler(rideRepo, logger, metricsClient),
+			CancelRide:      command.NewCancelRideHandler(rideRepo, outboxRepo, transactionManager, feeCalculator, logger, metricsClient),
 		},
 		Queries: app.Queries{
 			GetRideList: query.NewGetRideListHandler(rideRepo, logger, metricsClient),
@@ -69,6 +72,7 @@ func main() {
 	mux.HandleFunc("POST /request-ride", rideHandler.Create)
 	mux.HandleFunc("GET /ride", rideHandler.GetList)
 	mux.HandleFunc("GET /ride/{id}", rideHandler.GetByID)
+	mux.HandleFunc("DELETE /ride/{id}", rideHandler.Cancel)
 
 	// Create HTTP server
 	server := &http.Server{

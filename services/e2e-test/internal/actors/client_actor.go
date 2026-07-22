@@ -2,12 +2,20 @@ package actors
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"time"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
+
+	"e2e-test/internal/apiclient"
 )
+
+// decoyUserID is a well-formed but never-signed-up user ID, used only to
+// provoke the ownership check on someone else's ride.
+const decoyUserID = "00000000-0000-0000-0000-000000000000"
 
 // ClientActor simulates a rider: signup, login, then request rides forever,
 // deep-verifying each one by reading it back. Rides never get a driver
@@ -36,13 +44,18 @@ func (a *ClientActor) Run(ctx context.Context) {
 
 	for iter := 1; sleepJitter(ctx, a.Interval, a.Rnd); iter++ {
 		rideID := a.requestRide(ctx, acc)
-		if rideID != "" {
+		if rideID == "" {
+			continue
+		}
+		if iter%3 == 0 {
+			a.cancelAndVerifyRide(ctx, acc, rideID)
+		} else {
 			a.verifyRide(ctx, acc, rideID)
 		}
 		if iter%10 == 0 {
 			a.refresh(ctx, a.ID, acc)
 		}
-		if iter%5 == 0 && rideID != "" {
+		if iter%5 == 0 {
 			a.verifyRideInList(ctx, rideID)
 		}
 	}
@@ -85,6 +98,46 @@ func (a *ClientActor) verifyRide(ctx context.Context, acc *account, rideID strin
 		v.True("estimatedPrice", ride.EstimatedPrice > 0, "expected > 0")
 	}
 	a.record(a.ID, "ride.get", start, err, v)
+}
+
+// cancelAndVerifyRide deep-verifies the whole cancellation contract for a
+// just-requested (still "Requested") ride: a non-owner can't cancel it, the
+// owner can, the ride reads back as Cancelled, and a repeat cancel 409s.
+func (a *ClientActor) cancelAndVerifyRide(ctx context.Context, acc *account, rideID string) {
+	var apiErr *apiclient.APIError
+
+	start := time.Now()
+	_, err := a.Ride.CancelRide(ctx, decoyUserID, rideID, contracts.CancelRideRequest{})
+	v := &Verify{}
+	v.True("forbidden", errors.As(err, &apiErr) && apiErr.Status == http.StatusForbidden,
+		"expected 403 cancelling someone else's ride")
+	a.record(a.ID, "ride.cancel.forbidden", start, nil, v)
+
+	start = time.Now()
+	resp, err := a.Ride.CancelRide(ctx, acc.userID, rideID, contracts.CancelRideRequest{Reason: "e2e test cancel"})
+	v = &Verify{}
+	if err == nil {
+		v.Eq("status", resp.Status, "Cancelled")
+	}
+	a.record(a.ID, "ride.cancel", start, err, v)
+	if err != nil {
+		return
+	}
+
+	start = time.Now()
+	ride, err := a.Ride.GetRide(ctx, rideID)
+	v = &Verify{}
+	if err == nil {
+		v.Eq("status", ride.Status, "Cancelled")
+	}
+	a.record(a.ID, "ride.get", start, err, v)
+
+	start = time.Now()
+	_, err = a.Ride.CancelRide(ctx, acc.userID, rideID, contracts.CancelRideRequest{})
+	v = &Verify{}
+	v.True("conflict", errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict,
+		"expected 409 on repeat cancel")
+	a.record(a.ID, "ride.cancel.conflict", start, nil, v)
 }
 
 func (a *ClientActor) verifyRideInList(ctx context.Context, rideID string) {
@@ -136,5 +189,5 @@ func (a *ClientActor) randomRideRequest() contracts.CreateRideRequest {
 }
 
 func (a *ClientActor) randomPhone() string {
-	return fmt.Sprintf("+38099%07d", a.Rnd.Intn(10000000))
+	return fmt.Sprintf("+35799%07d", a.Rnd.Intn(10000000))
 }

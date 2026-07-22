@@ -22,3 +22,11 @@ type RideRequestedEvent struct {
 	Price               float64             `json:"price"`
 	CreatedAt           string              `json:"createdAt"`
 }
+
+type RideCancelledEvent struct {
+	RideID      string  `json:"rideId"`
+	DriverID    *string `json:"driverId,omitempty"`
+	Fee         float64 `json:"fee"`
+	Reason      string  `json:"reason,omitempty"`
+	CancelledAt string  `json:"cancelledAt"`
+}

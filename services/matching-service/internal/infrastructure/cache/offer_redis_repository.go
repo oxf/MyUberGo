@@ -88,10 +88,15 @@ func (r *OfferRepository) AcceptedBy(ctx context.Context, rideID string) (string
 }
 
 func (r *OfferRepository) IsCancelled(ctx context.Context, rideID string) (bool, error) {
-	// Nothing sets this key yet (no ride.cancelled consumer exists anywhere);
-	// checked per the README accept flow so cancellation slots in later.
 	n, err := r.rdb.Exists(ctx, cancelledKey(rideID)).Result()
 	return n > 0, err
+}
+
+// SetCancelled is the producer for cancelledKey, driven by the ride.cancelled
+// consumer. No TTL — mirrors the ride:{id} hash, which also lives for as
+// long as the ride is relevant.
+func (r *OfferRepository) SetCancelled(ctx context.Context, rideID string) error {
+	return r.rdb.Set(ctx, cancelledKey(rideID), "1", 0).Err()
 }
 
 func (r *OfferRepository) OfferCount(ctx context.Context, driverID string) (int64, error) {

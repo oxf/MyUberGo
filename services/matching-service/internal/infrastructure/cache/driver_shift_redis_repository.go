@@ -55,3 +55,15 @@ func (r *DriverRepository) TopOnlineDrivers(ctx context.Context, limit int) ([]d
 func (r *DriverRepository) RemoveOnline(ctx context.Context, driverID string) error {
 	return r.rdb.ZRem(ctx, onlineDriversKey, driverID).Err()
 }
+
+func (r *DriverRepository) Rating(ctx context.Context, driverID string) (float64, error) {
+	score, err := r.rdb.ZScore(ctx, onlineDriversKey, driverID).Result()
+	if err == redis.Nil {
+		return 0, nil
+	}
+	return score, err
+}
+
+func (r *DriverRepository) AddOnline(ctx context.Context, driverID string, rating float64) error {
+	return r.rdb.ZAdd(ctx, onlineDriversKey, redis.Z{Score: rating, Member: driverID}).Err()
+}

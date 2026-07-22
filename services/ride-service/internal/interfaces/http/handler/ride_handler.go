@@ -58,6 +58,42 @@ func (h *RideHandler) Create(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *RideHandler) Cancel(w http.ResponseWriter, r *http.Request) {
+	clientID := r.Header.Get("X-User-Id")
+	if clientID == "" {
+		writeError(w, "X-User-Id header is required", http.StatusBadRequest)
+		return
+	}
+	id := r.PathValue("id")
+
+	var req contracts.CancelRideRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req) // empty/absent body is fine
+	}
+
+	result, err := h.app.Commands.CancelRide.Handle(r.Context(), command.CancelRide{
+		RideID:   id,
+		ClientID: clientID,
+		Reason:   req.Reason,
+	})
+	switch {
+	case errors.Is(err, commonerrors.ErrNotFound):
+		writeError(w, "not found", http.StatusNotFound)
+		return
+	case errors.Is(err, commonerrors.ErrForbidden):
+		writeError(w, "forbidden", http.StatusForbidden)
+		return
+	case errors.Is(err, commonerrors.ErrConflict):
+		writeError(w, "ride is already in a terminal state", http.StatusConflict)
+		return
+	case err != nil:
+		writeError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, contracts.CancelRideResponse{Status: result.Status, Fee: result.Fee})
+}
+
 func (h *RideHandler) GetList(w http.ResponseWriter, r *http.Request) {
 	params, err := parseListParams(r, domain.RideSortColumns, "createdAt")
 	if err != nil {

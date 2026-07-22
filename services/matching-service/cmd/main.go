@@ -52,6 +52,7 @@ func main() {
 			CreateRide:      command.NewCreateRideHandler(rideRepo, logger, metricsClient),
 			BroadcastOffers: command.NewBroadcastOffersHandler(rideRepo, driverRepo, offerRepo, logger, metricsClient),
 			AcceptRide:      command.NewAcceptRideHandler(rideRepo, driverRepo, offerRepo, publisher, logger, metricsClient),
+			CancelRide:      command.NewCancelRideHandler(rideRepo, driverRepo, offerRepo, logger, metricsClient),
 		},
 		Queries: app.Queries{
 			GetDriverOffer: query.NewGetDriverOfferHandler(rideRepo, offerRepo, logger, metricsClient),
@@ -93,8 +94,9 @@ func main() {
 
 	rideConsumer := consumers.NewRideRequestedConsumer(application, kafkaBroker)
 	driverConsumer := consumers.NewShiftUpdatedConsumer(application, kafkaBroker)
+	rideCancelledConsumer := consumers.NewRideCancelledConsumer(application, kafkaBroker)
 
-	shutdownManager.Add(2)
+	shutdownManager.Add(3)
 	go func() {
 		defer shutdownManager.Done()
 		rideConsumer.Run(bgCtx, "ride.requested")
@@ -102,6 +104,10 @@ func main() {
 	go func() {
 		defer shutdownManager.Done()
 		driverConsumer.Run(bgCtx, "shift.updated")
+	}()
+	go func() {
+		defer shutdownManager.Done()
+		rideCancelledConsumer.Run(bgCtx, "ride.cancelled")
 	}()
 
 	// Match retry worker: sweeps pending_ride:* and re-broadcasts offers for

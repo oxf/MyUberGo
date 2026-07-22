@@ -72,17 +72,23 @@ func (r *RideRepository) GetRide(ctx context.Context, rideID string) (*domain.Ri
 	ride.DestinationLng, _ = strconv.ParseFloat(m["destinationLng"], 64)
 	ride.DistanceKm, _ = strconv.ParseFloat(m["distanceKm"], 64)
 	ride.Price, _ = strconv.ParseFloat(m["price"], 64)
+	ride.DriverRating, _ = strconv.ParseFloat(m["driverRating"], 64)
 	return ride, nil
 }
 
-func (r *RideRepository) MarkMatched(ctx context.Context, rideID, driverID string) error {
+func (r *RideRepository) MarkMatched(ctx context.Context, rideID, driverID string, driverRating float64) error {
 	return r.rdb.HSet(ctx, "ride:"+rideID, map[string]any{
-		"status":    domain.RideStatusMatched,
-		"driverId":  driverID,
-		"matchedAt": time.Now().UTC().Format(time.RFC3339),
+		"status":       domain.RideStatusMatched,
+		"driverId":     driverID,
+		"driverRating": driverRating,
+		"matchedAt":    time.Now().UTC().Format(time.RFC3339),
 	}).Err()
 }
 
 func (r *RideRepository) MarkFailed(ctx context.Context, rideID string) error {
 	return r.rdb.HSet(ctx, "ride:"+rideID, "status", domain.RideStatusFailed).Err()
+}
+
+func (r *RideRepository) MarkCancelled(ctx context.Context, rideID string) error {
+	return r.rdb.HSet(ctx, "ride:"+rideID, "status", domain.RideStatusCancelled).Err()
 }

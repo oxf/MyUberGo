@@ -6,6 +6,7 @@ const (
 	RideStatusSearching = "searching"
 	RideStatusMatched   = "matched"
 	RideStatusFailed    = "failed"
+	RideStatusCancelled = "cancelled"
 )
 
 type Ride struct {
@@ -20,6 +21,10 @@ type Ride struct {
 	DestinationAddress string
 	DistanceKm         float64
 	Price              float64
+	// DriverRating is the matched driver's rating, cached at MarkMatched time
+	// so a later cancellation can restore them to drivers:online without a
+	// cross-service lookup. Zero until matched.
+	DriverRating float64
 }
 
 // Candidate is one entry of the drivers:online pool, best-rated first.
