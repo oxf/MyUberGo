@@ -94,7 +94,7 @@ End-to-end flow now working: `ride.requested` → cache ride + broadcast top-5 r
 
 Follow-ups not done yet (tracked, not urgent):
 - ~~`ride-service` doesn't consume `ride.accepted` yet~~ — done, see the 2026-07-21 section below.
-- No `ride.cancelled` producer/consumer anywhere — `ride:{rideId}:cancelled` is checked on accept but nothing ever sets it.
+- ~~No `ride.cancelled` producer/consumer anywhere~~ — done, see the 2026-07-23 section below.
 - TIERED broadcast strategy (README's recommended design) and geo-radius discovery both need infrastructure that doesn't exist yet (Location service for geo; TIERED needs per-tier timer state beyond what BROADCAST needs).
 - Step 11 above (Stage-3 concurrent fan-out) — next natural step once someone picks this back up.
 - Minor code-quality items from task review (not blocking): `TopOnlineDrivers(limit=0)` returns the whole pool due to Redis's `-1`-means-"last element" semantics on `ZREVRANGE` — only matters if this is ever called with `limit=0`, which nothing currently does; a couple of small DRY/dead-code nits in the Redis repository files.
@@ -110,6 +110,19 @@ Closed the gap noted in the 2026-07-19 section and in `CLAUDE.md`'s "Matching al
 - Also discovered while investigating: `ride-service` was already fully Stage-2 (CQRS/DDD layered) — `CLAUDE.md`/`PLAN.md`'s "Stage 1, all in `cmd/main.go`" description was stale, just missing a `consumers` package. Corrected in the status table above.
 
 Follow-up not done yet: extending `services/e2e-test`'s ride actor to assert a ride flips to `Matched` after an accept (per CLAUDE.md's guidance to keep the simulator covering new behavior) — flagged, not started.
+
+---
+
+## ride-service, matching-service, driver-service: ride cancellation (2026-07-23)
+
+Full cancellation flow shipped end-to-end, closing the `ride.cancelled` gap flagged in the 2026-07-19 section above:
+
+- `ride-service`: new `DELETE /ride/{id}` → `RideHandler.Cancel` → `CancelRideHandler` (`internal/application/command/cancel_ride.go`). Guards: 403 if the caller (`X-User-Id`) doesn't own the ride, 409 if the ride is already `Completed`/`Cancelled`. Computes a cancellation fee via a new port, `services.CancellationFeeCalculator` — currently only `infrastructure/fee.StubCalculator`, which always returns 0 (real fee logic needs the not-yet-built Billing service, so the field is wired up but inert). Publishes `ride.cancelled` through the existing outbox in the same transaction as the DB update. Schema gained `ride.ride.cancelled_at`/`cancellation_reason` (`services/shared/migrations/init.sql`). New contracts: `CancelRideRequest`/`CancelRideResponse` (`contracts/http`), `RideCancelledEvent` (`contracts/kafka`).
+- `matching-service`: new `RideCancelledConsumer` → `CancelRideHandler` (`internal/application/command/cancel_ride.go`). Clears `ride:{id}:offered_drivers`/`pending_ride:{id}`, sets `ride:{id}:cancelled` (previously checked on accept but never set by anything), and — if the ride had already been matched — restores the driver to the `drivers:online` ZSET. Deliberately reads its **own** Redis `AcceptedBy` as the source of truth for which driver to restore rather than the `DriverID` field on ride-service's event: that field reflects ride-service's Postgres row, which can lag matching-service's own Redis state (updated the instant `AcceptRideHandler` runs, well before ride-service consumes `ride.accepted`).
+- `driver-service`: new `RideCancelledConsumer` → `ProcessRideCancelledHandler` (`internal/application/command/process_ride_cancelled.go`) — **placeholder only**, same as the existing `ProcessRideAccepted` handler from the 2026-07-21 section: logs and returns, because there's still no persisted "driver is on a ride" state (`driver_profile.status` CHECK only allows `Offline`/`Online`). Both placeholders share the same follow-up: add real on-ride state and this handler has something to reverse.
+- `services/e2e-test`: `client_actor.go` now runs a full cancel lifecycle every 3rd iteration (`cancelAndVerifyRide`): non-owner cancel → expect 403, owner cancel → expect `Cancelled`, re-read the ride → confirm `Cancelled`, repeat cancel → expect 409.
+
+Follow-up not done yet: driver-service's persisted on-ride state (would turn both `ProcessRideAccepted` and `ProcessRideCancelled` from placeholders into real handlers) — flagged, not started.
 
 ---
 
