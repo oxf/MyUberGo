@@ -74,6 +74,17 @@ func (r *PostgresDriverProfileRepository) UpdateDriverStatus(ctx context.Context
 	return rows > 0, nil
 }
 
+// IncrementRidesCompleted bumps total_rides_completed by one.
+func (r *PostgresDriverProfileRepository) IncrementRidesCompleted(ctx context.Context, id string) error {
+	executor := Executor(ctx, r.db)
+	_, err := executor.ExecContext(ctx, `
+        UPDATE driver.driver_profile
+        SET total_rides_completed = total_rides_completed + 1
+        WHERE id = $1
+    `, id)
+	return err
+}
+
 func (r *PostgresDriverProfileRepository) GetDriverProfileList(ctx context.Context, req domain.PageRequest) ([]*domain.DriverProfile, error) {
 	col, ok := domain.DriverProfileSortColumns[req.SortBy]
 	if !ok {

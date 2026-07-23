@@ -11,14 +11,21 @@ import (
 
 type fakeDriverStatusRepo struct {
 	domain.DriverProfileRepository
-	changed bool
-	err     error
-	calls   []struct{ ID, From, To string }
+	changed        bool
+	err            error
+	calls          []struct{ ID, From, To string }
+	incrementCalls []string
+	incrementErr   error
 }
 
 func (f *fakeDriverStatusRepo) UpdateDriverStatus(ctx context.Context, id, fromStatus, toStatus string) (bool, error) {
 	f.calls = append(f.calls, struct{ ID, From, To string }{id, fromStatus, toStatus})
 	return f.changed, f.err
+}
+
+func (f *fakeDriverStatusRepo) IncrementRidesCompleted(ctx context.Context, id string) error {
+	f.incrementCalls = append(f.incrementCalls, id)
+	return f.incrementErr
 }
 
 func testLogger() *logrus.Entry {

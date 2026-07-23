@@ -12,6 +12,11 @@ type DriverProfileRepository interface {
 	// the expected current status. Returns false (not an error) if the guard
 	// didn't match, e.g. a redelivered/duplicate event.
 	UpdateDriverStatus(ctx context.Context, id, fromStatus, toStatus string) (bool, error)
+	// IncrementRidesCompleted bumps total_rides_completed by one.
+	// Unconditional write - idempotency for redelivery is handled one layer
+	// up, by only calling this when UpdateDriverStatus reports the OnRide ->
+	// Online flip actually happened.
+	IncrementRidesCompleted(ctx context.Context, id string) error
 }
 
 type ShiftRepository interface {

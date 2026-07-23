@@ -19,6 +19,7 @@ type Commands struct {
 	UpdateShift          decorator.CommandHandlerNoResult[command.UpdateShift]
 	ProcessRideAccepted  decorator.CommandHandlerNoResult[command.ProcessRideAccepted]
 	ProcessRideCancelled decorator.CommandHandlerNoResult[command.ProcessRideCancelled]
+	ProcessRideCompleted decorator.CommandHandlerNoResult[command.ProcessRideCompleted]
 }
 
 type Queries struct {

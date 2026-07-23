@@ -22,6 +22,7 @@ type UpdateShiftHandler struct {
 	profileRepo domain.DriverProfileRepository
 	outboxRepo  domain.OutboxRepository
 	transaction services.TransactionManager
+	logger      *logrus.Entry
 }
 
 func NewUpdateShiftHandler(
@@ -38,6 +39,7 @@ func NewUpdateShiftHandler(
 		profileRepo: profileRepo,
 		outboxRepo:  outboxRepo,
 		transaction: transaction,
+		logger:      logger,
 	}
 
 	return decorator.ApplyCommandDecoratorsNoResult[UpdateShift](
@@ -75,6 +77,25 @@ func (h *UpdateShiftHandler) Handle(
 		profile, err := h.profileRepo.GetDriverProfileByID(ctx, shift.DriverID)
 		if err != nil {
 			return err
+		}
+
+		switch cmd.Status {
+		case "Online":
+			if changed, err := h.profileRepo.UpdateDriverStatus(ctx, shift.DriverID, "Offline", "Online"); err != nil {
+				return err
+			} else if !changed {
+				h.logger.Warnf("shift %s: driver %s not flipped Offline->Online (not currently Offline)", cmd.ID, shift.DriverID)
+			}
+		case "Ended":
+			// Guarded so a driver who's OnRide when their shift ends stays
+			// OnRide rather than being silently downgraded to Offline
+			// mid-trip - same "don't force-touch a driver mid-ride"
+			// philosophy already applied to cancellation.
+			if changed, err := h.profileRepo.UpdateDriverStatus(ctx, shift.DriverID, "Online", "Offline"); err != nil {
+				return err
+			} else if !changed {
+				h.logger.Warnf("shift %s: driver %s not flipped Online->Offline (not currently Online, e.g. still OnRide)", cmd.ID, shift.DriverID)
+			}
 		}
 
 		event := &contracts.ShiftUpdatedEvent{

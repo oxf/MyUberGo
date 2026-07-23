@@ -136,7 +136,22 @@ Closed the follow-up flagged above: `driver.driver_profile.status` gains a third
 - No new outbox/Kafka event is published — this is a pure internal status flip; matching-service already manages `drivers:online` independently via its own accept/cancel handlers.
 - `services/e2e-test`: `driver_actor.go`'s `acceptOffer` now polls (`verifyOnRide`, new op `driver.profile.onride`) for the driver's profile to report `OnRide` after a successful accept, retrying a few times since the flip is async over Kafka.
 
-Scope was deliberately kept to driver-side status only — ride-service's own `status` stays at `Matched` (no `InProgress`/`Completed` transition yet). That's real remaining work, but needs a driver-initiated-action auth model that doesn't exist anywhere in this repo yet (no service-to-service HTTP calls exist today), so it deserves its own design pass — not started.
+~~Scope was deliberately kept to driver-side status only — ride-service's own `status` stays at `Matched` (no `InProgress`/`Completed` transition yet). That's real remaining work, but needs a driver-initiated-action auth model that doesn't exist anywhere in this repo yet (no service-to-service HTTP calls exist today), so it deserves its own design pass — not started.~~ Done, see below.
+
+---
+
+## ride-service, driver-service: ride lifecycle `Matched` → `InProgress` → `Completed` (2026-07-23)
+
+Closed the follow-up flagged above: ride-service's own `status` now advances past `Matched`. No migration needed — `InProgress`/`Completed` and `started_at`/`finished_at` already existed in `ride.ride`'s schema, unused until now.
+
+- Two new driver-triggered HTTP endpoints on ride-service: `POST /ride/{id}/start` and `POST /ride/{id}/complete` (`internal/interfaces/http/handler/ride_handler.go` → `StartRideHandler`/`CompleteRideHandler`, `internal/application/command/start_ride.go`/`complete_ride.go`). Both follow `CancelRideHandler`'s exact shape: `GetRideForUpdate` inside `WithinTransaction` to lock+validate, an unconditional repo write (`MarkRideStarted`/`CompleteRide` in `persistence/ride_postgres_repository.go`), then an outbox-published event (`ride.started`/`ride.completed`, new `RideStartedEvent`/`RideCompletedEvent` in `contracts/kafka`).
+- **Driver auth**: since no driver-authenticated HTTP pattern exists anywhere in this repo (confirmed: matching-service's accept endpoint and every driver-service endpoint trust a self-asserted `driverId` with zero header/auth check), the new endpoints take `driverId` in the request body (`StartRideRequest`/`CompleteRideRequest` in `contracts/http`) and validate it against the ride's stored `driver_id`, returning 403 on mismatch — still self-asserted, but free correctness value.
+- Status guards are explicit allow-lists (`Matched`→`InProgress`, `InProgress`→`Completed`), not deny-lists like `CancelRide` — fewer states are startable/completable than are cancellable. No redundant `WHERE status=...` guard on the repo writes themselves (unlike `MarkRideMatched`'s self-guarded Kafka-consumer pattern) — the transaction-locked `GetRideForUpdate` + command-layer validation already serializes and checks this, and a redundant guard would silently mask a handler bug instead of surfacing it.
+- `cancel_ride.go`'s terminal-state guard now also blocks `InProgress` (409) — a rider shouldn't be able to cancel a ride the driver has already started.
+- driver-service reacts to `ride.completed` (new `RideCompletedConsumer`/`ProcessRideCompletedHandler`, mirroring the `ride.cancelled` consumer): flips `OnRide → Online` via the existing `UpdateDriverStatus`, and — only if that flip actually happened (`bool` true) — increments `driver_profile.total_rides_completed` via a new `IncrementRidesCompleted` repo method. Reusing `UpdateDriverStatus`'s guard result as the redelivery-idempotency signal means a duplicate `ride.completed` can't double-count a ride, with no new dedup mechanism needed. `ride.started` is published for symmetry with the rest of the ride-event lifecycle but has no consumer yet — a deliberate, acknowledged bit of dead-for-now infrastructure.
+- `services/e2e-test`: `driver_actor.go`'s `acceptOffer` now runs the full cycle after accepting — `verifyOnRide` (returns a `total_rides_completed` baseline) → `startAndVerifyRide` (op `ride.start`) → simulated driving delay → `completeAndVerifyRide` (op `ride.complete`) → `verifyBackOnline` (op `driver.profile.backonline`, polls for `Online` + the increment). New `RideClient.StartRide`/`CompleteRide` in `apiclient/ride.go`.
+
+Follow-up not done yet: `client_actor.go`'s cancel test only exercises pre-match `Requested` rides — a scenario asserting 409 when cancelling a driver-started `InProgress` ride would be a good addition, not built here.
 
 ---
 

@@ -50,6 +50,7 @@ func main() {
 			UpdateShift:          command.NewUpdateShiftHandler(shiftRepo, profileRepo, outboxRepo, transactionManager, logger, metricsClient),
 			ProcessRideAccepted:  command.NewProcessRideAcceptedHandler(profileRepo, transactionManager, logger, metricsClient),
 			ProcessRideCancelled: command.NewProcessRideCancelledHandler(profileRepo, transactionManager, logger, metricsClient),
+			ProcessRideCompleted: command.NewProcessRideCompletedHandler(profileRepo, transactionManager, logger, metricsClient),
 		},
 		Queries: app.Queries{
 			GetDriverList: query.NewGetDriverListHandler(profileRepo, logger, metricsClient),
@@ -126,6 +127,16 @@ func main() {
 	go func() {
 		defer shutdownManager.Done()
 		rideCancelledConsumer.Run(workerCtx, "ride.cancelled")
+	}()
+
+	// ride.completed consumer: flips the driver's profile status back
+	// OnRide -> Online and increments total_rides_completed via
+	// ProcessRideCompletedHandler.
+	rideCompletedConsumer := consumers.NewRideCompletedConsumer(application, kafkaBroker)
+	shutdownManager.Add(1)
+	go func() {
+		defer shutdownManager.Done()
+		rideCompletedConsumer.Run(workerCtx, "ride.completed")
 	}()
 
 	// Start server in a goroutine

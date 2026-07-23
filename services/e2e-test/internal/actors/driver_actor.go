@@ -206,10 +206,6 @@ func (a *DriverActor) updateAndVerifyPhone(ctx context.Context) {
 // pollForOffer polls the matching service during the Online work window and
 // accepts the first offer it sees. Returns false when ctx is done. 404 on the
 // offer endpoint means "no offer yet" — normal, not recorded as a failure.
-//
-// Known limitation: ride-service doesn't consume ride.accepted yet, so the
-// client actor can't verify its ride reaching Matched in Postgres from here
-// — that lands once ride-service adopts Stage 2.
 func (a *DriverActor) pollForOffer(ctx context.Context, window time.Duration) bool {
 	deadline := time.Now().Add(window)
 	for time.Now().Before(deadline) {
@@ -281,15 +277,22 @@ func (a *DriverActor) acceptOffer(ctx context.Context, rideID string) {
 		"expected 409 (already taken) or 400 (ride cancelled) on duplicate accept")
 	a.record(a.ID, "matching.ride.accept.dup", start, nil, v)
 
-	a.verifyOnRide(ctx)
+	prevCompleted := a.verifyOnRide(ctx)
+	if !a.startAndVerifyRide(ctx, rideID) {
+		return
+	}
+	sleepJitter(ctx, a.Interval/4, a.Rnd) // simulated driving delay
+	a.completeAndVerifyRide(ctx, rideID)
+	a.verifyBackOnline(ctx, prevCompleted+1)
 }
 
 // verifyOnRide polls the driver's profile until driver-service's async
 // ride.accepted consumer flips status Online -> OnRide, then records a
 // single result. Intermediate not-yet-flipped reads aren't recorded as
 // failures — only the final outcome is, same convention as pollForOffer's
-// "not there yet" 404 handling.
-func (a *DriverActor) verifyOnRide(ctx context.Context) {
+// "not there yet" 404 handling. Returns the profile's totalRidesCompleted
+// as a baseline for verifyBackOnline's increment check.
+func (a *DriverActor) verifyOnRide(ctx context.Context) int {
 	start := time.Now()
 	var profile contracts.DriverProfileDto
 	var err error
@@ -299,7 +302,7 @@ func (a *DriverActor) verifyOnRide(ctx context.Context) {
 			break
 		}
 		if attempt < 2 && !sleepJitter(ctx, 500*time.Millisecond, a.Rnd) {
-			return
+			return profile.TotalRidesCompleted
 		}
 	}
 
@@ -308,4 +311,72 @@ func (a *DriverActor) verifyOnRide(ctx context.Context) {
 		v.Eq("status", profile.Status, "OnRide")
 	}
 	a.record(a.ID, "driver.profile.onride", start, err, v)
+	return profile.TotalRidesCompleted
+}
+
+// startAndVerifyRide retries a few times because /ride/{id}/start depends on
+// ride-service's own (independent, uncoordinated) consumption of
+// ride.accepted - verifyOnRide having already observed OnRide only proves
+// driver-service's separate consumer group caught up, not ride-service's.
+func (a *DriverActor) startAndVerifyRide(ctx context.Context, rideID string) bool {
+	start := time.Now()
+	var resp contracts.StartRideResponse
+	var err error
+	for attempt := range 3 {
+		resp, err = a.Ride.StartRide(ctx, rideID, a.profileID)
+		if err == nil {
+			break
+		}
+		if attempt < 2 && !sleepJitter(ctx, 500*time.Millisecond, a.Rnd) {
+			return false
+		}
+	}
+	v := &Verify{}
+	if err == nil {
+		v.Eq("status", resp.Status, "InProgress")
+		v.NotEmpty("startedAt", resp.StartedAt)
+	}
+	a.record(a.ID, "ride.start", start, err, v)
+	return err == nil
+}
+
+func (a *DriverActor) completeAndVerifyRide(ctx context.Context, rideID string) {
+	start := time.Now()
+	resp, err := a.Ride.CompleteRide(ctx, rideID, a.profileID)
+	v := &Verify{}
+	if err == nil {
+		v.Eq("status", resp.Status, "Completed")
+		v.NotEmpty("finishedAt", resp.FinishedAt)
+	}
+	a.record(a.ID, "ride.complete", start, err, v)
+}
+
+// verifyBackOnline polls until driver-service's async ride.completed
+// consumer flips OnRide -> Online and increments total_rides_completed,
+// mirroring verifyOnRide's poll-retry convention. Unlike ride.accepted
+// (published directly by matching-service), ride.completed goes through
+// ride-service's transactional outbox, which only wakes on a 2s ticker -
+// so this needs a wider budget than verifyOnRide/startAndVerifyRide to
+// reliably clear that latency.
+func (a *DriverActor) verifyBackOnline(ctx context.Context, wantMinCompleted int) {
+	start := time.Now()
+	var profile contracts.DriverProfileDto
+	var err error
+	for attempt := range 8 {
+		profile, err = a.Driver.GetProfile(ctx, a.profileID)
+		if err == nil && profile.Status == "Online" {
+			break
+		}
+		if attempt < 7 && !sleepJitter(ctx, 500*time.Millisecond, a.Rnd) {
+			return
+		}
+	}
+
+	v := &Verify{}
+	if err == nil {
+		v.Eq("status", profile.Status, "Online")
+		v.True("totalRidesCompleted", profile.TotalRidesCompleted >= wantMinCompleted,
+			fmt.Sprintf("expected >= %d, got %d", wantMinCompleted, profile.TotalRidesCompleted))
+	}
+	a.record(a.ID, "driver.profile.backonline", start, err, v)
 }

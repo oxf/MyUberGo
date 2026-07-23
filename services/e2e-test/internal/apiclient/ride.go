@@ -48,3 +48,19 @@ func (c *RideClient) CancelRide(ctx context.Context, userID, rideID string, req 
 	err := c.doJSON(ctx, http.MethodDelete, "/ride/"+rideID, headers, req, &resp)
 	return resp, err
 }
+
+// StartRide and CompleteRide are driver-initiated: ride-service has no
+// driver-authenticated HTTP mechanism (no X-User-Id equivalent), so the
+// driverId is asserted in the body and validated by the handler against
+// the ride's stored driver_id.
+func (c *RideClient) StartRide(ctx context.Context, rideID, driverID string) (contracts.StartRideResponse, error) {
+	var resp contracts.StartRideResponse
+	err := c.doJSON(ctx, http.MethodPost, "/ride/"+rideID+"/start", nil, contracts.StartRideRequest{DriverId: driverID}, &resp)
+	return resp, err
+}
+
+func (c *RideClient) CompleteRide(ctx context.Context, rideID, driverID string) (contracts.CompleteRideResponse, error) {
+	var resp contracts.CompleteRideResponse
+	err := c.doJSON(ctx, http.MethodPost, "/ride/"+rideID+"/complete", nil, contracts.CompleteRideRequest{DriverId: driverID}, &resp)
+	return resp, err
+}

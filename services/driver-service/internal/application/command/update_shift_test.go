@@ -27,11 +27,19 @@ func (f *fakeShiftRepo) EndShift(ctx context.Context, id string) error {
 
 type fakeProfileRepo struct {
 	domain.DriverProfileRepository
-	profile *domain.DriverProfile
+	profile       *domain.DriverProfile
+	statusChanged bool
+	statusErr     error
+	statusCalls   []struct{ ID, From, To string }
 }
 
 func (f *fakeProfileRepo) GetDriverProfileByID(ctx context.Context, id string) (*domain.DriverProfile, error) {
 	return f.profile, nil
+}
+
+func (f *fakeProfileRepo) UpdateDriverStatus(ctx context.Context, id, fromStatus, toStatus string) (bool, error) {
+	f.statusCalls = append(f.statusCalls, struct{ ID, From, To string }{id, fromStatus, toStatus})
+	return f.statusChanged, f.statusErr
 }
 
 type fakeOutboxRepo struct {
@@ -55,9 +63,10 @@ func TestUpdateShift_EndedEmitsEventWithRating(t *testing.T) {
 	outbox := &fakeOutboxRepo{}
 	h := &UpdateShiftHandler{
 		repo:        shiftRepo,
-		profileRepo: &fakeProfileRepo{profile: &domain.DriverProfile{Rating: 4.7}},
+		profileRepo: &fakeProfileRepo{profile: &domain.DriverProfile{Rating: 4.7}, statusChanged: true},
 		outboxRepo:  outbox,
 		transaction: fakeTx{},
+		logger:      testLogger(),
 	}
 
 	if err := h.Handle(context.Background(), UpdateShift{ID: "s1", Status: "Ended"}); err != nil {
@@ -76,5 +85,61 @@ func TestUpdateShift_EndedEmitsEventWithRating(t *testing.T) {
 	}
 	if ev.Status != "Ended" || ev.DriverID != "d1" || ev.Rating != 4.7 {
 		t.Fatalf("bad event: %+v", ev)
+	}
+}
+
+func TestUpdateShift_OnlineFlipsOfflineToOnline(t *testing.T) {
+	shiftRepo := &fakeShiftRepo{shift: &domain.Shift{ID: "s1", DriverID: "d1"}}
+	profileRepo := &fakeProfileRepo{profile: &domain.DriverProfile{Rating: 4.7}, statusChanged: true}
+	h := &UpdateShiftHandler{
+		repo:        shiftRepo,
+		profileRepo: profileRepo,
+		outboxRepo:  &fakeOutboxRepo{},
+		transaction: fakeTx{},
+		logger:      testLogger(),
+	}
+
+	if err := h.Handle(context.Background(), UpdateShift{ID: "s1", Status: "Online"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(profileRepo.statusCalls) != 1 || profileRepo.statusCalls[0] != (struct{ ID, From, To string }{"d1", "Offline", "Online"}) {
+		t.Fatalf("unexpected UpdateDriverStatus call(s): %+v", profileRepo.statusCalls)
+	}
+}
+
+func TestUpdateShift_EndedFlipsOnlineToOffline(t *testing.T) {
+	shiftRepo := &fakeShiftRepo{shift: &domain.Shift{ID: "s1", DriverID: "d1"}}
+	profileRepo := &fakeProfileRepo{profile: &domain.DriverProfile{Rating: 4.7}, statusChanged: true}
+	h := &UpdateShiftHandler{
+		repo:        shiftRepo,
+		profileRepo: profileRepo,
+		outboxRepo:  &fakeOutboxRepo{},
+		transaction: fakeTx{},
+		logger:      testLogger(),
+	}
+
+	if err := h.Handle(context.Background(), UpdateShift{ID: "s1", Status: "Ended"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(profileRepo.statusCalls) != 1 || profileRepo.statusCalls[0] != (struct{ ID, From, To string }{"d1", "Online", "Offline"}) {
+		t.Fatalf("unexpected UpdateDriverStatus call(s): %+v", profileRepo.statusCalls)
+	}
+}
+
+func TestUpdateShift_GuardMissIsNotAnError(t *testing.T) {
+	shiftRepo := &fakeShiftRepo{shift: &domain.Shift{ID: "s1", DriverID: "d1"}}
+	profileRepo := &fakeProfileRepo{profile: &domain.DriverProfile{Rating: 4.7}, statusChanged: false}
+	h := &UpdateShiftHandler{
+		repo:        shiftRepo,
+		profileRepo: profileRepo,
+		outboxRepo:  &fakeOutboxRepo{},
+		transaction: fakeTx{},
+		logger:      testLogger(),
+	}
+
+	// Driver is already OnRide (not Online) - the Ended guard should miss
+	// without erroring, leaving the driver as-is.
+	if err := h.Handle(context.Background(), UpdateShift{ID: "s1", Status: "Ended"}); err != nil {
+		t.Fatalf("expected nil error on guard miss, got %v", err)
 	}
 }

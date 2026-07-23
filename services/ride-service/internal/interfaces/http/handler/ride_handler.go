@@ -94,6 +94,76 @@ func (h *RideHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, contracts.CancelRideResponse{Status: result.Status, Fee: result.Fee})
 }
 
+func (h *RideHandler) Start(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var req contracts.StartRideRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.DriverId == "" {
+		writeError(w, "driverId is required", http.StatusBadRequest)
+		return
+	}
+
+	result, err := h.app.Commands.StartRide.Handle(r.Context(), command.StartRide{
+		RideID:   id,
+		DriverID: req.DriverId,
+	})
+	switch {
+	case errors.Is(err, commonerrors.ErrNotFound):
+		writeError(w, "not found", http.StatusNotFound)
+		return
+	case errors.Is(err, commonerrors.ErrForbidden):
+		writeError(w, "forbidden", http.StatusForbidden)
+		return
+	case errors.Is(err, commonerrors.ErrConflict):
+		writeError(w, "ride is not in a startable state", http.StatusConflict)
+		return
+	case err != nil:
+		writeError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, contracts.StartRideResponse{Status: result.Status, StartedAt: result.StartedAt})
+}
+
+func (h *RideHandler) Complete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var req contracts.CompleteRideRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.DriverId == "" {
+		writeError(w, "driverId is required", http.StatusBadRequest)
+		return
+	}
+
+	result, err := h.app.Commands.CompleteRide.Handle(r.Context(), command.CompleteRide{
+		RideID:   id,
+		DriverID: req.DriverId,
+	})
+	switch {
+	case errors.Is(err, commonerrors.ErrNotFound):
+		writeError(w, "not found", http.StatusNotFound)
+		return
+	case errors.Is(err, commonerrors.ErrForbidden):
+		writeError(w, "forbidden", http.StatusForbidden)
+		return
+	case errors.Is(err, commonerrors.ErrConflict):
+		writeError(w, "ride is not in progress", http.StatusConflict)
+		return
+	case err != nil:
+		writeError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, contracts.CompleteRideResponse{Status: result.Status, FinishedAt: result.FinishedAt})
+}
+
 func (h *RideHandler) GetList(w http.ResponseWriter, r *http.Request) {
 	params, err := parseListParams(r, domain.RideSortColumns, "createdAt")
 	if err != nil {

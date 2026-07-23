@@ -30,3 +30,15 @@ type RideCancelledEvent struct {
 	Reason      string  `json:"reason,omitempty"`
 	CancelledAt string  `json:"cancelledAt"`
 }
+
+type RideStartedEvent struct {
+	RideID    string `json:"rideId"`
+	DriverID  string `json:"driverId"`
+	StartedAt string `json:"startedAt"`
+}
+
+type RideCompletedEvent struct {
+	RideID     string `json:"rideId"`
+	DriverID   string `json:"driverId"`
+	FinishedAt string `json:"finishedAt"`
+}

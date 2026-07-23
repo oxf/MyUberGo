@@ -16,6 +16,8 @@ type Commands struct {
 	CreateRide      decorator.CommandHandler[command.CreateRide, command.CreateRideResult]
 	MarkRideMatched decorator.CommandHandlerNoResult[command.MarkRideMatched]
 	CancelRide      decorator.CommandHandler[command.CancelRide, command.CancelRideResult]
+	StartRide       decorator.CommandHandler[command.StartRide, command.StartRideResult]
+	CompleteRide    decorator.CommandHandler[command.CompleteRide, command.CompleteRideResult]
 }
 
 type Queries struct {

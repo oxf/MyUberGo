@@ -147,6 +147,32 @@ func (r *PostgresRideRepository) CancelRide(ctx context.Context, id, reason stri
 	return err
 }
 
+// MarkRideStarted flips a ride to InProgress. Callers are expected to have
+// already validated ownership/current status via GetRideForUpdate in the
+// same transaction, so this is an unconditional write (same pattern as
+// CancelRide).
+func (r *PostgresRideRepository) MarkRideStarted(ctx context.Context, id string, startedAt time.Time) error {
+	executor := Executor(ctx, r.db)
+	_, err := executor.ExecContext(ctx, `
+		UPDATE ride.ride
+		SET status = 'InProgress', started_at = $2
+		WHERE id = $1
+	`, id, startedAt)
+	return err
+}
+
+// CompleteRide flips a ride to Completed. Same unconditional-write pattern
+// as MarkRideStarted/CancelRide.
+func (r *PostgresRideRepository) CompleteRide(ctx context.Context, id string, finishedAt time.Time) error {
+	executor := Executor(ctx, r.db)
+	_, err := executor.ExecContext(ctx, `
+		UPDATE ride.ride
+		SET status = 'Completed', finished_at = $2
+		WHERE id = $1
+	`, id, finishedAt)
+	return err
+}
+
 // scanRide reads one ride row, normalizing created_at to RFC3339 and the
 // nullable driver_id column to a *string (nil until a ride is matched).
 func scanRide(row interface{ Scan(dest ...any) error }) (*domain.Ride, error) {

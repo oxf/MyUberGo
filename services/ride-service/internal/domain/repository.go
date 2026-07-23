@@ -16,4 +16,6 @@ type RideRepository interface {
 	// transaction without a race against a concurrent cancel/match.
 	GetRideForUpdate(ctx context.Context, id string) (*Ride, error)
 	CancelRide(ctx context.Context, id, reason string) error
+	MarkRideStarted(ctx context.Context, id string, startedAt time.Time) error
+	CompleteRide(ctx context.Context, id string, finishedAt time.Time) error
 }

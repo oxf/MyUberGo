@@ -48,6 +48,8 @@ func main() {
 			CreateRide:      command.NewCreateRideHandler(rideRepo, outboxRepo, transactionManager, logger, metricsClient),
 			MarkRideMatched: command.NewMarkRideMatchedHandler(rideRepo, logger, metricsClient),
 			CancelRide:      command.NewCancelRideHandler(rideRepo, outboxRepo, transactionManager, feeCalculator, logger, metricsClient),
+			StartRide:       command.NewStartRideHandler(rideRepo, outboxRepo, transactionManager, logger, metricsClient),
+			CompleteRide:    command.NewCompleteRideHandler(rideRepo, outboxRepo, transactionManager, logger, metricsClient),
 		},
 		Queries: app.Queries{
 			GetRideList: query.NewGetRideListHandler(rideRepo, logger, metricsClient),
@@ -73,6 +75,8 @@ func main() {
 	mux.HandleFunc("GET /ride", rideHandler.GetList)
 	mux.HandleFunc("GET /ride/{id}", rideHandler.GetByID)
 	mux.HandleFunc("DELETE /ride/{id}", rideHandler.Cancel)
+	mux.HandleFunc("POST /ride/{id}/start", rideHandler.Start)
+	mux.HandleFunc("POST /ride/{id}/complete", rideHandler.Complete)
 
 	// Create HTTP server
 	server := &http.Server{

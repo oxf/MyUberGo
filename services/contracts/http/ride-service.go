@@ -45,6 +45,24 @@ type CancelRideResponse struct {
 	Fee    float64 `json:"fee"`
 }
 
+type StartRideRequest struct {
+	DriverId string `json:"driverId"`
+}
+
+type StartRideResponse struct {
+	Status    string `json:"status"`
+	StartedAt string `json:"startedAt"`
+}
+
+type CompleteRideRequest struct {
+	DriverId string `json:"driverId"`
+}
+
+type CompleteRideResponse struct {
+	Status     string `json:"status"`
+	FinishedAt string `json:"finishedAt"`
+}
+
 type ErrorResponse struct {
 	Error string `json:"error"`
 }

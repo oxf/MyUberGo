@@ -64,7 +64,7 @@ func (h *CancelRideHandler) Handle(ctx context.Context, cmd CancelRide) (CancelR
 		if ride.ClientID != cmd.ClientID {
 			return commonerrors.ErrForbidden
 		}
-		if ride.Status == "Completed" || ride.Status == "Cancelled" {
+		if ride.Status == "InProgress" || ride.Status == "Completed" || ride.Status == "Cancelled" {
 			return commonerrors.ErrConflict
 		}
 
