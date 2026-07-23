@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS driver.driver_profile (
     rating DOUBLE PRECISION NOT NULL DEFAULT 5.0,
     vehicle_type TEXT NOT NULL DEFAULT 'Sedan',
     license_plate TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'Offline' CHECK (status IN ('Offline', 'Online')),
+    status TEXT NOT NULL DEFAULT 'Offline' CHECK (status IN ('Offline', 'Online', 'OnRide')),
     total_rides_completed INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );

@@ -2,8 +2,9 @@ package command
 
 import (
 	"context"
+	"driver-service/internal/application/services"
 	"driver-service/internal/common/decorator"
-	"log"
+	"driver-service/internal/domain"
 
 	"github.com/sirupsen/logrus"
 )
@@ -14,14 +15,24 @@ type ProcessRideAccepted struct {
 	AcceptedAt string // RFC3339, from the Kafka event
 }
 
-type ProcessRideAcceptedHandler struct{}
+type ProcessRideAcceptedHandler struct {
+	profileRepo domain.DriverProfileRepository
+	transaction services.TransactionManager
+	logger      *logrus.Entry
+}
 
 func NewProcessRideAcceptedHandler(
+	profileRepo domain.DriverProfileRepository,
+	transaction services.TransactionManager,
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandlerNoResult[ProcessRideAccepted] {
 
-	handler := &ProcessRideAcceptedHandler{}
+	handler := &ProcessRideAcceptedHandler{
+		profileRepo: profileRepo,
+		transaction: transaction,
+		logger:      logger,
+	}
 
 	return decorator.ApplyCommandDecoratorsNoResult[ProcessRideAccepted](
 		handler,
@@ -30,11 +41,20 @@ func NewProcessRideAcceptedHandler(
 	)
 }
 
-// Handle is a placeholder: driver-service has no persisted "on a ride" state
-// today (driver_profile.status only allows Offline/Online, and there's no
-// ride-completion event yet to reverse whatever gets set). Revisit once that
-// flow exists.
+// Handle flips the driver Online -> OnRide. Guarded so a duplicate/late
+// ride.accepted delivery (Kafka is at-most-once here, but redelivery/replay
+// is still possible) is a silent no-op rather than an error - e.g. if the
+// driver already went offline, or this is a redelivery after the flip
+// already happened.
 func (h *ProcessRideAcceptedHandler) Handle(ctx context.Context, cmd ProcessRideAccepted) error {
-	log.Printf("ride.accepted processed for driver. RideID=%s DriverID=%s", cmd.RideID, cmd.DriverID)
-	return nil
+	return h.transaction.WithinTransaction(ctx, func(ctx context.Context) error {
+		changed, err := h.profileRepo.UpdateDriverStatus(ctx, cmd.DriverID, "Online", "OnRide")
+		if err != nil {
+			return err
+		}
+		if !changed {
+			h.logger.Warnf("ride.accepted: driver %s not flipped to OnRide (not currently Online) for ride %s", cmd.DriverID, cmd.RideID)
+		}
+		return nil
+	})
 }

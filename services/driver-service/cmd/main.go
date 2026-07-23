@@ -48,8 +48,8 @@ func main() {
 			UpdateDriverProfile:  command.NewUpdateDriverProfileHandler(profileRepo, logger, metricsClient),
 			CreateShift:          command.NewCreateShiftHandler(shiftRepo),
 			UpdateShift:          command.NewUpdateShiftHandler(shiftRepo, profileRepo, outboxRepo, transactionManager, logger, metricsClient),
-			ProcessRideAccepted:  command.NewProcessRideAcceptedHandler(logger, metricsClient),
-			ProcessRideCancelled: command.NewProcessRideCancelledHandler(logger, metricsClient),
+			ProcessRideAccepted:  command.NewProcessRideAcceptedHandler(profileRepo, transactionManager, logger, metricsClient),
+			ProcessRideCancelled: command.NewProcessRideCancelledHandler(profileRepo, transactionManager, logger, metricsClient),
 		},
 		Queries: app.Queries{
 			GetDriverList: query.NewGetDriverListHandler(profileRepo, logger, metricsClient),
@@ -109,8 +109,8 @@ func main() {
 		outboxWorker.Run(workerCtx)
 	}()
 
-	// ride.accepted consumer: currently a placeholder (logs only) — no
-	// persisted driver-side state exists yet to update on a match.
+	// ride.accepted consumer: flips the matched driver's profile status
+	// Online -> OnRide via ProcessRideAcceptedHandler.
 	rideAcceptedConsumer := consumers.NewRideAcceptedConsumer(application, kafkaBroker)
 	shutdownManager.Add(1)
 	go func() {
@@ -118,7 +118,9 @@ func main() {
 		rideAcceptedConsumer.Run(workerCtx, "ride.accepted")
 	}()
 
-	// ride.cancelled consumer: same placeholder rationale as above.
+	// ride.cancelled consumer: flips the driver's profile status back
+	// OnRide -> Online via ProcessRideCancelledHandler (no-op if the ride
+	// was cancelled before a match existed).
 	rideCancelledConsumer := consumers.NewRideCancelledConsumer(application, kafkaBroker)
 	shutdownManager.Add(1)
 	go func() {

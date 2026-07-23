@@ -280,4 +280,32 @@ func (a *DriverActor) acceptOffer(ctx context.Context, rideID string) {
 	v.True("duplicate accept rejected", legitimate,
 		"expected 409 (already taken) or 400 (ride cancelled) on duplicate accept")
 	a.record(a.ID, "matching.ride.accept.dup", start, nil, v)
+
+	a.verifyOnRide(ctx)
+}
+
+// verifyOnRide polls the driver's profile until driver-service's async
+// ride.accepted consumer flips status Online -> OnRide, then records a
+// single result. Intermediate not-yet-flipped reads aren't recorded as
+// failures — only the final outcome is, same convention as pollForOffer's
+// "not there yet" 404 handling.
+func (a *DriverActor) verifyOnRide(ctx context.Context) {
+	start := time.Now()
+	var profile contracts.DriverProfileDto
+	var err error
+	for attempt := range 3 {
+		profile, err = a.Driver.GetProfile(ctx, a.profileID)
+		if err == nil && profile.Status == "OnRide" {
+			break
+		}
+		if attempt < 2 && !sleepJitter(ctx, 500*time.Millisecond, a.Rnd) {
+			return
+		}
+	}
+
+	v := &Verify{}
+	if err == nil {
+		v.Eq("status", profile.Status, "OnRide")
+	}
+	a.record(a.ID, "driver.profile.onride", start, err, v)
 }

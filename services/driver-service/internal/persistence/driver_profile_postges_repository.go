@@ -50,6 +50,30 @@ func (r *PostgresDriverProfileRepository) UpdateDriverProfile(ctx context.Contex
 	return nil
 }
 
+// UpdateDriverStatus flips a driver's status, guarded by the expected
+// current status so it's idempotent against Kafka's at-most-once
+// redelivery: a duplicate/late/out-of-order delivery matches zero rows and
+// is a no-op rather than an error, same pattern as ride-service's
+// MarkRideMatched.
+func (r *PostgresDriverProfileRepository) UpdateDriverStatus(ctx context.Context, id, fromStatus, toStatus string) (bool, error) {
+	executor := Executor(ctx, r.db)
+	res, err := executor.ExecContext(ctx, `
+        UPDATE driver.driver_profile
+        SET status = $1
+        WHERE id = $2 AND status = $3
+    `, toStatus, id, fromStatus)
+	if err != nil {
+		return false, err
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+
+	return rows > 0, nil
+}
+
 func (r *PostgresDriverProfileRepository) GetDriverProfileList(ctx context.Context, req domain.PageRequest) ([]*domain.DriverProfile, error) {
 	col, ok := domain.DriverProfileSortColumns[req.SortBy]
 	if !ok {

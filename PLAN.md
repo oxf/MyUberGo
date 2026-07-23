@@ -122,7 +122,21 @@ Full cancellation flow shipped end-to-end, closing the `ride.cancelled` gap flag
 - `driver-service`: new `RideCancelledConsumer` → `ProcessRideCancelledHandler` (`internal/application/command/process_ride_cancelled.go`) — **placeholder only**, same as the existing `ProcessRideAccepted` handler from the 2026-07-21 section: logs and returns, because there's still no persisted "driver is on a ride" state (`driver_profile.status` CHECK only allows `Offline`/`Online`). Both placeholders share the same follow-up: add real on-ride state and this handler has something to reverse.
 - `services/e2e-test`: `client_actor.go` now runs a full cancel lifecycle every 3rd iteration (`cancelAndVerifyRide`): non-owner cancel → expect 403, owner cancel → expect `Cancelled`, re-read the ride → confirm `Cancelled`, repeat cancel → expect 409.
 
-Follow-up not done yet: driver-service's persisted on-ride state (would turn both `ProcessRideAccepted` and `ProcessRideCancelled` from placeholders into real handlers) — flagged, not started.
+~~Follow-up not done yet: driver-service's persisted on-ride state (would turn both `ProcessRideAccepted` and `ProcessRideCancelled` from placeholders into real handlers) — flagged, not started.~~ Done, see below.
+
+---
+
+## driver-service: persisted on-ride status (2026-07-23)
+
+Closed the follow-up flagged above: `driver.driver_profile.status` gains a third value, `'OnRide'` (CHECK constraint in `services/shared/migrations/init.sql` — note this only affects fresh DBs, since there's no migration tool; existing local Postgres volumes need `docker-compose down -v` or a manual `ALTER TABLE ... DROP/ADD CONSTRAINT`).
+
+- `domain.DriverProfileRepository` gained `UpdateDriverStatus(ctx, id, fromStatus, toStatus string) (bool, error)` — guarded by the expected *current* status (same idempotency idiom as `ride-service`'s `MarkRideMatched`), so an at-most-once Kafka redelivery is a harmless no-op (`bool` false) rather than an error. Implemented in `persistence/driver_profile_postges_repository.go` via the tx-aware `Executor(ctx, r.db)` helper.
+- `ProcessRideAcceptedHandler` (`internal/application/command/process_ride_accepted.go`) and `ProcessRideCancelledHandler` (`process_ride_cancelled.go`) are no longer log-only placeholders: they now wrap the status flip in `TransactionManager.WithinTransaction` and call `UpdateDriverStatus` — `Online → OnRide` on `ride.accepted`, `OnRide → Online` on `ride.cancelled` (no-op if the event's `DriverID` is nil, i.e. cancelled pre-match). Both constructors now take `profileRepo`/`transaction`, wired in `cmd/main.go`.
+- Deliberate design choice: a `ride.cancelled` event does **not** force a driver back to `Online` if they aren't currently `OnRide` (e.g. they already ended their shift mid-ride) — that would silently re-enter them into matching-service's `drivers:online` pool without consent.
+- No new outbox/Kafka event is published — this is a pure internal status flip; matching-service already manages `drivers:online` independently via its own accept/cancel handlers.
+- `services/e2e-test`: `driver_actor.go`'s `acceptOffer` now polls (`verifyOnRide`, new op `driver.profile.onride`) for the driver's profile to report `OnRide` after a successful accept, retrying a few times since the flip is async over Kafka.
+
+Scope was deliberately kept to driver-side status only — ride-service's own `status` stays at `Matched` (no `InProgress`/`Completed` transition yet). That's real remaining work, but needs a driver-initiated-action auth model that doesn't exist anywhere in this repo yet (no service-to-service HTTP calls exist today), so it deserves its own design pass — not started.
 
 ---
 

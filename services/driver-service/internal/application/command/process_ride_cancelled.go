@@ -2,8 +2,9 @@ package command
 
 import (
 	"context"
+	"driver-service/internal/application/services"
 	"driver-service/internal/common/decorator"
-	"log"
+	"driver-service/internal/domain"
 
 	"github.com/sirupsen/logrus"
 )
@@ -14,14 +15,24 @@ type ProcessRideCancelled struct {
 	CancelledAt string  // RFC3339, from the Kafka event
 }
 
-type ProcessRideCancelledHandler struct{}
+type ProcessRideCancelledHandler struct {
+	profileRepo domain.DriverProfileRepository
+	transaction services.TransactionManager
+	logger      *logrus.Entry
+}
 
 func NewProcessRideCancelledHandler(
+	profileRepo domain.DriverProfileRepository,
+	transaction services.TransactionManager,
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandlerNoResult[ProcessRideCancelled] {
 
-	handler := &ProcessRideCancelledHandler{}
+	handler := &ProcessRideCancelledHandler{
+		profileRepo: profileRepo,
+		transaction: transaction,
+		logger:      logger,
+	}
 
 	return decorator.ApplyCommandDecoratorsNoResult[ProcessRideCancelled](
 		handler,
@@ -30,10 +41,26 @@ func NewProcessRideCancelledHandler(
 	)
 }
 
-// Handle is a placeholder, same as ProcessRideAccepted: driver-service has no
-// persisted "on a ride" state today, so there's nothing here to reverse.
-// Revisit once that flow exists.
+// Handle flips the driver OnRide -> Online. No-ops cleanly if DriverID is
+// nil (ride cancelled before a match existed - nothing to reverse). Guarded
+// the same way as ProcessRideAccepted: if the driver isn't currently
+// OnRide (e.g. they already went Offline on their own), we deliberately do
+// NOT force them back Online - a driver who ended their shift mid-ride
+// should stay Offline, not be silently reactivated by a cancellation event.
 func (h *ProcessRideCancelledHandler) Handle(ctx context.Context, cmd ProcessRideCancelled) error {
-	log.Printf("ride.cancelled processed for driver. RideID=%s DriverID=%v", cmd.RideID, cmd.DriverID)
-	return nil
+	if cmd.DriverID == nil {
+		return nil
+	}
+
+	driverID := *cmd.DriverID
+	return h.transaction.WithinTransaction(ctx, func(ctx context.Context) error {
+		changed, err := h.profileRepo.UpdateDriverStatus(ctx, driverID, "OnRide", "Online")
+		if err != nil {
+			return err
+		}
+		if !changed {
+			h.logger.Warnf("ride.cancelled: driver %s not flipped to Online (not currently OnRide) for ride %s", driverID, cmd.RideID)
+		}
+		return nil
+	})
 }
