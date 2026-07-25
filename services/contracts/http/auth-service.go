@@ -5,6 +5,7 @@ type UserRole string
 const (
 	RoleClient UserRole = "Client"
 	RoleDriver UserRole = "Driver"
+	RoleAdmin  UserRole = "Admin"
 )
 
 type SignupRequest struct {
@@ -50,4 +51,7 @@ type UserDto struct {
 	Phone     string   `json:"phone"`
 	Role      UserRole `json:"role"`
 	CreatedAt string   `json:"createdAt"`
+	// ClientId is only populated by GET /me for the caller's own profile,
+	// so a client can learn its client id without decoding its JWT.
+	ClientId *string `json:"clientId,omitempty"`
 }

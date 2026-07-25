@@ -14,6 +14,12 @@ import (
 
 const password = "e2e-password-123"
 
+// Seeded admin account (services/shared/migrations/init.sql) — the only way
+// to reach GET /users, GET /driver, and GET /driver-shift now that those
+// list endpoints are Admin-only at the Kong gateway (see gateway/kong.yml).
+const adminEmail = "admin@myubergo.local"
+const adminPassword = "admin123"
+
 // Deps groups the API clients and the stats collector shared by all actors.
 type Deps struct {
 	Auth     *apiclient.AuthClient
@@ -21,6 +27,11 @@ type Deps struct {
 	Ride     *apiclient.RideClient
 	Matching *apiclient.MatchingClient
 	Stats    *stats.Collector
+
+	// AdminAccessToken is fetched once at startup (see LoginAsAdmin) and
+	// reused by every actor for the Admin-only list endpoints. Actors never
+	// mutate it, so sharing it by value across goroutines is safe.
+	AdminAccessToken string
 }
 
 // account is the authenticated identity an actor operates as.
@@ -28,6 +39,28 @@ type account struct {
 	userID       string
 	accessToken  string
 	refreshToken string
+	// clientID is auth.client(id), populated from GET /me after login. Only
+	// set for Client-role accounts (empty for Driver accounts, which have no
+	// auth.client row).
+	clientID string
+}
+
+// LoginAsAdmin blocks until it obtains an access token for the seeded admin
+// account or ctx is cancelled (empty return) — called once at startup,
+// before any actor goroutines start, so there's no concurrent access to
+// worry about.
+func LoginAsAdmin(ctx context.Context, auth *apiclient.AuthClient) string {
+	for {
+		resp, err := auth.Login(ctx, contracts.LoginRequest{Email: adminEmail, Password: adminPassword})
+		if err == nil && resp.AccessToken != "" {
+			return resp.AccessToken
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(3 * time.Second):
+		}
+	}
 }
 
 func (d Deps) record(actor, op string, start time.Time, err error, v *Verify) {
@@ -88,11 +121,21 @@ func (d Deps) trySignupAndLogin(ctx context.Context, actor, email, name, phone s
 		return nil, fmt.Errorf("login: %s", firstNonEmpty(errString(err), v.Detail()))
 	}
 
-	return &account{
+	acc := &account{
 		userID:       signup.UserID,
 		accessToken:  login.AccessToken,
 		refreshToken: login.RefreshToken,
-	}, nil
+	}
+
+	// Best-effort: a Client's clientId (auth.client(id), distinct from
+	// userID — see the role-table refactor notes in CLAUDE.md/PLAN.md) is
+	// only known via GET /me. A Driver has no client row, so me.ClientId is
+	// nil and acc.clientID stays empty, which is expected, not an error.
+	if me, err := d.Auth.Me(ctx, acc.accessToken); err == nil && me.ClientId != nil {
+		acc.clientID = *me.ClientId
+	}
+
+	return acc, nil
 }
 
 // refresh exercises token refresh; the same refresh token stays valid (no

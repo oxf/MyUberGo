@@ -15,41 +15,39 @@ import (
 	contracts "github.com/oxf/MyUber/contracts/http"
 )
 
-type DriverProfileHandler struct {
+type DriverHandler struct {
 	app app.Application
 }
 
-func NewDriverProfileHandler(app app.Application) *DriverProfileHandler {
-	return &DriverProfileHandler{app: app}
+func NewDriverHandler(app app.Application) *DriverHandler {
+	return &DriverHandler{app: app}
 }
 
-func (h *DriverProfileHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var req contracts.CreateDriverProfileDto
+func (h *DriverHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req contracts.CreateDriverDto
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	result, err := h.app.Commands.CreateDriverProfile.Handle(r.Context(), command.CreateDriverProfile{
-		UserID: req.UserId, DriverName: req.DriverName,
-		Phone: req.Phone, VehicleType: req.VehicleType, LicencePlate: req.LicencePlate,
+	result, err := h.app.Commands.CreateDriver.Handle(r.Context(), command.CreateDriver{
+		UserID: req.UserId, VehicleType: req.VehicleType, LicencePlate: req.LicencePlate,
 	})
 	if err != nil {
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	writeJSON(w, contracts.CreateDriverProfileResponse{Id: result.ID})
+	writeJSON(w, contracts.CreateDriverResponse{Id: result.ID})
 }
 
-func (h *DriverProfileHandler) Update(w http.ResponseWriter, r *http.Request) {
+func (h *DriverHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var req contracts.UpdateDriverProfileDto
+	var req contracts.UpdateDriverDto
 	json.NewDecoder(r.Body).Decode(&req)
 
-	err := h.app.Commands.UpdateDriverProfile.Handle(r.Context(), command.UpdateDriverProfile{
-		ID: id, DriverName: req.DriverName, Phone: req.Phone,
-		VehicleType: req.VehicleType, LicencePlate: req.LicencePlate,
+	err := h.app.Commands.UpdateDriver.Handle(r.Context(), command.UpdateDriver{
+		ID: id, VehicleType: req.VehicleType, LicencePlate: req.LicencePlate,
 	})
 	if errors.Is(err, commonerrors.ErrNotFound) {
 		writeError(w, "not found", http.StatusNotFound)
@@ -63,8 +61,8 @@ func (h *DriverProfileHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"id": id})
 }
 
-func (h *DriverProfileHandler) GetList(w http.ResponseWriter, r *http.Request) {
-	params, err := parseListParams(r, domain.DriverProfileSortColumns, "createdAt")
+func (h *DriverHandler) GetList(w http.ResponseWriter, r *http.Request) {
+	params, err := parseListParams(r, domain.DriverSortColumns, "createdAt")
 	if err != nil {
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -78,23 +76,23 @@ func (h *DriverProfileHandler) GetList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := make([]contracts.DriverProfileDto, 0, len(result.Items))
+	items := make([]contracts.DriverDto, 0, len(result.Items))
 	for _, d := range result.Items {
-		items = append(items, toDriverProfileDto(d))
+		items = append(items, toDriverDto(d))
 	}
-	writeJSON(w, contracts.PagedResponse[contracts.DriverProfileDto]{
+	writeJSON(w, contracts.PagedResponse[contracts.DriverDto]{
 		Items: items, Page: params.page, PageSize: params.pageSize, TotalCount: result.TotalCount,
 	})
 }
 
-func (h *DriverProfileHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+func (h *DriverHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	result, err := h.app.Queries.GetDriverByID.Handle(r.Context(), query.GetDriverByID{ID: id})
 	if err != nil || result == nil {
 		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, toDriverProfileDto(result))
+	writeJSON(w, toDriverDto(result))
 }
 
 func writeError(w http.ResponseWriter, msg string, code int) {

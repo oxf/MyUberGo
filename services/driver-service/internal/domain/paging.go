@@ -12,9 +12,8 @@ type PageRequest struct {
 
 // Sort whitelists: API sort key -> SQL column. ORDER BY cannot be
 // parameterized, so persistence interpolates only values from these maps.
-var DriverProfileSortColumns = map[string]string{
+var DriverSortColumns = map[string]string{
 	"createdAt":           "created_at",
-	"driverName":          "name",
 	"rating":              "rating",
 	"status":              "status",
 	"vehicleType":         "vehicle_type",

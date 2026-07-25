@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS auth.user (
     password_hash TEXT NOT NULL,
     name TEXT NOT NULL DEFAULT '',
     phone TEXT NOT NULL DEFAULT '',
-    role TEXT NOT NULL CHECK (role IN ('Client', 'Driver')),
+    role TEXT NOT NULL CHECK (role IN ('Client', 'Driver', 'Admin')),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at TIMESTAMPTZ
@@ -37,6 +37,34 @@ CREATE TABLE IF NOT EXISTS auth.refresh_token (
 
 CREATE INDEX idx_refresh_token_user_id ON auth.refresh_token(user_id);
 CREATE INDEX idx_refresh_token_token ON auth.refresh_token(token);
+
+-- Role tables: auth.user is the shared login identity; each role gets its
+-- own surrogate-keyed table for role-specific data (see CLAUDE.md "Data
+-- model" / the 2026-07-25 role-table refactor in PLAN.md).
+CREATE TABLE IF NOT EXISTS auth.client (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID UNIQUE NOT NULL REFERENCES auth.user(id),
+    rating DOUBLE PRECISION NOT NULL DEFAULT 5.0,
+    total_rides_completed INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_client_user_id ON auth.client(user_id);
+
+CREATE TABLE IF NOT EXISTS auth.admin (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID UNIQUE NOT NULL REFERENCES auth.user(id),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_admin_user_id ON auth.admin(user_id);
+
+-- Seed admin (local dev only) — email: admin@myubergo.local, password: admin123
+INSERT INTO auth.user (id, email, password_hash, name, role)
+VALUES ('00000000-0000-0000-0000-000000000001', 'admin@myubergo.local', '$2a$10$cmumCedXy0EcsJU3/ClYVec8oT3S03ClHZN/X0eg2ipLz6vOP4EVO', 'Admin', 'Admin');
+
+INSERT INTO auth.admin (user_id)
+VALUES ('00000000-0000-0000-0000-000000000001');
 
 -- =============================================
 -- RIDE SCHEMA
@@ -58,7 +86,7 @@ INSERT INTO ride.tariff (name, base_fare, price_per_km, price_per_min) VALUES
 
 CREATE TABLE IF NOT EXISTS ride.ride (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    client_id UUID NOT NULL REFERENCES auth.user(id),
+    client_id UUID NOT NULL REFERENCES auth.client(id),
     driver_id UUID,
     status TEXT NOT NULL DEFAULT 'Requested' CHECK (status IN ('Requested', 'Matched', 'InProgress', 'Completed', 'Cancelled')),
     pickup_lat DOUBLE PRECISION NOT NULL,
@@ -100,11 +128,9 @@ CREATE INDEX idx_outbox_processed ON ride.outbox_message(processed);
 -- DRIVER SCHEMA
 -- =============================================
 
-CREATE TABLE IF NOT EXISTS driver.driver_profile (
+CREATE TABLE IF NOT EXISTS driver.driver (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID UNIQUE NOT NULL REFERENCES auth.user(id),
-    name TEXT NOT NULL DEFAULT '',
-    phone TEXT NOT NULL DEFAULT '',
     rating DOUBLE PRECISION NOT NULL DEFAULT 5.0,
     vehicle_type TEXT NOT NULL DEFAULT 'Sedan',
     license_plate TEXT NOT NULL DEFAULT '',
@@ -113,12 +139,12 @@ CREATE TABLE IF NOT EXISTS driver.driver_profile (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
 
-CREATE INDEX idx_driver_status ON driver.driver_profile(status);
-CREATE INDEX idx_driver_user_id ON driver.driver_profile(user_id);
+CREATE INDEX idx_driver_status ON driver.driver(status);
+CREATE INDEX idx_driver_user_id ON driver.driver(user_id);
 
 CREATE TABLE IF NOT EXISTS driver.shift (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    driver_id UUID NOT NULL REFERENCES driver.driver_profile(id) ON DELETE CASCADE,
+    driver_id UUID NOT NULL REFERENCES driver.driver(id) ON DELETE CASCADE,
     started_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     ended_at TIMESTAMP WITH TIME ZONE,
     total_rides INTEGER DEFAULT 0,
@@ -140,3 +166,7 @@ CREATE TABLE IF NOT EXISTS driver.outbox_message (
     );
 
 CREATE INDEX idx_outbox_processed ON driver.outbox_message(processed);
+
+-- ride.ride.driver_id -> driver.driver(id): added here (bottom of file)
+-- because the driver schema is created after the ride schema above.
+ALTER TABLE ride.ride ADD CONSTRAINT fk_ride_driver_id FOREIGN KEY (driver_id) REFERENCES driver.driver(id);

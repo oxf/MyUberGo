@@ -32,7 +32,7 @@ services:
           limit_by: ip
           minute: 20 # brute-force guard on signup/login/refresh; no user identity yet
 
-  # -- auth-service: GET /users is an admin listing, requires a valid token --
+  # -- auth-service: GET /users is an admin listing, requires Admin role --
   - name: auth-service-users
     url: http://auth-service:8000/users
     routes:
@@ -51,7 +51,7 @@ services:
           access:
             - &inject_user_headers |
               local cjson = require("cjson.safe")
-              for _, h in ipairs({ "X-User-Id", "X-User-Email", "X-User-Role" }) do
+              for _, h in ipairs({ "X-User-Id", "X-User-Email", "X-User-Role", "X-Client-Id" }) do
                 kong.service.request.clear_header(h)
               end
               local auth_header = kong.request.get_header("authorization") or ""
@@ -70,8 +70,13 @@ services:
                     if claims.user_id then kong.service.request.set_header("X-User-Id", claims.user_id) end
                     if claims.email then kong.service.request.set_header("X-User-Email", claims.email) end
                     if claims.role then kong.service.request.set_header("X-User-Role", claims.role) end
+                    if claims.client_id then kong.service.request.set_header("X-Client-Id", claims.client_id) end
                   end
                 end
+              end
+            - &require_admin |
+              if kong.request.get_header("X-User-Role") ~= "Admin" then
+                return kong.response.exit(403, { message = "admin role required" })
               end
       - name: rate-limiting
         config:
@@ -189,6 +194,100 @@ services:
           limit_by: header
           header_name: X-User-Id
           minute: 60
+
+  # -- Admin-only list routes --
+  # These match on paths AND methods, which Kong's router ranks above the
+  # paths-only ride-service/driver-service routes above, so a GET to these
+  # exact paths is caught here (and gated to Admin) instead of falling
+  # through to the broader protected routes. Every other method/path under
+  # /api/ride and /api/driver (POST /request-ride, PUT .../driver-shift/{id},
+  # etc.) is untouched and still resolves to the ordinary routes.
+  - name: ride-service-admin-list
+    url: http://ride-service:8001/ride
+    routes:
+      - name: ride-admin-list
+        paths:
+          - ~/api/ride$
+        methods:
+          - GET
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+            - *require_admin
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 30
+
+  - name: driver-service-admin-list
+    url: http://driver-service:8003/driver
+    routes:
+      - name: driver-admin-list
+        paths:
+          - ~/api/driver/driver$
+        methods:
+          - GET
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+            - *require_admin
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 30
+
+  - name: shift-service-admin-list
+    url: http://driver-service:8003/driver-shift
+    routes:
+      - name: shift-admin-list
+        paths:
+          - ~/api/driver/driver-shift$
+        methods:
+          - GET
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+            - *require_admin
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 30
 
   # matching-service (8002) is Kafka/Redis-driven internally and has no
   # gateway-facing consumer today (see CLAUDE.md "Matching algorithm

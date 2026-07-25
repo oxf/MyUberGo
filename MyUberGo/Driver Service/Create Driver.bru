@@ -1,11 +1,11 @@
 meta {
-  name: Create Driver Profile
+  name: Create Driver
   type: http
   seq: 1
 }
 
 post {
-  url: http://localhost:8090/api/driver/driver-profile
+  url: http://localhost:8090/api/driver/driver
   body: json
   auth: inherit
 }
@@ -17,8 +17,6 @@ headers {
 body:json {
   {
     "userId": "c5f313c0-9ca2-400e-b231-ddacbc579546",
-    "driverName": "Bob Driver",
-    "phone": "+1223456",
     "vehicleType": "Mercedes S class",
     "licencePlate": "ABC123"
   }

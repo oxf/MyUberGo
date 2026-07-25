@@ -6,12 +6,10 @@ import (
 	contracts "github.com/oxf/MyUber/contracts/http"
 )
 
-func toDriverProfileDto(d *domain.DriverProfile) contracts.DriverProfileDto {
-	return contracts.DriverProfileDto{
+func toDriverDto(d *domain.Driver) contracts.DriverDto {
+	return contracts.DriverDto{
 		Id:                  d.ID,
 		UserId:              d.UserID,
-		DriverName:          d.DriverName,
-		Phone:               d.Phone,
 		Rating:              d.Rating,
 		VehicleType:         d.VehicleType,
 		LicencePlate:        d.LicencePlate,

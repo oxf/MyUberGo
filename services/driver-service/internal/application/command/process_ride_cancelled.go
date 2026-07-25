@@ -16,13 +16,13 @@ type ProcessRideCancelled struct {
 }
 
 type ProcessRideCancelledHandler struct {
-	profileRepo domain.DriverProfileRepository
+	profileRepo domain.DriverRepository
 	transaction services.TransactionManager
 	logger      *logrus.Entry
 }
 
 func NewProcessRideCancelledHandler(
-	profileRepo domain.DriverProfileRepository,
+	profileRepo domain.DriverRepository,
 	transaction services.TransactionManager,
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,

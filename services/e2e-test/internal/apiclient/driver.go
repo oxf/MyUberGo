@@ -19,19 +19,19 @@ func NewDriverClient(baseURL string) *DriverClient {
 	return &DriverClient{newBaseClient(baseURL)}
 }
 
-func (c *DriverClient) CreateProfile(ctx context.Context, accessToken string, req contracts.CreateDriverProfileDto) (contracts.CreateDriverProfileResponse, error) {
-	var resp contracts.CreateDriverProfileResponse
-	err := c.doJSON(ctx, http.MethodPost, "/driver-profile", bearerHeader(accessToken), req, &resp)
+func (c *DriverClient) CreateDriver(ctx context.Context, accessToken string, req contracts.CreateDriverDto) (contracts.CreateDriverResponse, error) {
+	var resp contracts.CreateDriverResponse
+	err := c.doJSON(ctx, http.MethodPost, "/driver", bearerHeader(accessToken), req, &resp)
 	return resp, err
 }
 
-func (c *DriverClient) UpdateProfile(ctx context.Context, accessToken, id string, req contracts.UpdateDriverProfileDto) error {
-	return c.doJSON(ctx, http.MethodPut, "/driver-profile/"+id, bearerHeader(accessToken), req, nil)
+func (c *DriverClient) UpdateDriver(ctx context.Context, accessToken, id string, req contracts.UpdateDriverDto) error {
+	return c.doJSON(ctx, http.MethodPut, "/driver/"+id, bearerHeader(accessToken), req, nil)
 }
 
-func (c *DriverClient) GetProfile(ctx context.Context, accessToken, id string) (contracts.DriverProfileDto, error) {
-	var resp contracts.DriverProfileDto
-	err := c.doJSON(ctx, http.MethodGet, "/driver-profile/"+id, bearerHeader(accessToken), nil, &resp)
+func (c *DriverClient) GetDriver(ctx context.Context, accessToken, id string) (contracts.DriverDto, error) {
+	var resp contracts.DriverDto
+	err := c.doJSON(ctx, http.MethodGet, "/driver/"+id, bearerHeader(accessToken), nil, &resp)
 	return resp, err
 }
 
@@ -51,6 +51,8 @@ func (c *DriverClient) GetShift(ctx context.Context, accessToken, id string) (co
 	return resp, err
 }
 
+// ListShifts hits GET /driver-shift, an Admin-only route now (see
+// gateway/kong.yml) — accessToken must be an admin's, not the driver's own.
 func (c *DriverClient) ListShifts(ctx context.Context, accessToken string, page, pageSize int) (contracts.PagedResponse[contracts.ShiftDto], error) {
 	var resp contracts.PagedResponse[contracts.ShiftDto]
 	path := fmt.Sprintf("/driver-shift?page=%d&pageSize=%d", page, pageSize)

@@ -1,11 +1,11 @@
 meta {
-  name: Update Driver Profile
+  name: Update Driver
   type: http
   seq: 2
 }
 
 put {
-  url: http://localhost:8090/api/driver/driver-profile/882f978b-f9e5-46db-b244-b2eef153445a
+  url: http://localhost:8090/api/driver/driver/882f978b-f9e5-46db-b244-b2eef153445a
   body: json
   auth: inherit
 }
@@ -16,9 +16,6 @@ headers {
 
 body:json {
   {
-    "userId": "4741fa01-7b4e-448b-a1e0-755bae6a5a49",
-    "driverName": "Bob Driver",
-    "phone": "+1223456",
     "vehicleType": "Mercedes S class",
     "licencePlate": "ABC123"
   }

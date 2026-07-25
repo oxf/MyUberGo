@@ -16,6 +16,10 @@ type User struct {
 	CreatedAt    string // RFC3339
 	UpdatedAt    string // RFC3339
 	DeletedAt    *string
+	// ClientID is only populated by GetUserByID (backing GET /me), never by
+	// CreateUser/GetUserList — it's a convenience lookup, not stored on the
+	// user row itself.
+	ClientID *string
 }
 
 // NewUser validates signup input and builds a User ready for persistence.

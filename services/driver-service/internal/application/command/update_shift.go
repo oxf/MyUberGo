@@ -19,7 +19,7 @@ type UpdateShift struct {
 
 type UpdateShiftHandler struct {
 	repo        domain.ShiftRepository
-	profileRepo domain.DriverProfileRepository
+	profileRepo domain.DriverRepository
 	outboxRepo  domain.OutboxRepository
 	transaction services.TransactionManager
 	logger      *logrus.Entry
@@ -27,7 +27,7 @@ type UpdateShiftHandler struct {
 
 func NewUpdateShiftHandler(
 	repo domain.ShiftRepository,
-	profileRepo domain.DriverProfileRepository,
+	profileRepo domain.DriverRepository,
 	outboxRepo domain.OutboxRepository,
 	transaction services.TransactionManager,
 	logger *logrus.Entry,
@@ -74,7 +74,7 @@ func (h *UpdateShiftHandler) Handle(
 			}
 		}
 
-		profile, err := h.profileRepo.GetDriverProfileByID(ctx, shift.DriverID)
+		profile, err := h.profileRepo.GetDriverByID(ctx, shift.DriverID)
 		if err != nil {
 			return err
 		}

@@ -34,8 +34,9 @@ func (c *AuthClient) Refresh(ctx context.Context, req contracts.RefreshRequest) 
 	return resp, err
 }
 
-// ListUsers hits /users, which is a protected route behind Kong (see
-// gateway/kong.yml) — unlike Signup/Login/Refresh, it needs a bearer token.
+// ListUsers hits /users, an Admin-only route behind Kong (see
+// gateway/kong.yml) — accessToken must be an admin's, not an ordinary
+// client/driver's.
 func (c *AuthClient) ListUsers(ctx context.Context, accessToken string, page, pageSize int) (contracts.PagedResponse[contracts.UserDto], error) {
 	var resp contracts.PagedResponse[contracts.UserDto]
 	path := fmt.Sprintf("/users?page=%d&pageSize=%d", page, pageSize)

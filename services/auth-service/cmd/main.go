@@ -35,7 +35,9 @@ func main() {
 	refreshTTL := time.Duration(atoi(getenv("REFRESH_TOKEN_EXP_HOUR", "24"))) * time.Hour
 
 	userRepo := persistence.NewPostgresUserRepository(db)
+	clientRepo := persistence.NewPostgresClientRepository(db)
 	refreshTokenRepo := persistence.NewPostgresRefreshTokenRepository(db)
+	transactionManager := persistence.NewPostgresTransactionManager(db)
 	hasher := security.NewBcryptHasher()
 	tokenIssuer := security.NewJWTIssuer(jwtSecret, accessTTL, refreshTTL)
 
@@ -45,14 +47,14 @@ func main() {
 
 	application := app.Application{
 		Commands: app.Commands{
-			Signup:  command.NewSignupHandler(userRepo, hasher, logger, metricsClient),
-			Login:   command.NewLoginHandler(userRepo, refreshTokenRepo, hasher, tokenIssuer, logger, metricsClient),
-			Refresh: command.NewRefreshHandler(userRepo, refreshTokenRepo, tokenIssuer, logger, metricsClient),
+			Signup:  command.NewSignupHandler(userRepo, clientRepo, hasher, transactionManager, logger, metricsClient),
+			Login:   command.NewLoginHandler(userRepo, clientRepo, refreshTokenRepo, hasher, tokenIssuer, logger, metricsClient),
+			Refresh: command.NewRefreshHandler(userRepo, clientRepo, refreshTokenRepo, tokenIssuer, logger, metricsClient),
 			Logout:  command.NewLogoutHandler(refreshTokenRepo, logger, metricsClient),
 		},
 		Queries: app.Queries{
 			GetUserList: query.NewGetUserListHandler(userRepo, logger, metricsClient),
-			GetUserByID: query.NewGetUserByIDHandler(userRepo, logger, metricsClient),
+			GetUserByID: query.NewGetUserByIDHandler(userRepo, clientRepo, logger, metricsClient),
 		},
 	}
 

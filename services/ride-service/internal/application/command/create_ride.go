@@ -12,6 +12,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// ClientID is auth.client(id) (from Kong's X-Client-Id header), not
+// auth.user(id) — see the role-table refactor notes in CLAUDE.md/PLAN.md.
 type CreateRide struct {
 	ClientID      string
 	PickupLat     float64

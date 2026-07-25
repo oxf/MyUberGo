@@ -22,9 +22,9 @@ func NewRideHandler(app app.Application) *RideHandler {
 }
 
 func (h *RideHandler) Create(w http.ResponseWriter, r *http.Request) {
-	clientID := r.Header.Get("X-User-Id")
+	clientID := r.Header.Get("X-Client-Id")
 	if clientID == "" {
-		writeError(w, "X-User-Id header is required", http.StatusBadRequest)
+		writeError(w, "X-Client-Id header is required", http.StatusBadRequest)
 		return
 	}
 
@@ -59,9 +59,9 @@ func (h *RideHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *RideHandler) Cancel(w http.ResponseWriter, r *http.Request) {
-	clientID := r.Header.Get("X-User-Id")
+	clientID := r.Header.Get("X-Client-Id")
 	if clientID == "" {
-		writeError(w, "X-User-Id header is required", http.StatusBadRequest)
+		writeError(w, "X-Client-Id header is required", http.StatusBadRequest)
 		return
 	}
 	id := r.PathValue("id")

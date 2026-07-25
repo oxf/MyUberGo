@@ -1,0 +1,23 @@
+meta {
+  name: Admin Log in
+  type: http
+  seq: 4
+}
+
+post {
+  url: http://localhost:8090/api/auth/login
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "email": "admin@myubergo.local",
+    "password": "admin123"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

@@ -29,7 +29,7 @@ type DriverActor struct {
 	Rnd      *rand.Rand
 
 	profileID string
-	phone     string
+	phone     string // auth.user.phone at signup — driver.driver no longer stores name/phone
 
 	// acc is the driver's own authenticated identity, kept as a field (like
 	// profileID/phone) so every helper below can attach a bearer token
@@ -72,7 +72,7 @@ func (a *DriverActor) Run(ctx context.Context) {
 		a.verifyEndedShift(ctx, shiftID)
 
 		if cycle%4 == 0 {
-			a.updateAndVerifyPhone(ctx)
+			a.updateAndVerifyLicencePlate(ctx)
 		}
 		if cycle%10 == 0 {
 			a.refresh(ctx, a.ID, a.acc)
@@ -84,10 +84,8 @@ func (a *DriverActor) Run(ctx context.Context) {
 func (a *DriverActor) createAndVerifyProfile(ctx context.Context) bool {
 	for {
 		start := time.Now()
-		created, err := a.Driver.CreateProfile(ctx, a.acc.accessToken, contracts.CreateDriverProfileDto{
+		created, err := a.Driver.CreateDriver(ctx, a.acc.accessToken, contracts.CreateDriverDto{
 			UserId:       a.acc.userID,
-			DriverName:   "E2E " + a.ID,
-			Phone:        a.phone,
 			VehicleType:  "Standard",
 			LicencePlate: fmt.Sprintf("E2E%04d", a.Rnd.Intn(10000)),
 		})
@@ -99,7 +97,7 @@ func (a *DriverActor) createAndVerifyProfile(ctx context.Context) bool {
 
 		if err == nil && v.OK() {
 			a.profileID = created.Id
-			a.verifyProfile(ctx, "E2E "+a.ID, a.phone)
+			a.verifyProfile(ctx)
 			return true
 		}
 		if !sleepJitter(ctx, 3*time.Second, a.Rnd) {
@@ -108,15 +106,13 @@ func (a *DriverActor) createAndVerifyProfile(ctx context.Context) bool {
 	}
 }
 
-func (a *DriverActor) verifyProfile(ctx context.Context, wantName, wantPhone string) {
+func (a *DriverActor) verifyProfile(ctx context.Context) {
 	start := time.Now()
-	profile, err := a.Driver.GetProfile(ctx, a.acc.accessToken, a.profileID)
+	profile, err := a.Driver.GetDriver(ctx, a.acc.accessToken, a.profileID)
 	v := &Verify{}
 	if err == nil {
 		v.Eq("id", profile.Id, a.profileID)
 		v.Eq("userId", profile.UserId, a.acc.userID)
-		v.Eq("driverName", profile.DriverName, wantName)
-		v.Eq("phone", profile.Phone, wantPhone)
 		v.Eq("vehicleType", profile.VehicleType, "Standard")
 		v.True("rating", profile.Rating >= 0, "expected >= 0")
 	}
@@ -169,9 +165,12 @@ func (a *DriverActor) verifyEndedShift(ctx context.Context, shiftID string) {
 	a.record(a.ID, "driver.shift.get", start, err, v)
 }
 
+// verifyShiftInList uses the shared admin token: GET /driver-shift is
+// Admin-only at the Kong gateway now (see gateway/kong.yml), not reachable
+// with the driver's own token.
 func (a *DriverActor) verifyShiftInList(ctx context.Context, shiftID string) {
 	start := time.Now()
-	resp, err := a.Driver.ListShifts(ctx, a.acc.accessToken, 1, 50)
+	resp, err := a.Driver.ListShifts(ctx, a.Deps.AdminAccessToken, 1, 50)
 	v := &Verify{}
 	if err == nil {
 		found := false
@@ -187,12 +186,15 @@ func (a *DriverActor) verifyShiftInList(ctx context.Context, shiftID string) {
 	a.record(a.ID, "driver.shift.list", start, err, v)
 }
 
-func (a *DriverActor) updateAndVerifyPhone(ctx context.Context) {
-	a.phone = fmt.Sprintf("+35750%07d", a.Rnd.Intn(10000000))
+// updateAndVerifyLicencePlate exercises PUT /driver — driver.driver no
+// longer stores name/phone (see CLAUDE.md/PLAN.md role-table refactor
+// notes), so only vehicle fields round-trip here now.
+func (a *DriverActor) updateAndVerifyLicencePlate(ctx context.Context) {
+	newPlate := fmt.Sprintf("E2E%04d", a.Rnd.Intn(10000))
 
 	start := time.Now()
-	err := a.Driver.UpdateProfile(ctx, a.acc.accessToken, a.profileID, contracts.UpdateDriverProfileDto{
-		Phone: a.phone, // other fields empty: service keeps existing values via COALESCE(NULLIF(...))
+	err := a.Driver.UpdateDriver(ctx, a.acc.accessToken, a.profileID, contracts.UpdateDriverDto{
+		LicencePlate: newPlate, // VehicleType empty: service keeps existing value via COALESCE(NULLIF(...))
 	})
 	a.record(a.ID, "driver.profile.update", start, err, nil)
 	if err != nil {
@@ -200,11 +202,11 @@ func (a *DriverActor) updateAndVerifyPhone(ctx context.Context) {
 	}
 
 	start = time.Now()
-	profile, getErr := a.Driver.GetProfile(ctx, a.acc.accessToken, a.profileID)
+	profile, getErr := a.Driver.GetDriver(ctx, a.acc.accessToken, a.profileID)
 	v := &Verify{}
 	if getErr == nil {
-		v.Eq("phone", profile.Phone, a.phone)
-		v.Eq("driverName", profile.DriverName, "E2E "+a.ID)
+		v.Eq("licencePlate", profile.LicencePlate, newPlate)
+		v.Eq("vehicleType", profile.VehicleType, "Standard")
 	}
 	a.record(a.ID, "driver.profile.get", start, getErr, v)
 }
@@ -300,10 +302,10 @@ func (a *DriverActor) acceptOffer(ctx context.Context, rideID string) {
 // as a baseline for verifyBackOnline's increment check.
 func (a *DriverActor) verifyOnRide(ctx context.Context) int {
 	start := time.Now()
-	var profile contracts.DriverProfileDto
+	var profile contracts.DriverDto
 	var err error
 	for attempt := range 3 {
-		profile, err = a.Driver.GetProfile(ctx, a.acc.accessToken, a.profileID)
+		profile, err = a.Driver.GetDriver(ctx, a.acc.accessToken, a.profileID)
 		if err == nil && profile.Status == "OnRide" {
 			break
 		}
@@ -366,10 +368,10 @@ func (a *DriverActor) completeAndVerifyRide(ctx context.Context, rideID string) 
 // reliably clear that latency.
 func (a *DriverActor) verifyBackOnline(ctx context.Context, wantMinCompleted int) {
 	start := time.Now()
-	var profile contracts.DriverProfileDto
+	var profile contracts.DriverDto
 	var err error
 	for attempt := range 8 {
-		profile, err = a.Driver.GetProfile(ctx, a.acc.accessToken, a.profileID)
+		profile, err = a.Driver.GetDriver(ctx, a.acc.accessToken, a.profileID)
 		if err == nil && profile.Status == "Online" {
 			break
 		}

@@ -10,7 +10,7 @@ import (
 )
 
 type fakeDriverStatusRepo struct {
-	domain.DriverProfileRepository
+	domain.DriverRepository
 	changed        bool
 	err            error
 	calls          []struct{ ID, From, To string }

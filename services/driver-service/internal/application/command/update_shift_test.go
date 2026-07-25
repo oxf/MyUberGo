@@ -26,14 +26,14 @@ func (f *fakeShiftRepo) EndShift(ctx context.Context, id string) error {
 }
 
 type fakeProfileRepo struct {
-	domain.DriverProfileRepository
-	profile       *domain.DriverProfile
+	domain.DriverRepository
+	profile       *domain.Driver
 	statusChanged bool
 	statusErr     error
 	statusCalls   []struct{ ID, From, To string }
 }
 
-func (f *fakeProfileRepo) GetDriverProfileByID(ctx context.Context, id string) (*domain.DriverProfile, error) {
+func (f *fakeProfileRepo) GetDriverByID(ctx context.Context, id string) (*domain.Driver, error) {
 	return f.profile, nil
 }
 
@@ -63,7 +63,7 @@ func TestUpdateShift_EndedEmitsEventWithRating(t *testing.T) {
 	outbox := &fakeOutboxRepo{}
 	h := &UpdateShiftHandler{
 		repo:        shiftRepo,
-		profileRepo: &fakeProfileRepo{profile: &domain.DriverProfile{Rating: 4.7}, statusChanged: true},
+		profileRepo: &fakeProfileRepo{profile: &domain.Driver{Rating: 4.7}, statusChanged: true},
 		outboxRepo:  outbox,
 		transaction: fakeTx{},
 		logger:      testLogger(),
@@ -90,7 +90,7 @@ func TestUpdateShift_EndedEmitsEventWithRating(t *testing.T) {
 
 func TestUpdateShift_OnlineFlipsOfflineToOnline(t *testing.T) {
 	shiftRepo := &fakeShiftRepo{shift: &domain.Shift{ID: "s1", DriverID: "d1"}}
-	profileRepo := &fakeProfileRepo{profile: &domain.DriverProfile{Rating: 4.7}, statusChanged: true}
+	profileRepo := &fakeProfileRepo{profile: &domain.Driver{Rating: 4.7}, statusChanged: true}
 	h := &UpdateShiftHandler{
 		repo:        shiftRepo,
 		profileRepo: profileRepo,
@@ -109,7 +109,7 @@ func TestUpdateShift_OnlineFlipsOfflineToOnline(t *testing.T) {
 
 func TestUpdateShift_EndedFlipsOnlineToOffline(t *testing.T) {
 	shiftRepo := &fakeShiftRepo{shift: &domain.Shift{ID: "s1", DriverID: "d1"}}
-	profileRepo := &fakeProfileRepo{profile: &domain.DriverProfile{Rating: 4.7}, statusChanged: true}
+	profileRepo := &fakeProfileRepo{profile: &domain.Driver{Rating: 4.7}, statusChanged: true}
 	h := &UpdateShiftHandler{
 		repo:        shiftRepo,
 		profileRepo: profileRepo,
@@ -128,7 +128,7 @@ func TestUpdateShift_EndedFlipsOnlineToOffline(t *testing.T) {
 
 func TestUpdateShift_GuardMissIsNotAnError(t *testing.T) {
 	shiftRepo := &fakeShiftRepo{shift: &domain.Shift{ID: "s1", DriverID: "d1"}}
-	profileRepo := &fakeProfileRepo{profile: &domain.DriverProfile{Rating: 4.7}, statusChanged: false}
+	profileRepo := &fakeProfileRepo{profile: &domain.Driver{Rating: 4.7}, statusChanged: false}
 	h := &UpdateShiftHandler{
 		repo:        shiftRepo,
 		profileRepo: profileRepo,

@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { getAccessToken, login } from './api/auth';
-import { UNAUTHORIZED_EVENT } from './api/client';
+import { UNAUTHORIZED_EVENT, FORBIDDEN_EVENT } from './api/client';
 
 // Gates the dashboard behind a login form: the list endpoints sit behind
 // Kong's jwt plugin now, so there's no more anonymous access (see
@@ -17,8 +17,19 @@ export function App() {
 
   useEffect(() => {
     const onUnauthorized = () => setAuthed(false);
+    // Every list endpoint is Admin-only at the gateway now, so a non-Admin
+    // login authenticates fine but 403s on the first table fetch — surface
+    // that as a clear message instead of a raw "403 Forbidden" per-table.
+    const onForbidden = () => {
+      setAuthed(false);
+      setError('This dashboard is restricted to Admin accounts.');
+    };
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
-    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    window.addEventListener(FORBIDDEN_EVENT, onForbidden);
+    return () => {
+      window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+      window.removeEventListener(FORBIDDEN_EVENT, onForbidden);
+    };
   }, []);
 
   if (!authed) {

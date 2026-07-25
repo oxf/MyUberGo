@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-func TestToDriverProfileDto(t *testing.T) {
-	dto := toDriverProfileDto(&domain.DriverProfile{
-		ID: "p1", UserID: "u1", DriverName: "Ann", Phone: "+357501234567",
+func TestToDriverDto(t *testing.T) {
+	dto := toDriverDto(&domain.Driver{
+		ID: "p1", UserID: "u1",
 		Rating: 4.9, VehicleType: "Sedan", LicencePlate: "AA1234BB",
 		Status: "Online", TotalRidesCompleted: 7, CreatedAt: "2026-07-18T10:00:00Z",
 	})
-	if dto.Id != "p1" || dto.UserId != "u1" || dto.DriverName != "Ann" || dto.TotalRidesCompleted != 7 {
+	if dto.Id != "p1" || dto.UserId != "u1" || dto.TotalRidesCompleted != 7 {
 		t.Fatalf("bad mapping: %+v", dto)
 	}
 }

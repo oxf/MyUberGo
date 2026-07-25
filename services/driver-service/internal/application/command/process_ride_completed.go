@@ -16,13 +16,13 @@ type ProcessRideCompleted struct {
 }
 
 type ProcessRideCompletedHandler struct {
-	profileRepo domain.DriverProfileRepository
+	profileRepo domain.DriverRepository
 	transaction services.TransactionManager
 	logger      *logrus.Entry
 }
 
 func NewProcessRideCompletedHandler(
-	profileRepo domain.DriverProfileRepository,
+	profileRepo domain.DriverRepository,
 	transaction services.TransactionManager,
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,

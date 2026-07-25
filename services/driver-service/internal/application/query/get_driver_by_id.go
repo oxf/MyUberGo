@@ -13,14 +13,14 @@ type GetDriverByID struct {
 }
 
 type GetDriverByIDHandler struct {
-	repo domain.DriverProfileRepository
+	repo domain.DriverRepository
 }
 
-func NewGetDriverByIDHandler(repo domain.DriverProfileRepository, logger *logrus.Entry, metricsClient decorator.MetricsClient) decorator.QueryHandler[GetDriverByID, *domain.DriverProfile] {
+func NewGetDriverByIDHandler(repo domain.DriverRepository, logger *logrus.Entry, metricsClient decorator.MetricsClient) decorator.QueryHandler[GetDriverByID, *domain.Driver] {
 	handler := &GetDriverByIDHandler{repo: repo}
-	return decorator.ApplyQueryDecorators[GetDriverByID, *domain.DriverProfile](handler, logger, metricsClient)
+	return decorator.ApplyQueryDecorators[GetDriverByID, *domain.Driver](handler, logger, metricsClient)
 }
 
-func (h *GetDriverByIDHandler) Handle(ctx context.Context, q GetDriverByID) (*domain.DriverProfile, error) {
-	return h.repo.GetDriverProfileByID(ctx, q.ID)
+func (h *GetDriverByIDHandler) Handle(ctx context.Context, q GetDriverByID) (*domain.Driver, error) {
+	return h.repo.GetDriverByID(ctx, q.ID)
 }

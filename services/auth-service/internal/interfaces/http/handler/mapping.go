@@ -14,5 +14,6 @@ func toUserDto(u *domain.User) contracts.UserDto {
 		Phone:     u.Phone,
 		Role:      contracts.UserRole(u.Role),
 		CreatedAt: u.CreatedAt,
+		ClientId:  u.ClientID,
 	}
 }

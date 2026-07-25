@@ -33,7 +33,7 @@ func main() {
 
 	kafkaBroker := getenv("KAFKA_BROKER", "kafka:29092")
 
-	profileRepo := persistence.NewPostgresDriverProfileRepository(db)
+	profileRepo := persistence.NewPostgresDriverRepository(db)
 	shiftRepo := persistence.NewPostgresShiftRepository(db)
 	outboxRepo := persistence.NewPostgresOutboxRepository(db)
 	transactionManager := persistence.NewPostgresTransactionManager(db)
@@ -44,8 +44,8 @@ func main() {
 
 	application := app.Application{
 		Commands: app.Commands{
-			CreateDriverProfile:  command.NewCreateDriverProfileHandler(profileRepo, logger, metricsClient),
-			UpdateDriverProfile:  command.NewUpdateDriverProfileHandler(profileRepo, logger, metricsClient),
+			CreateDriver:         command.NewCreateDriverHandler(profileRepo, logger, metricsClient),
+			UpdateDriver:         command.NewUpdateDriverHandler(profileRepo, logger, metricsClient),
 			CreateShift:          command.NewCreateShiftHandler(shiftRepo),
 			UpdateShift:          command.NewUpdateShiftHandler(shiftRepo, profileRepo, outboxRepo, transactionManager, logger, metricsClient),
 			ProcessRideAccepted:  command.NewProcessRideAcceptedHandler(profileRepo, transactionManager, logger, metricsClient),
@@ -60,7 +60,7 @@ func main() {
 		},
 	}
 
-	profileHandler := handler.NewDriverProfileHandler(application)
+	profileHandler := handler.NewDriverHandler(application)
 	shiftHandler := handler.NewShiftHandler(application)
 
 	// Initialize health checker
@@ -75,10 +75,10 @@ func main() {
 	mux.HandleFunc("GET /health/ready", healthChecker.ReadyHandler)
 
 	// API endpoints
-	mux.HandleFunc("POST /driver-profile", profileHandler.Create)
-	mux.HandleFunc("PUT /driver-profile/{id}", profileHandler.Update)
-	mux.HandleFunc("GET /driver-profile", profileHandler.GetList)
-	mux.HandleFunc("GET /driver-profile/{id}", profileHandler.GetByID)
+	mux.HandleFunc("POST /driver", profileHandler.Create)
+	mux.HandleFunc("PUT /driver/{id}", profileHandler.Update)
+	mux.HandleFunc("GET /driver", profileHandler.GetList)
+	mux.HandleFunc("GET /driver/{id}", profileHandler.GetByID)
 	mux.HandleFunc("POST /driver-shift/create", shiftHandler.Create)
 	mux.HandleFunc("PUT /driver-shift/{id}", shiftHandler.Update)
 	mux.HandleFunc("GET /driver-shift", shiftHandler.GetList)

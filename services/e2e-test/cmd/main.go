@@ -59,6 +59,16 @@ func main() {
 
 	go deps.Stats.Run(cfg.reportInterval)
 
+	// GET /users, GET /driver, and GET /driver-shift are Admin-only at the
+	// Kong gateway now (see gateway/kong.yml) — every actor's list-endpoint
+	// verifies need this token, so it's fetched once, up front, rather than
+	// per actor.
+	log.Println("logging in as seeded admin (services/shared/migrations/init.sql)...")
+	deps.AdminAccessToken = actors.LoginAsAdmin(ctx, deps.Auth)
+	if deps.AdminAccessToken == "" {
+		log.Println("warning: could not log in as admin before shutdown; list-endpoint verifies will fail")
+	}
+
 	// runID makes emails unique across runs — auth.user.email is unique and
 	// the DB persists between simulator runs.
 	runID := time.Now().Unix()

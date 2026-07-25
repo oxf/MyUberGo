@@ -25,18 +25,22 @@ type SignupResult struct {
 }
 
 type SignupHandler struct {
-	repo   domain.UserRepository
-	hasher services.PasswordHasher
+	repo        domain.UserRepository
+	clientRepo  domain.ClientRepository
+	hasher      services.PasswordHasher
+	transaction services.TransactionManager
 }
 
 func NewSignupHandler(
 	repo domain.UserRepository,
+	clientRepo domain.ClientRepository,
 	hasher services.PasswordHasher,
+	transaction services.TransactionManager,
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandler[Signup, SignupResult] {
 
-	handler := &SignupHandler{repo: repo, hasher: hasher}
+	handler := &SignupHandler{repo: repo, clientRepo: clientRepo, hasher: hasher, transaction: transaction}
 
 	return decorator.ApplyCommandDecorators[Signup, SignupResult](
 		handler,
@@ -56,10 +60,25 @@ func (h *SignupHandler) Handle(ctx context.Context, cmd Signup) (SignupResult, e
 		return SignupResult{}, err
 	}
 
-	id, err := h.repo.CreateUser(ctx, user)
-	if err != nil {
-		return SignupResult{}, err
-	}
+	var result SignupResult
+	err = h.transaction.WithinTransaction(ctx, func(ctx context.Context) error {
+		id, err := h.repo.CreateUser(ctx, user)
+		if err != nil {
+			return err
+		}
 
-	return SignupResult{UserID: id}, nil
+		// Driver rows are deliberately not created here — driver.driver lives
+		// in driver-service's schema, so it's created via POST /api/driver/driver
+		// (see CLAUDE.md "API Gateway" / role-table refactor notes).
+		if cmd.Role == contracts.RoleClient {
+			if _, err := h.clientRepo.Create(ctx, &domain.Client{UserID: id}); err != nil {
+				return err
+			}
+		}
+
+		result = SignupResult{UserID: id}
+		return nil
+	})
+
+	return result, err
 }

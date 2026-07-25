@@ -30,6 +30,13 @@ func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid credentials", http.StatusBadRequest)
 		return
 	}
+	if req.Role != contracts.RoleClient && req.Role != contracts.RoleDriver {
+		// Admin has no signup path — the one seeded admin account is
+		// inserted directly by services/shared/migrations/init.sql (see
+		// CLAUDE.md's "Data model" section).
+		writeError(w, "role must be Client or Driver", http.StatusBadRequest)
+		return
+	}
 
 	result, err := h.app.Commands.Signup.Handle(r.Context(), command.Signup{
 		Email:    req.Email,

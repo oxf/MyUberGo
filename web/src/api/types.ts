@@ -22,15 +22,15 @@ export interface UserDto {
   email: string;
   name: string;
   phone: string;
-  role: 'Client' | 'Driver';
+  role: 'Client' | 'Driver' | 'Admin';
   createdAt: string;
+  // Only populated by GET /me for the caller's own profile.
+  clientId?: string | null;
 }
 
-export interface DriverProfileDto {
+export interface DriverDto {
   id: string;
   userId: string;
-  driverName: string;
-  phone: string;
   rating: number;
   vehicleType: string;
   licencePlate: string;

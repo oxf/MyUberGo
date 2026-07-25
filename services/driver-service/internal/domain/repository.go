@@ -2,12 +2,12 @@ package domain
 
 import "context"
 
-type DriverProfileRepository interface {
-	CreateDriverProfile(ctx context.Context, profile *DriverProfile) (string, error)
-	UpdateDriverProfile(ctx context.Context, id, name, phone, vehicleType, licencePlate string) error
-	GetDriverProfileList(ctx context.Context, req PageRequest) ([]*DriverProfile, error)
-	CountDriverProfiles(ctx context.Context) (int, error)
-	GetDriverProfileByID(ctx context.Context, id string) (*DriverProfile, error)
+type DriverRepository interface {
+	CreateDriver(ctx context.Context, driver *Driver) (string, error)
+	UpdateDriver(ctx context.Context, id, vehicleType, licencePlate string) error
+	GetDriverList(ctx context.Context, req PageRequest) ([]*Driver, error)
+	CountDrivers(ctx context.Context) (int, error)
+	GetDriverByID(ctx context.Context, id string) (*Driver, error)
 	// UpdateDriverStatus flips status from fromStatus to toStatus, guarded by
 	// the expected current status. Returns false (not an error) if the guard
 	// didn't match, e.g. a redelivered/duplicate event.

@@ -13,8 +13,8 @@ type Application struct {
 }
 
 type Commands struct {
-	CreateDriverProfile  decorator.CommandHandler[command.CreateDriverProfile, command.CreateDriverProfileResult]
-	UpdateDriverProfile  decorator.CommandHandlerNoResult[command.UpdateDriverProfile]
+	CreateDriver         decorator.CommandHandler[command.CreateDriver, command.CreateDriverResult]
+	UpdateDriver         decorator.CommandHandlerNoResult[command.UpdateDriver]
 	CreateShift          decorator.CommandHandler[command.CreateShift, command.CreateShiftResult]
 	UpdateShift          decorator.CommandHandlerNoResult[command.UpdateShift]
 	ProcessRideAccepted  decorator.CommandHandlerNoResult[command.ProcessRideAccepted]
@@ -23,8 +23,8 @@ type Commands struct {
 }
 
 type Queries struct {
-	GetDriverList decorator.QueryHandler[query.GetDriverList, query.PagedResult[*domain.DriverProfile]]
-	GetDriverByID decorator.QueryHandler[query.GetDriverByID, *domain.DriverProfile]
+	GetDriverList decorator.QueryHandler[query.GetDriverList, query.PagedResult[*domain.Driver]]
+	GetDriverByID decorator.QueryHandler[query.GetDriverByID, *domain.Driver]
 	GetShiftList  decorator.QueryHandler[query.GetShiftList, query.PagedResult[*domain.Shift]]
 	GetShiftByID  decorator.QueryHandler[query.GetShiftByID, *domain.Shift]
 }

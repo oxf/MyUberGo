@@ -17,3 +17,14 @@ type RefreshTokenRepository interface {
 	Exists(ctx context.Context, userID, token string) (bool, error)
 	Delete(ctx context.Context, userID, token string) error
 }
+
+type ClientRepository interface {
+	Create(ctx context.Context, c *Client) (string, error)
+	// GetByUserID returns ErrNotFound if the user has no client row (e.g.
+	// the user is a Driver or Admin).
+	GetByUserID(ctx context.Context, userID string) (*Client, error)
+}
+
+type AdminRepository interface {
+	Create(ctx context.Context, a *Admin) (string, error)
+}

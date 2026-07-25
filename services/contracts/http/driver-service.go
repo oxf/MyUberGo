@@ -1,10 +1,8 @@
 package contracts
 
-type DriverProfileDto struct {
+type DriverDto struct {
 	Id                  string  `json:"id"`
 	UserId              string  `json:"userId"`
-	DriverName          string  `json:"driverName"`
-	Phone               string  `json:"phone"`
 	Rating              float64 `json:"rating"`
 	VehicleType         string  `json:"vehicleType"`
 	LicencePlate        string  `json:"licencePlate"`
@@ -13,22 +11,17 @@ type DriverProfileDto struct {
 	CreatedAt           string  `json:"createdAt"`
 }
 
-type CreateDriverProfileDto struct {
+type CreateDriverDto struct {
 	UserId       string `json:"userId"`
-	DriverName   string `json:"driverName"`
-	Phone        string `json:"phone"`
 	VehicleType  string `json:"vehicleType"`
 	LicencePlate string `json:"licencePlate"`
 }
 
-type CreateDriverProfileResponse struct {
+type CreateDriverResponse struct {
 	Id string `json:"id"`
 }
 
-type UpdateDriverProfileDto struct {
-	UserId       string `json:"userId"`
-	DriverName   string `json:"driverName"`
-	Phone        string `json:"phone"`
+type UpdateDriverDto struct {
 	VehicleType  string `json:"vehicleType"`
 	LicencePlate string `json:"licencePlate"`
 }

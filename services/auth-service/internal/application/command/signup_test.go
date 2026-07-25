@@ -19,14 +19,31 @@ func (f *fakeUserRepo) CreateUser(ctx context.Context, u *domain.User) (string, 
 	return "user-1", nil
 }
 
+type fakeClientRepo struct {
+	domain.ClientRepository
+	created *domain.Client
+}
+
+func (f *fakeClientRepo) Create(ctx context.Context, c *domain.Client) (string, error) {
+	f.created = c
+	return "client-1", nil
+}
+
 type fakeHasher struct{}
 
 func (fakeHasher) Hash(plain string) (string, error) { return "hashed:" + plain, nil }
 func (fakeHasher) Compare(hash, plain string) error  { return nil }
 
+type fakeTransactionManager struct{}
+
+func (fakeTransactionManager) WithinTransaction(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
+
 func TestSignup_HashesPasswordAndCreatesUser(t *testing.T) {
 	repo := &fakeUserRepo{}
-	h := &SignupHandler{repo: repo, hasher: fakeHasher{}}
+	clientRepo := &fakeClientRepo{}
+	h := &SignupHandler{repo: repo, clientRepo: clientRepo, hasher: fakeHasher{}, transaction: fakeTransactionManager{}}
 
 	result, err := h.Handle(context.Background(), Signup{
 		Email: "a@b.com", Password: "plain-pw", Name: "Alice", Phone: "+123", Role: contracts.RoleClient,
@@ -39,5 +56,23 @@ func TestSignup_HashesPasswordAndCreatesUser(t *testing.T) {
 	}
 	if repo.created == nil || repo.created.PasswordHash != "hashed:plain-pw" {
 		t.Fatalf("user not created with hashed password: %+v", repo.created)
+	}
+	if clientRepo.created == nil || clientRepo.created.UserID != "user-1" {
+		t.Fatalf("client row not created for user: %+v", clientRepo.created)
+	}
+}
+
+func TestSignup_DriverGetsNoClientRow(t *testing.T) {
+	repo := &fakeUserRepo{}
+	clientRepo := &fakeClientRepo{}
+	h := &SignupHandler{repo: repo, clientRepo: clientRepo, hasher: fakeHasher{}, transaction: fakeTransactionManager{}}
+
+	if _, err := h.Handle(context.Background(), Signup{
+		Email: "d@b.com", Password: "plain-pw", Name: "Dave", Phone: "+123", Role: contracts.RoleDriver,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if clientRepo.created != nil {
+		t.Fatalf("expected no client row for a Driver signup, got: %+v", clientRepo.created)
 	}
 }

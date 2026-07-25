@@ -16,13 +16,13 @@ type ProcessRideAccepted struct {
 }
 
 type ProcessRideAcceptedHandler struct {
-	profileRepo domain.DriverProfileRepository
+	profileRepo domain.DriverRepository
 	transaction services.TransactionManager
 	logger      *logrus.Entry
 }
 
 func NewProcessRideAcceptedHandler(
-	profileRepo domain.DriverProfileRepository,
+	profileRepo domain.DriverRepository,
 	transaction services.TransactionManager,
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,

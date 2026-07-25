@@ -20,7 +20,7 @@ func NewPostgresUserRepository(db *sql.DB) *PostgresUserRepository {
 
 func (r *PostgresUserRepository) CreateUser(ctx context.Context, u *domain.User) (string, error) {
 	var id string
-	err := r.db.QueryRowContext(ctx, `
+	err := Executor(ctx, r.db).QueryRowContext(ctx, `
 		INSERT INTO auth."user" (email, password_hash, name, phone, role)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id
@@ -32,7 +32,7 @@ func (r *PostgresUserRepository) CreateUser(ctx context.Context, u *domain.User)
 // login, which needs it to verify the submitted password. Every other read
 // path never selects password_hash.
 func (r *PostgresUserRepository) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := Executor(ctx, r.db).QueryRowContext(ctx, `
 		SELECT id, email, password_hash, name, phone, role, created_at, updated_at
 		FROM auth."user"
 		WHERE email = $1 AND deleted_at IS NULL
@@ -46,7 +46,7 @@ func (r *PostgresUserRepository) GetByEmail(ctx context.Context, email string) (
 }
 
 func (r *PostgresUserRepository) GetByID(ctx context.Context, id string) (*domain.User, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := Executor(ctx, r.db).QueryRowContext(ctx, `
 		SELECT id, email, name, phone, role, created_at, updated_at
 		FROM auth."user"
 		WHERE id = $1 AND deleted_at IS NULL
@@ -77,7 +77,7 @@ func (r *PostgresUserRepository) GetUserList(ctx context.Context, req domain.Pag
 		LIMIT $1 OFFSET $2
 	`, col, dir)
 
-	rows, err := r.db.QueryContext(ctx, query, req.PageSize, (req.Page-1)*req.PageSize)
+	rows, err := Executor(ctx, r.db).QueryContext(ctx, query, req.PageSize, (req.Page-1)*req.PageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +96,7 @@ func (r *PostgresUserRepository) GetUserList(ctx context.Context, req domain.Pag
 
 func (r *PostgresUserRepository) CountUsers(ctx context.Context) (int, error) {
 	var n int
-	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth."user" WHERE deleted_at IS NULL`).Scan(&n)
+	err := Executor(ctx, r.db).QueryRowContext(ctx, `SELECT COUNT(*) FROM auth."user" WHERE deleted_at IS NULL`).Scan(&n)
 	return n, err
 }
 

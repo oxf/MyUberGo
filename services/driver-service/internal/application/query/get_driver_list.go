@@ -16,26 +16,26 @@ type GetDriverList struct {
 }
 
 type GetDriverListHandler struct {
-	repo domain.DriverProfileRepository
+	repo domain.DriverRepository
 }
 
-func NewGetDriverListHandler(repo domain.DriverProfileRepository, logger *logrus.Entry, metricsClient decorator.MetricsClient) decorator.QueryHandler[GetDriverList, PagedResult[*domain.DriverProfile]] {
+func NewGetDriverListHandler(repo domain.DriverRepository, logger *logrus.Entry, metricsClient decorator.MetricsClient) decorator.QueryHandler[GetDriverList, PagedResult[*domain.Driver]] {
 	handler := &GetDriverListHandler{repo: repo}
-	return decorator.ApplyQueryDecorators[GetDriverList, PagedResult[*domain.DriverProfile]](handler, logger, metricsClient)
+	return decorator.ApplyQueryDecorators[GetDriverList, PagedResult[*domain.Driver]](handler, logger, metricsClient)
 }
 
-func (h *GetDriverListHandler) Handle(ctx context.Context, q GetDriverList) (PagedResult[*domain.DriverProfile], error) {
-	total, err := h.repo.CountDriverProfiles(ctx)
+func (h *GetDriverListHandler) Handle(ctx context.Context, q GetDriverList) (PagedResult[*domain.Driver], error) {
+	total, err := h.repo.CountDrivers(ctx)
 	if err != nil {
-		return PagedResult[*domain.DriverProfile]{}, err
+		return PagedResult[*domain.Driver]{}, err
 	}
 
-	items, err := h.repo.GetDriverProfileList(ctx, domain.PageRequest{
+	items, err := h.repo.GetDriverList(ctx, domain.PageRequest{
 		Page: q.Page, PageSize: q.PageSize, SortBy: q.SortBy, SortDir: q.SortDir,
 	})
 	if err != nil {
-		return PagedResult[*domain.DriverProfile]{}, err
+		return PagedResult[*domain.Driver]{}, err
 	}
 
-	return PagedResult[*domain.DriverProfile]{Items: items, TotalCount: total}, nil
+	return PagedResult[*domain.Driver]{Items: items, TotalCount: total}, nil
 }

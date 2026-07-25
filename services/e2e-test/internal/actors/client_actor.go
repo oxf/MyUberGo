@@ -65,7 +65,7 @@ func (a *ClientActor) Run(ctx context.Context) {
 			a.refresh(ctx, a.ID, acc)
 		}
 		if iter%5 == 0 {
-			a.verifyRideInList(ctx, acc, rideID)
+			a.verifyRideInList(ctx, rideID)
 		}
 	}
 }
@@ -79,7 +79,7 @@ func (a *ClientActor) requestRide(ctx context.Context, acc *account) string {
 	v := &Verify{}
 	if err == nil {
 		v.NotEmpty("rideId", resp.RideID)
-		v.Eq("clientId", resp.ClientID, acc.userID)
+		v.Eq("clientId", resp.ClientID, acc.clientID)
 		v.Eq("status", resp.Status, "Requested")
 	}
 	a.record(a.ID, "ride.request", start, err, v)
@@ -95,7 +95,7 @@ func (a *ClientActor) verifyRide(ctx context.Context, acc *account, rideID strin
 	v := &Verify{}
 	if err == nil {
 		v.Eq("id", ride.ID, rideID)
-		v.Eq("clientId", ride.ClientID, acc.userID)
+		v.Eq("clientId", ride.ClientID, acc.clientID)
 		v.Eq("status", ride.Status, "Requested")
 		v.True("driverId", ride.DriverID == nil, "expected no driver assigned")
 		v.EqFloat("pickup.lat", ride.Pickup.Latitude, a.pending.PickupLat)
@@ -149,9 +149,12 @@ func (a *ClientActor) cancelAndVerifyRide(ctx context.Context, acc *account, rid
 	a.record(a.ID, "ride.cancel.conflict", start, nil, v)
 }
 
-func (a *ClientActor) verifyRideInList(ctx context.Context, acc *account, rideID string) {
+// verifyRideInList uses the shared admin token: GET /ride is Admin-only at
+// the Kong gateway now (see gateway/kong.yml), not reachable with the
+// client's own token.
+func (a *ClientActor) verifyRideInList(ctx context.Context, rideID string) {
 	start := time.Now()
-	resp, err := a.Ride.ListRides(ctx, acc.accessToken, 1, 50)
+	resp, err := a.Ride.ListRides(ctx, a.Deps.AdminAccessToken, 1, 50)
 	v := &Verify{}
 	if err == nil {
 		found := false
@@ -178,6 +181,7 @@ func (a *ClientActor) verifyMe(ctx context.Context, acc *account) {
 		v.Eq("id", me.ID, acc.userID)
 		v.Eq("email", me.Email, a.Email)
 		v.Eq("role", string(me.Role), string(contracts.RoleClient))
+		v.True("clientId", me.ClientId != nil && *me.ClientId != "", "expected a non-empty clientId for a Client")
 	}
 	a.record(a.ID, "auth.me", start, err, v)
 }
@@ -201,9 +205,12 @@ func (a *ClientActor) logoutDecoyAndVerify(ctx context.Context) {
 	a.record(a.ID, "auth.logout.refresh_rejected", start, nil, v)
 }
 
+// verifyUserInList uses the shared admin token: GET /users is Admin-only at
+// the Kong gateway now (see gateway/kong.yml), not reachable with the
+// client's own token.
 func (a *ClientActor) verifyUserInList(ctx context.Context, acc *account) {
 	start := time.Now()
-	resp, err := a.Auth.ListUsers(ctx, acc.accessToken, 1, 50)
+	resp, err := a.Auth.ListUsers(ctx, a.Deps.AdminAccessToken, 1, 50)
 	v := &Verify{}
 	if err == nil {
 		found := false

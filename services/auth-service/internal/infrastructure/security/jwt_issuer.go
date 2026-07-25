@@ -23,8 +23,8 @@ func NewJWTIssuer(secret []byte, accessTTL, refreshTTL time.Duration) services.T
 	return &JWTIssuer{secret: secret, accessTTL: accessTTL, refreshTTL: refreshTTL}
 }
 
-func (j *JWTIssuer) IssueAccess(userID, email, role string) (string, int, error) {
-	token, err := j.createToken(userID, email, role, j.accessTTL)
+func (j *JWTIssuer) IssueAccess(userID, email, role, clientID string) (string, int, error) {
+	token, err := j.createToken(userID, email, role, clientID, j.accessTTL)
 	if err != nil {
 		return "", 0, err
 	}
@@ -33,7 +33,7 @@ func (j *JWTIssuer) IssueAccess(userID, email, role string) (string, int, error)
 
 func (j *JWTIssuer) IssueRefresh(userID string) (string, time.Time, error) {
 	expiresAt := time.Now().Add(j.refreshTTL)
-	token, err := j.createToken(userID, "", "", j.refreshTTL)
+	token, err := j.createToken(userID, "", "", "", j.refreshTTL)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -56,7 +56,7 @@ func (j *JWTIssuer) ParseRefresh(tokenStr string) (string, error) {
 	return uid, nil
 }
 
-func (j *JWTIssuer) createToken(userID, email, role string, ttl time.Duration) (string, error) {
+func (j *JWTIssuer) createToken(userID, email, role, clientID string, ttl time.Duration) (string, error) {
 	claims := jwt.MapClaims{
 		"user_id": userID,
 		"iss":     issuer,
@@ -68,6 +68,9 @@ func (j *JWTIssuer) createToken(userID, email, role string, ttl time.Duration) (
 	}
 	if role != "" {
 		claims["role"] = role
+	}
+	if clientID != "" {
+		claims["client_id"] = clientID
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(j.secret)
