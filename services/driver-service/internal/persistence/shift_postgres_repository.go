@@ -142,7 +142,7 @@ func (r *PostgresShiftRepository) GetShiftByID(ctx context.Context, id string) (
 }
 
 // scanShift reads one shift row, normalizing timestamps to RFC3339 (matching
-// driver-profile CreatedAt) instead of the driver's raw time encoding.
+// driver.driver's CreatedAt) instead of the driver's raw time encoding.
 func scanShift(row interface{ Scan(dest ...any) error }) (*domain.Shift, error) {
 	var d domain.Shift
 	var startedAt time.Time

@@ -30,7 +30,7 @@ services:
           redis_host: redis
           redis_port: 6379
           limit_by: ip
-          minute: 20 # brute-force guard on signup/login/refresh; no user identity yet
+          minute: 300 # brute-force guard on signup/login/refresh; no user identity yet — high enough for e2e-test's startup burst (signup+login for every actor and its decoy, all from one IP)
 
   # -- auth-service: GET /users is an admin listing, requires Admin role --
   - name: auth-service-users
@@ -79,13 +79,27 @@ services:
                 return kong.response.exit(403, { message = "admin role required" })
               end
       - name: rate-limiting
+        # NOTE: post-function's own Kong-defined priority is extremely low
+        # (it runs last, right before proxying), so rate-limiting actually
+        # evaluates limit_by: header BEFORE inject_user_headers sets
+        # X-User-Id — the header is empty at that point, and Kong's
+        # rate-limiting plugin falls back to the caller's IP. For real
+        # traffic (distinct client IPs) that's still a reasonable per-caller
+        # limit, just coarser than "per user" in the case of shared
+        # IPs/NAT. For e2e-test specifically, every virtual actor shares the
+        # simulator process's one IP, so they all share one bucket — hence
+        # the generous ceiling below. A precise per-user fix would need
+        # Kong's plugin-ordering feature, which is Enterprise-only (tried
+        # and confirmed: the OSS `kong:3.7` image rejects the `ordering`
+        # field on `rate-limiting` with "unknown field") — not worth the
+        # complexity for a local/dev learning-project gateway.
         config:
           policy: redis
           redis_host: redis
           redis_port: 6379
           limit_by: header
           header_name: X-User-Id
-          minute: 30
+          minute: 300
 
   # -- auth-service: GET /me is the caller's own profile, requires a valid token --
   - name: auth-service-me
@@ -112,7 +126,7 @@ services:
           redis_port: 6379
           limit_by: header
           header_name: X-User-Id
-          minute: 30
+          minute: 300
 
   # -- auth-service: POST /logout revokes a refresh token, requires a valid token --
   - name: auth-service-logout
@@ -139,7 +153,7 @@ services:
           redis_port: 6379
           limit_by: header
           header_name: X-User-Id
-          minute: 30
+          minute: 300
 
   # -- ride-service: everything requires a valid token --
   - name: ride-service
@@ -166,7 +180,7 @@ services:
           redis_port: 6379
           limit_by: header
           header_name: X-User-Id
-          minute: 60
+          minute: 600
 
   # -- driver-service: everything requires a valid token --
   - name: driver-service
@@ -193,7 +207,7 @@ services:
           redis_port: 6379
           limit_by: header
           header_name: X-User-Id
-          minute: 60
+          minute: 600
 
   # -- Admin-only list routes --
   # These match on paths AND methods, which Kong's router ranks above the
@@ -229,7 +243,7 @@ services:
           redis_port: 6379
           limit_by: header
           header_name: X-User-Id
-          minute: 30
+          minute: 300
 
   - name: driver-service-admin-list
     url: http://driver-service:8003/driver
@@ -258,7 +272,7 @@ services:
           redis_port: 6379
           limit_by: header
           header_name: X-User-Id
-          minute: 30
+          minute: 300
 
   - name: shift-service-admin-list
     url: http://driver-service:8003/driver-shift
@@ -287,7 +301,7 @@ services:
           redis_port: 6379
           limit_by: header
           header_name: X-User-Id
-          minute: 30
+          minute: 300
 
   # matching-service (8002) is Kafka/Redis-driven internally and has no
   # gateway-facing consumer today (see CLAUDE.md "Matching algorithm

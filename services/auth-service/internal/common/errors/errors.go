@@ -16,3 +16,6 @@ var ErrInvalidCredentials = errors.New("invalid credentials")
 // ErrInvalidToken signals a refresh token that doesn't parse, isn't found in
 // auth.refresh_token, or has expired/been revoked.
 var ErrInvalidToken = errors.New("invalid token")
+
+// ErrConflict signals a signup with an email that's already registered.
+var ErrConflict = errors.New("email already registered")

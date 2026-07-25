@@ -60,3 +60,4 @@ node_modules/
 
 # Git worktrees
 .worktrees/
+/graphify-out/

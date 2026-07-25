@@ -45,7 +45,11 @@ func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 		Phone:    req.Phone,
 		Role:     req.Role,
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, commonerrors.ErrConflict):
+		writeError(w, err.Error(), http.StatusConflict)
+		return
+	case err != nil:
 		writeError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

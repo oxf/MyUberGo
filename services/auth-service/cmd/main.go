@@ -29,6 +29,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	db.SetMaxOpenConns(atoi(getenv("DB_MAX_OPEN_CONNS", "20")))
+	db.SetMaxIdleConns(atoi(getenv("DB_MAX_IDLE_CONNS", "10")))
+	db.SetConnMaxLifetime(time.Duration(atoi(getenv("DB_CONN_MAX_LIFETIME_MIN", "5"))) * time.Minute)
 
 	jwtSecret := []byte(getenv("JWT_SECRET", "secret_change_me"))
 	accessTTL := time.Duration(atoi(getenv("AUTH_TOKEN_EXP_MIN", "15"))) * time.Minute

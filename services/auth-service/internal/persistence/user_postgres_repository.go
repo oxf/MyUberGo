@@ -3,11 +3,14 @@ package persistence
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	commonerrors "auth-service/internal/common/errors"
 	"auth-service/internal/domain"
+
+	"github.com/lib/pq"
 )
 
 type PostgresUserRepository struct {
@@ -25,6 +28,12 @@ func (r *PostgresUserRepository) CreateUser(ctx context.Context, u *domain.User)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id
 	`, u.Email, u.PasswordHash, u.Name, u.Phone, u.Role).Scan(&id)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return "", commonerrors.ErrConflict
+		}
+	}
 	return id, err
 }
 

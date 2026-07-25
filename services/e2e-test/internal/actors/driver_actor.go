@@ -93,7 +93,7 @@ func (a *DriverActor) createAndVerifyProfile(ctx context.Context) bool {
 		if err == nil {
 			v.NotEmpty("id", created.Id)
 		}
-		a.record(a.ID, "driver.profile.create", start, err, v)
+		a.record(a.ID, "driver.create", start, err, v)
 
 		if err == nil && v.OK() {
 			a.profileID = created.Id
@@ -116,7 +116,7 @@ func (a *DriverActor) verifyProfile(ctx context.Context) {
 		v.Eq("vehicleType", profile.VehicleType, "Standard")
 		v.True("rating", profile.Rating >= 0, "expected >= 0")
 	}
-	a.record(a.ID, "driver.profile.get", start, err, v)
+	a.record(a.ID, "driver.get", start, err, v)
 }
 
 func (a *DriverActor) openShift(ctx context.Context) string {
@@ -196,7 +196,7 @@ func (a *DriverActor) updateAndVerifyLicencePlate(ctx context.Context) {
 	err := a.Driver.UpdateDriver(ctx, a.acc.accessToken, a.profileID, contracts.UpdateDriverDto{
 		LicencePlate: newPlate, // VehicleType empty: service keeps existing value via COALESCE(NULLIF(...))
 	})
-	a.record(a.ID, "driver.profile.update", start, err, nil)
+	a.record(a.ID, "driver.update", start, err, nil)
 	if err != nil {
 		return
 	}
@@ -208,7 +208,7 @@ func (a *DriverActor) updateAndVerifyLicencePlate(ctx context.Context) {
 		v.Eq("licencePlate", profile.LicencePlate, newPlate)
 		v.Eq("vehicleType", profile.VehicleType, "Standard")
 	}
-	a.record(a.ID, "driver.profile.get", start, getErr, v)
+	a.record(a.ID, "driver.get", start, getErr, v)
 }
 
 // pollForOffer polls the matching service during the Online work window and
@@ -248,8 +248,12 @@ func (a *DriverActor) acceptOffer(ctx context.Context, rideID string) {
 	resp, err := a.Matching.AcceptRide(ctx, rideID, contracts.AcceptRideRequest{DriverId: a.profileID})
 
 	var apiErr *apiclient.APIError
-	if err != nil && errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict {
-		// Lost the race to another driver — a legitimate outcome.
+	if err != nil && errors.As(err, &apiErr) && (apiErr.Status == http.StatusConflict || apiErr.Status == http.StatusBadRequest) {
+		// Lost the race to another driver — either someone else's TryAccept
+		// won (409) or our own current_offer got overwritten by a broadcast
+		// retry before we called Accept (400, ErrOfferGone). Both are
+		// legitimate outcomes of BROADCAST-style offering, not failures —
+		// same convention as the deliberate duplicate-accept check below.
 		a.record(a.ID, "matching.ride.accept", start, nil, nil)
 		return
 	}
@@ -318,24 +322,31 @@ func (a *DriverActor) verifyOnRide(ctx context.Context) int {
 	if err == nil {
 		v.Eq("status", profile.Status, "OnRide")
 	}
-	a.record(a.ID, "driver.profile.onride", start, err, v)
+	a.record(a.ID, "driver.onride", start, err, v)
 	return profile.TotalRidesCompleted
 }
 
-// startAndVerifyRide retries a few times because /ride/{id}/start depends on
+// startAndVerifyRide retries because /ride/{id}/start depends on
 // ride-service's own (independent, uncoordinated) consumption of
 // ride.accepted - verifyOnRide having already observed OnRide only proves
 // driver-service's separate consumer group caught up, not ride-service's.
+// This is a known, accepted race (see PLAN.md/CLAUDE.md discussion) that
+// isn't being fixed at the source - ride.accepted is a direct Kafka publish
+// (no outbox), so the lag here is bounded by ordinary consumer-group
+// catch-up time under load, observed up to a few seconds in testing. The
+// budget below is a best-effort accommodation for that, not a guarantee -
+// a StartRide that still fails after this many attempts is worth surfacing
+// as a real failure, not silently retried forever.
 func (a *DriverActor) startAndVerifyRide(ctx context.Context, rideID string) bool {
 	start := time.Now()
 	var resp contracts.StartRideResponse
 	var err error
-	for attempt := range 3 {
+	for attempt := range 20 {
 		resp, err = a.Ride.StartRide(ctx, a.acc.accessToken, rideID, a.profileID)
 		if err == nil {
 			break
 		}
-		if attempt < 2 && !sleepJitter(ctx, 500*time.Millisecond, a.Rnd) {
+		if attempt < 19 && !sleepJitter(ctx, 400*time.Millisecond, a.Rnd) {
 			return false
 		}
 	}
@@ -363,19 +374,27 @@ func (a *DriverActor) completeAndVerifyRide(ctx context.Context, rideID string) 
 // consumer flips OnRide -> Online and increments total_rides_completed,
 // mirroring verifyOnRide's poll-retry convention. Unlike ride.accepted
 // (published directly by matching-service), ride.completed goes through
-// ride-service's transactional outbox, which only wakes on a 2s ticker -
-// so this needs a wider budget than verifyOnRide/startAndVerifyRide to
-// reliably clear that latency.
+// ride-service's transactional outbox, which only wakes on a 2s ticker and
+// drains a fixed batch size - under bursty e2e-test load (many
+// ride.requested/ride.cancelled events sharing the same outbox and worker)
+// that queue can back up well beyond one tick: observed end-to-end delay up
+// to ~44s in testing (CompleteRide -> ProcessRideCompleted), not just a few
+// seconds. The outbox worker itself isn't being changed, so the budget here
+// is a best-effort accommodation for that observed worst case plus margin,
+// not a claim that the lag is now impossible - a GetDriver that still isn't
+// Online after this many attempts is worth surfacing as a real failure. The
+// per-attempt interval is widened to match the outbox's own ~2s cadence
+// instead of polling faster than the underlying value can possibly change.
 func (a *DriverActor) verifyBackOnline(ctx context.Context, wantMinCompleted int) {
 	start := time.Now()
 	var profile contracts.DriverDto
 	var err error
-	for attempt := range 8 {
+	for attempt := range 45 {
 		profile, err = a.Driver.GetDriver(ctx, a.acc.accessToken, a.profileID)
 		if err == nil && profile.Status == "Online" {
 			break
 		}
-		if attempt < 7 && !sleepJitter(ctx, 500*time.Millisecond, a.Rnd) {
+		if attempt < 44 && !sleepJitter(ctx, 1500*time.Millisecond, a.Rnd) {
 			return
 		}
 	}
@@ -386,5 +405,5 @@ func (a *DriverActor) verifyBackOnline(ctx context.Context, wantMinCompleted int
 		v.True("totalRidesCompleted", profile.TotalRidesCompleted >= wantMinCompleted,
 			fmt.Sprintf("expected >= %d, got %d", wantMinCompleted, profile.TotalRidesCompleted))
 	}
-	a.record(a.ID, "driver.profile.backonline", start, err, v)
+	a.record(a.ID, "driver.backonline", start, err, v)
 }

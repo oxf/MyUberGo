@@ -2,8 +2,9 @@ package actors
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"math/rand"
+	"net/http"
 	"time"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
@@ -82,12 +83,87 @@ func (d Deps) record(actor, op string, start time.Time, err error, v *Verify) {
 
 // signupAndLogin retries until it has a working account or ctx is cancelled
 // (nil return). Errors are recorded, never fatal — the stack may still be
-// starting up when the simulator launches.
+// starting up when the simulator launches. Signup and Login are retried as
+// two independent phases (see ensureSignedUp/loginUntilReady) rather than
+// one combined retry unit: if Signup succeeds but Login then fails (a 429,
+// or any other blip), retrying the combined unit would re-send Signup with
+// an email that's now already taken, 500ing forever.
 func (d Deps) signupAndLogin(ctx context.Context, actor, email, name, phone string, role contracts.UserRole, rnd *rand.Rand) *account {
+	if !d.ensureSignedUp(ctx, actor, email, name, phone, role, rnd) {
+		return nil
+	}
+	acc := d.loginUntilReady(ctx, actor, email, rnd)
+	if acc == nil {
+		return nil
+	}
+
+	// userID and a Client's clientId (auth.client(id), distinct from
+	// userID — see the role-table refactor notes in CLAUDE.md/PLAN.md) both
+	// come from GET /me rather than the Signup response body, since
+	// ensureSignedUp's "already registered" fallback path (below) never
+	// gets a fresh Signup response to read a userId from. Retried like the
+	// two phases above it — a transient /me blip must not leave the account
+	// permanently unusable with an empty userID. A Driver has no client
+	// row, so me.ClientId is nil and acc.clientID stays empty, which is
+	// expected, not an error.
+	me, ok := d.getMeUntilReady(ctx, actor, acc.accessToken, rnd)
+	if !ok {
+		return nil
+	}
+	acc.userID = me.ID
+	if me.ClientId != nil {
+		acc.clientID = *me.ClientId
+	}
+
+	return acc
+}
+
+// ensureSignedUp retries Signup alone until it succeeds or ctx is done. A
+// 409 (email already registered) is treated as a legitimate outcome, not a
+// failure — same convention as a legitimate lost-race 409 in
+// driver_actor.go's acceptOffer — because the only realistic way e2e-test
+// sees a 409 for one of its own generated emails is an earlier Signup call
+// in this same retry loop having actually gone through.
+func (d Deps) ensureSignedUp(ctx context.Context, actor, email, name, phone string, role contracts.UserRole, rnd *rand.Rand) bool {
 	for {
-		acc, err := d.trySignupAndLogin(ctx, actor, email, name, phone, role)
+		start := time.Now()
+		signup, err := d.Auth.Signup(ctx, contracts.SignupRequest{
+			Email: email, Password: password, Name: name, Phone: phone, Role: role,
+		})
+
+		var apiErr *apiclient.APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict {
+			d.record(actor, "auth.signup", start, nil, nil)
+			return true
+		}
+
+		v := &Verify{}
 		if err == nil {
-			return acc
+			v.NotEmpty("userId", signup.UserID)
+		}
+		d.record(actor, "auth.signup", start, err, v)
+		if err == nil && v.OK() {
+			return true
+		}
+		if !sleepJitter(ctx, 3*time.Second, rnd) {
+			return false
+		}
+	}
+}
+
+// loginUntilReady retries Login alone until it succeeds or ctx is done.
+func (d Deps) loginUntilReady(ctx context.Context, actor, email string, rnd *rand.Rand) *account {
+	for {
+		start := time.Now()
+		login, err := d.Auth.Login(ctx, contracts.LoginRequest{Email: email, Password: password})
+		v := &Verify{}
+		if err == nil {
+			v.NotEmpty("accessToken", login.AccessToken)
+			v.NotEmpty("refreshToken", login.RefreshToken)
+		}
+		d.record(actor, "auth.login", start, err, v)
+		if err == nil && v.OK() {
+			return &account{accessToken: login.AccessToken, refreshToken: login.RefreshToken}
 		}
 		if !sleepJitter(ctx, 3*time.Second, rnd) {
 			return nil
@@ -95,47 +171,23 @@ func (d Deps) signupAndLogin(ctx context.Context, actor, email, name, phone stri
 	}
 }
 
-func (d Deps) trySignupAndLogin(ctx context.Context, actor, email, name, phone string, role contracts.UserRole) (*account, error) {
-	start := time.Now()
-	signup, err := d.Auth.Signup(ctx, contracts.SignupRequest{
-		Email: email, Password: password, Name: name, Phone: phone, Role: role,
-	})
-	v := &Verify{}
-	if err == nil {
-		v.NotEmpty("userId", signup.UserID)
+// getMeUntilReady retries GET /me alone until it succeeds or ctx is done.
+func (d Deps) getMeUntilReady(ctx context.Context, actor string, accessToken string, rnd *rand.Rand) (contracts.UserDto, bool) {
+	for {
+		start := time.Now()
+		me, err := d.Auth.Me(ctx, accessToken)
+		v := &Verify{}
+		if err == nil {
+			v.NotEmpty("id", me.ID)
+		}
+		d.record(actor, "auth.me", start, err, v)
+		if err == nil && v.OK() {
+			return me, true
+		}
+		if !sleepJitter(ctx, 3*time.Second, rnd) {
+			return contracts.UserDto{}, false
+		}
 	}
-	d.record(actor, "auth.signup", start, err, v)
-	if err != nil || !v.OK() {
-		return nil, fmt.Errorf("signup: %s", firstNonEmpty(errString(err), v.Detail()))
-	}
-
-	start = time.Now()
-	login, err := d.Auth.Login(ctx, contracts.LoginRequest{Email: email, Password: password})
-	v = &Verify{}
-	if err == nil {
-		v.NotEmpty("accessToken", login.AccessToken)
-		v.NotEmpty("refreshToken", login.RefreshToken)
-	}
-	d.record(actor, "auth.login", start, err, v)
-	if err != nil || !v.OK() {
-		return nil, fmt.Errorf("login: %s", firstNonEmpty(errString(err), v.Detail()))
-	}
-
-	acc := &account{
-		userID:       signup.UserID,
-		accessToken:  login.AccessToken,
-		refreshToken: login.RefreshToken,
-	}
-
-	// Best-effort: a Client's clientId (auth.client(id), distinct from
-	// userID — see the role-table refactor notes in CLAUDE.md/PLAN.md) is
-	// only known via GET /me. A Driver has no client row, so me.ClientId is
-	// nil and acc.clientID stays empty, which is expected, not an error.
-	if me, err := d.Auth.Me(ctx, acc.accessToken); err == nil && me.ClientId != nil {
-		acc.clientID = *me.ClientId
-	}
-
-	return acc, nil
 }
 
 // refresh exercises token refresh; the same refresh token stays valid (no
@@ -164,18 +216,4 @@ func sleepJitter(ctx context.Context, base time.Duration, rnd *rand.Rand) bool {
 	case <-t.C:
 		return true
 	}
-}
-
-func errString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
-}
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }

@@ -35,10 +35,24 @@ type baseClient struct {
 	http    *http.Client
 }
 
+// sharedTransport is used by every apiclient (Auth/Driver/Ride all target
+// Kong on the same host - Matching targets a different host directly, but
+// shares this transport too since there's no downside). Without an explicit
+// Transport, http.Client falls back to http.DefaultTransport, whose
+// MaxIdleConnsPerHost defaults to 2 - under this simulator's bursty
+// concurrent-actor startup, that forces constant TCP connection churn to
+// Kong instead of reuse. Headroom here is well above the default actor
+// counts (5 clients/3 drivers) and scales with E2E_CLIENTS/E2E_DRIVERS.
+var sharedTransport = &http.Transport{
+	MaxIdleConns:        100,
+	MaxIdleConnsPerHost: 50,
+	IdleConnTimeout:     90 * time.Second,
+}
+
 func newBaseClient(baseURL string) baseClient {
 	return baseClient{
 		baseURL: baseURL,
-		http:    &http.Client{Timeout: 10 * time.Second},
+		http:    &http.Client{Timeout: 10 * time.Second, Transport: sharedTransport},
 	}
 }
 

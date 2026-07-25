@@ -19,6 +19,7 @@ import (
 	"ride-service/internal/interfaces/http/middleware"
 	"ride-service/internal/persistence"
 	"ride-service/internal/workers"
+	"strconv"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -31,6 +32,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	db.SetMaxOpenConns(atoi(getenv("DB_MAX_OPEN_CONNS", "20")))
+	db.SetMaxIdleConns(atoi(getenv("DB_MAX_IDLE_CONNS", "10")))
+	db.SetConnMaxLifetime(time.Duration(atoi(getenv("DB_CONN_MAX_LIFETIME_MIN", "5"))) * time.Minute)
 
 	kafkaBroker := getenv("KAFKA_BROKER", "kafka:29092")
 
@@ -131,3 +135,5 @@ func getenv(k, d string) string {
 	}
 	return d
 }
+
+func atoi(s string) int { v, _ := strconv.Atoi(s); return v }
