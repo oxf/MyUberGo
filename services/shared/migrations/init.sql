@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS auth.user (
     name TEXT NOT NULL DEFAULT '',
     phone TEXT NOT NULL DEFAULT '',
     role TEXT NOT NULL CHECK (role IN ('Client', 'Driver')),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at TIMESTAMPTZ
 );
 
 CREATE INDEX idx_user_email ON auth.user(email);

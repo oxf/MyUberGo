@@ -11,8 +11,9 @@ COPY services/auth-service/go.mod services/auth-service/go.sum ./
 COPY services/contracts /contracts
 RUN go mod download
 
-# Copy the command source
-COPY services/auth-service/cmd ./cmd
+# Copy the auth-service source (cmd and internal packages)
+# This ensures all packages referenced by the module are available during build.
+COPY services/auth-service .
 
 # Build statically linked binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \

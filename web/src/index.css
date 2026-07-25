@@ -94,3 +94,43 @@ body {
 .error {
   color: #c0392b;
 }
+
+.login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 20rem;
+  padding: 2rem;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 0.5rem;
+}
+
+.login-form h1 {
+  font-size: 1.1rem;
+  margin: 0 0 0.5rem;
+}
+
+.login-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.login-form input {
+  font: inherit;
+  padding: 0.4rem 0.5rem;
+}
+
+.login-form button {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  cursor: pointer;
+}

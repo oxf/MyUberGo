@@ -5,13 +5,13 @@ meta {
 }
 
 post {
-  url: http://localhost:8003/driver-profile
+  url: http://localhost:8090/api/driver/driver-profile
   body: json
   auth: inherit
 }
 
 headers {
-  X-User-Id: c5f313c0-9ca2-400e-b231-ddacbc579546
+  Authorization: Bearer {{auth_token}}
 }
 
 body:json {

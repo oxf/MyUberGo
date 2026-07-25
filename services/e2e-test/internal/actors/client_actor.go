@@ -13,10 +13,6 @@ import (
 	"e2e-test/internal/apiclient"
 )
 
-// decoyUserID is a well-formed but never-signed-up user ID, used only to
-// provoke the ownership check on someone else's ride.
-const decoyUserID = "00000000-0000-0000-0000-000000000000"
-
 // ClientActor simulates a rider: signup, login, then request rides forever,
 // deep-verifying each one by reading it back. Rides never get a driver
 // assigned today (matching-service doesn't assign yet), so the lifecycle
@@ -31,6 +27,12 @@ type ClientActor struct {
 	// pending is the last ride request sent, kept so the read-back can be
 	// compared field by field.
 	pending contracts.CreateRideRequest
+
+	// decoy is a second, genuinely signed-up account used only to provoke
+	// the ownership check on someone else's ride. Kong derives X-User-Id
+	// from a valid token's own claims (see gateway/kong.yml), so a spoofed
+	// header no longer works — "someone else" has to be a real account.
+	decoy *account
 }
 
 func (a *ClientActor) Run(ctx context.Context) {
@@ -41,6 +43,13 @@ func (a *ClientActor) Run(ctx context.Context) {
 	// Once, right after signup: the fresh account is guaranteed on page 1 of
 	// the createdAt-desc default sort.
 	a.verifyUserInList(ctx, acc)
+	a.verifyMe(ctx, acc)
+
+	a.decoy = a.signupAndLogin(ctx, a.ID+"-decoy", "decoy-"+a.Email, "E2E "+a.ID+" decoy", a.randomPhone(), contracts.RoleClient, a.Rnd)
+	if a.decoy == nil {
+		return
+	}
+	a.logoutDecoyAndVerify(ctx)
 
 	for iter := 1; sleepJitter(ctx, a.Interval, a.Rnd); iter++ {
 		rideID := a.requestRide(ctx, acc)
@@ -56,7 +65,7 @@ func (a *ClientActor) Run(ctx context.Context) {
 			a.refresh(ctx, a.ID, acc)
 		}
 		if iter%5 == 0 {
-			a.verifyRideInList(ctx, rideID)
+			a.verifyRideInList(ctx, acc, rideID)
 		}
 	}
 }
@@ -66,7 +75,7 @@ func (a *ClientActor) requestRide(ctx context.Context, acc *account) string {
 	a.pending = req
 
 	start := time.Now()
-	resp, err := a.Ride.RequestRide(ctx, acc.userID, req)
+	resp, err := a.Ride.RequestRide(ctx, acc.accessToken, req)
 	v := &Verify{}
 	if err == nil {
 		v.NotEmpty("rideId", resp.RideID)
@@ -82,7 +91,7 @@ func (a *ClientActor) requestRide(ctx context.Context, acc *account) string {
 
 func (a *ClientActor) verifyRide(ctx context.Context, acc *account, rideID string) {
 	start := time.Now()
-	ride, err := a.Ride.GetRide(ctx, rideID)
+	ride, err := a.Ride.GetRide(ctx, acc.accessToken, rideID)
 	v := &Verify{}
 	if err == nil {
 		v.Eq("id", ride.ID, rideID)
@@ -107,14 +116,14 @@ func (a *ClientActor) cancelAndVerifyRide(ctx context.Context, acc *account, rid
 	var apiErr *apiclient.APIError
 
 	start := time.Now()
-	_, err := a.Ride.CancelRide(ctx, decoyUserID, rideID, contracts.CancelRideRequest{})
+	_, err := a.Ride.CancelRide(ctx, a.decoy.accessToken, rideID, contracts.CancelRideRequest{})
 	v := &Verify{}
 	v.True("forbidden", errors.As(err, &apiErr) && apiErr.Status == http.StatusForbidden,
 		"expected 403 cancelling someone else's ride")
 	a.record(a.ID, "ride.cancel.forbidden", start, nil, v)
 
 	start = time.Now()
-	resp, err := a.Ride.CancelRide(ctx, acc.userID, rideID, contracts.CancelRideRequest{Reason: "e2e test cancel"})
+	resp, err := a.Ride.CancelRide(ctx, acc.accessToken, rideID, contracts.CancelRideRequest{Reason: "e2e test cancel"})
 	v = &Verify{}
 	if err == nil {
 		v.Eq("status", resp.Status, "Cancelled")
@@ -125,7 +134,7 @@ func (a *ClientActor) cancelAndVerifyRide(ctx context.Context, acc *account, rid
 	}
 
 	start = time.Now()
-	ride, err := a.Ride.GetRide(ctx, rideID)
+	ride, err := a.Ride.GetRide(ctx, acc.accessToken, rideID)
 	v = &Verify{}
 	if err == nil {
 		v.Eq("status", ride.Status, "Cancelled")
@@ -133,16 +142,16 @@ func (a *ClientActor) cancelAndVerifyRide(ctx context.Context, acc *account, rid
 	a.record(a.ID, "ride.get", start, err, v)
 
 	start = time.Now()
-	_, err = a.Ride.CancelRide(ctx, acc.userID, rideID, contracts.CancelRideRequest{})
+	_, err = a.Ride.CancelRide(ctx, acc.accessToken, rideID, contracts.CancelRideRequest{})
 	v = &Verify{}
 	v.True("conflict", errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict,
 		"expected 409 on repeat cancel")
 	a.record(a.ID, "ride.cancel.conflict", start, nil, v)
 }
 
-func (a *ClientActor) verifyRideInList(ctx context.Context, rideID string) {
+func (a *ClientActor) verifyRideInList(ctx context.Context, acc *account, rideID string) {
 	start := time.Now()
-	resp, err := a.Ride.ListRides(ctx, 1, 50)
+	resp, err := a.Ride.ListRides(ctx, acc.accessToken, 1, 50)
 	v := &Verify{}
 	if err == nil {
 		found := false
@@ -158,9 +167,43 @@ func (a *ClientActor) verifyRideInList(ctx context.Context, rideID string) {
 	a.record(a.ID, "ride.list", start, err, v)
 }
 
+// verifyMe confirms GET /me round-trips the caller's own id/email/role —
+// derived from the bearer token's own claims, not any spoofable header (see
+// gateway/kong.yml's inject_user_headers post-function).
+func (a *ClientActor) verifyMe(ctx context.Context, acc *account) {
+	start := time.Now()
+	me, err := a.Auth.Me(ctx, acc.accessToken)
+	v := &Verify{}
+	if err == nil {
+		v.Eq("id", me.ID, acc.userID)
+		v.Eq("email", me.Email, a.Email)
+		v.Eq("role", string(me.Role), string(contracts.RoleClient))
+	}
+	a.record(a.ID, "auth.me", start, err, v)
+}
+
+// logoutDecoyAndVerify logs the decoy account out, then confirms its refresh
+// token is rejected afterward — proving /logout actually revokes it.
+func (a *ClientActor) logoutDecoyAndVerify(ctx context.Context) {
+	start := time.Now()
+	err := a.Auth.Logout(ctx, a.decoy.accessToken, contracts.LogoutRequest{RefreshToken: a.decoy.refreshToken})
+	a.record(a.ID, "auth.logout", start, err, nil)
+	if err != nil {
+		return
+	}
+
+	start = time.Now()
+	var apiErr *apiclient.APIError
+	_, err = a.Auth.Refresh(ctx, contracts.RefreshRequest{RefreshToken: a.decoy.refreshToken})
+	v := &Verify{}
+	v.True("unauthorized", errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized,
+		"expected 401 refreshing a revoked token")
+	a.record(a.ID, "auth.logout.refresh_rejected", start, nil, v)
+}
+
 func (a *ClientActor) verifyUserInList(ctx context.Context, acc *account) {
 	start := time.Now()
-	resp, err := a.Auth.ListUsers(ctx, 1, 50)
+	resp, err := a.Auth.ListUsers(ctx, acc.accessToken, 1, 50)
 	v := &Verify{}
 	if err == nil {
 		found := false

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MyUberGo is a learning project: a distributed, event-driven clone of Uber built as independent Go microservices communicating over Kafka (async) and REST/HTTP (sync), backed by PostgreSQL (per-service schemas in one instance) and Redis. It is deliberately mid-refactor — services are in different architectural stages on purpose (see "Architectural maturity" below), so don't assume every service should look like the others.
 
-The target system has **8 services**; only **4 are implemented** (auth, ride, matching, driver — this repo's `services/` directory). Location, Billing, Notification, and API Gateway are planned but not scaffolded. The full target design — per-service responsibilities, schemas, HTTP/Kafka contracts, the matching algorithm, and the phased roadmap — lives in `README.md`; don't duplicate it here. This file only calls out where the **current code** (what you'll actually be editing) diverges from that target, so you don't assume an unbuilt table/endpoint/topic already exists.
+The target system has **8 services**; only **4 are implemented** (auth, ride, matching, driver — this repo's `services/` directory). Location, Billing, and Notification are planned but not scaffolded; an API Gateway (Kong) now sits in front of the 4 implemented services — see "API Gateway (Kong)" below. The full target design — per-service responsibilities, schemas, HTTP/Kafka contracts, the matching algorithm, and the phased roadmap — lives in `README.md`; don't duplicate it here. This file only calls out where the **current code** (what you'll actually be editing) diverges from that target, so you don't assume an unbuilt table/endpoint/topic already exists.
 
 **See `PLAN.md` for the step-by-step, checkable implementation roadmap** (what to build next, in what order). This file (CLAUDE.md) is the architectural orientation; PLAN.md is the working task list — keep them consistent but don't duplicate PLAN.md's step list here.
 
@@ -15,9 +15,10 @@ The target system has **8 services**; only **4 are implemented** (auth, ride, ma
 There is no root build tool, Makefile, or CI config — each service is built/run independently.
 
 ```bash
-# Full stack (Postgres, Redis, Kafka, Kafka UI, all 4 services, and the admin dashboard)
+# Full stack (Postgres, Redis, Kafka, Kafka UI, all 4 services, an API Gateway, and the admin dashboard)
 docker-compose up --build
 
+# API Gateway (Kong) — the only ingress for auth/ride/driver: http://localhost:8090/api/{auth,ride,driver}/...
 # Admin dashboard: http://localhost:5173
 # Kafka UI (inspect topics/consumer groups): http://localhost:8080
 # Postgres: localhost:5432 (postgres/postgres/postgres)
@@ -63,7 +64,7 @@ Same-origin API proxying is implemented twice, deliberately kept in sync: the Vi
 
 | Service | Port | Role |
 |---|---|---|
-| auth-service | 8000 | User signup/login, JWT issuance (access + refresh), refresh-token rotation |
+| auth-service | 8000 | User signup/login, JWT issuance (access + refresh), refresh-token rotation, `GET /me`, `POST /logout` |
 | ride-service | 8001 | Ride requests, fare/distance estimation, ride lifecycle, publishes `ride.requested` |
 | matching-service | 8002 | Consumes `ride.requested`/`shift.updated`, matches rides to available drivers, publishes `ride.accepted`; `POST /rides/{rideId}/accept` + `GET /drivers/{driverId}/offer` |
 | driver-service | 8003 | Driver profiles and shifts (login/logout, rides, earnings), publishes `shift.updated` |
@@ -73,6 +74,16 @@ Same-origin API proxying is implemented twice, deliberately kept in sync: the Vi
 - `contracts/kafka` — Kafka event payloads (`ride-service.go` has `RideRequestedEvent`; `driver-service.go` has `ShiftUpdatedEvent`, now with a `Rating` field; `matching-service.go` has `RideAcceptedEvent`)
 
 Changing a field used across services means editing it once in `contracts` — both the producer and consumer(s) pick it up through the `replace` directive.
+
+### API Gateway (Kong)
+
+Kong (`gateway/kong.yml`, declarative config, `_format_version: "3.0"`) fronts auth-service, ride-service, and driver-service as the sole host-reachable ingress, on `:8090` (mapped from Kong's internal `:8000` in `docker-compose.yml`) — those 3 services no longer publish host ports at all; the only way to reach them from outside the Docker network is through Kong. matching-service is the one exception: it's still reached directly on `:8002` (Kafka/Redis-driven internally, no gateway-facing route — see "Matching algorithm status" below).
+
+- **Public routes** (no token, IP-rate-limited): `POST /api/auth/signup`, `/login`, `/refresh` — a caller has no token yet at this point in the flow.
+- **Protected routes** (`jwt` plugin + header-injecting `post-function` + per-user rate-limiting): `GET /api/auth/users`, `GET /api/auth/me`, `POST /api/auth/logout`, and everything under `/api/ride`, `/api/driver`. Kong's `jwt` plugin verifies the bearer token's signature/`exp`, matched by the token's `iss` claim against the one configured consumer (`myubergo-app`) in `gateway/kong.yml`. A shared `post-function` Lua snippet (the `&inject_user_headers` YAML anchor) then decodes the token's payload and sets `X-User-Id`/`X-User-Email`/`X-User-Role` on the proxied request, overwriting any of those headers the caller sent directly.
+- Longer route prefixes win regardless of declaration order in the file, so `/api/auth/me`/`/api/auth/logout` match ahead of the shorter public `/api/auth` route even though they're declared after it.
+- Downstream services never validate the JWT themselves — they trust the `X-User-Id`/`X-User-Email`/`X-User-Role` headers Kong injects. This is only safe because Kong is the sole ingress: don't publish a host port for auth/ride/driver-service without re-adding real auth to that service, or the trust boundary breaks.
+- `JWT_SECRET` (auth-service's env var) and `gateway/kong.yml`'s `jwt_secrets.secret` are two independent config values that must be kept in sync manually (both default to `secret_change_me` locally) — and auth-service's minted `iss` claim (`"myubergo-auth"`, `auth-service/internal/infrastructure/security/jwt_issuer.go`) must keep matching the `jwt_secrets` key name in `kong.yml`, or every token fails the `jwt` plugin.
 
 ### Data model
 
@@ -92,19 +103,18 @@ Every service is deliberately built through 3 stages, and different services cur
 
 | Service | Current stage | Notes |
 |---|---|---|
-| auth-service | Stage 1 | signup/login/refresh, all in `cmd/main.go` |
-| ride-service | Stage 1 | request-ride/list/get + an outbox-polling goroutine, all in `cmd/main.go` |
+| auth-service | Stage 2 | full CQRS/DDD layering mirroring ride-service, deliberately **without** an outbox (auth publishes no events; every write is a single statement); JWT/bcrypt logic moved behind `application/services` ports (`PasswordHasher`, `TokenIssuer`) with adapters in `infrastructure/security`; adds `GET /me`, `POST /logout`, and `auth.user.updated_at`/`deleted_at` soft-delete columns |
+| ride-service | Stage 2 | full CQRS/DDD layering (`domain`/`application`/`persistence`/`interfaces`/`workers`), a transactional-outbox worker for `ride.requested`, and `ride.accepted`/`ride.cancelled` consumers; ride lifecycle now spans `Requested → Matched → InProgress → Completed`/`Cancelled` |
 | driver-service | Stage 2 (+ early Stage-3 features) | the reference Stage-2 implementation; already has graceful shutdown, health checks, logging/metrics decorators, and a working transactional-outbox worker grafted on, but metrics is a logging stub and health's liveness check is a no-op (see infra notes below) |
 | matching-service | Stage 2, complete for its current scope | full CQRS layering: command/query handlers wrapped with decorators, Redis-backed repos, an HTTP layer (`POST /rides/{rideId}/accept`, `GET /drivers/{driverId}/offer`), a Kafka producer (`ride.accepted`), graceful shutdown, and a Redis-based health checker. Dead Stage-1 code and the Postgres dependency are gone. Implements a simplified version of the README's matching algorithm — see "Matching algorithm status" below for exactly what's simplified. |
 
-See `PLAN.md` for the ordered, checkable steps to move each service forward. Location, Billing, and Notification services described in the README's target design don't exist in `services/` yet at all (Phase 3 of the README roadmap) — don't assume their directories, schemas, or Kafka topics are present.
+As of 2026-07-25 all 4 implemented services are Stage 2 — Stage 3 (see above) is the open frontier for all of them now, not just driver-service. See `PLAN.md` for the ordered, checkable steps to move each service forward. Location, Billing, and Notification services described in the README's target design don't exist in `services/` yet at all (Phase 3 of the README roadmap) — don't assume their directories, schemas, or Kafka topics are present.
 
 ### Target vs. current schema/contracts
 
 The README's per-service target design is ahead of what's actually in `services/shared/migrations/init.sql` and `services/contracts`. Notably not yet present in the current schema/contracts even for the 4 implemented services:
-- `auth.user`: no `updated_at`/`deleted_at` (soft delete) columns.
 - `driver.driver_profile`: no `license_number`/`license_expiry`/`vehicle_color`; no `driver.driver_rating` table.
-- `ride.ride`: no `cancelled_at`, no separate `RIDE_REQUEST` table, no time-windowed tariffs (only one flat rate is used, `ride.tariff` isn't read by the handler).
+- `ride.ride`: no separate `RIDE_REQUEST` table, no time-windowed tariffs (only one flat rate is used, `ride.tariff` isn't read by the handler).
 - **No `matching` schema anywhere, full stop** — not just "not yet defined": `init.sql` only declares `auth`/`ride`/`driver`; matching-service has never had a Postgres dependency in its live code, and the module no longer imports `lib/pq` at all. Don't add code that assumes a `matching` schema exists.
 - `services/contracts/kafka` defines `RideRequestedEvent`, `ShiftUpdatedEvent` (now with a `Rating float64` field, populated by driver-service and consumed by matching-service's rating-only ranking), and `RideAcceptedEvent` (matching-service's first Kafka producer output — `{rideId, driverId, acceptedAt}`). `ride.cancelled`, `ride.started`, `ride.finished`, `payment.completed`, `shift.started`, `shift.ended` still don't exist yet. `ride.accepted` is published but has no consumer anywhere yet (`ride-service` would need it to flip a ride to `Matched`, but is still Stage 1).
 
@@ -112,7 +122,7 @@ Check `init.sql`/`contracts` directly before writing code against any field/topi
 
 List endpoints (`GET /users` on auth-service, `GET /ride`, `GET /driver-profile`, `GET /driver-shift`) now return `contracts.PagedResponse[T]` (`{items, page, pageSize, totalCount}`), not a bare array — bare-array list responses documented elsewhere in this repo's history are stale. driver-service's `GetList`/`GetByID` handlers now serialize the camelCase `contracts.DriverProfileDto`/`ShiftDto`, not raw `domain.*` structs — the PascalCase wire-format quirk mentioned in older notes no longer applies.
 
-Several real bugs were found and fixed while verifying docs against code (2026-07-14) — mentioned here so they aren't "rediscovered" as still-open issues: `ShiftUpdatedEvent.DriverID`'s json tag was `clientId` (now `driverId`); `driver-service`'s `ShiftHandler.GetList`/`GetByID` were calling the driver-profile queries instead of the shift queries (copy-paste bug); `ShiftHandler.Update` was using the request body's `DriverId` field as the shift ID instead of the path `{id}`; the outbox worker (`internal/workers/shift_updated_outbox_worker.go`) was a non-compiling Stage-1 stub never wired into `main()` — it's now a real Stage-2 `OutboxWorker` (see "Transactional outbox pattern" above and `PLAN.md`); and the producer/consumer topic name mismatch (`driver.shifts.updated` vs. `shift.updated`) is resolved in favor of `shift.updated`. A second pass (2026-07-18, prompted by building the e2e-test simulator) fixed auth-service's login/refresh, which had never worked: unqualified `"user"`/`refresh_token` table names (no search_path in the DSN), the UUID user id scanned into an `int` and stuffed into the JWT as a number, and `/refresh` returning a bare string instead of `RefreshResponse` — see PLAN.md's 2026-07-18 section. A third pass (2026-07-19, building the matching algorithm) fixed driver-service's `UpdateShiftHandler`: setting a shift to `Ended` short-circuited before the outbox insert, so ending a shift never published a `shift.updated` event at all — matching-service's online-driver pool would only ever grow, never shrink, since it never learned a driver went offline. Both branches now share the same transaction and outbox-insert flow.
+Several real bugs were found and fixed while verifying docs against code (2026-07-14) — mentioned here so they aren't "rediscovered" as still-open issues: `ShiftUpdatedEvent.DriverID`'s json tag was `clientId` (now `driverId`); `driver-service`'s `ShiftHandler.GetList`/`GetByID` were calling the driver-profile queries instead of the shift queries (copy-paste bug); `ShiftHandler.Update` was using the request body's `DriverId` field as the shift ID instead of the path `{id}`; the outbox worker (`internal/workers/shift_updated_outbox_worker.go`) was a non-compiling Stage-1 stub never wired into `main()` — it's now a real Stage-2 `OutboxWorker` (see "Transactional outbox pattern" above and `PLAN.md`); and the producer/consumer topic name mismatch (`driver.shifts.updated` vs. `shift.updated`) is resolved in favor of `shift.updated`. A second pass (2026-07-18, prompted by building the e2e-test simulator) fixed auth-service's login/refresh, which had never worked: unqualified `"user"`/`refresh_token` table names (no search_path in the DSN), the UUID user id scanned into an `int` and stuffed into the JWT as a number, and `/refresh` returning a bare string instead of `RefreshResponse` — see PLAN.md's 2026-07-18 section. A third pass (2026-07-19, building the matching algorithm) fixed driver-service's `UpdateShiftHandler`: setting a shift to `Ended` short-circuited before the outbox insert, so ending a shift never published a `shift.updated` event at all — matching-service's online-driver pool would only ever grow, never shrink, since it never learned a driver went offline. Both branches now share the same transaction and outbox-insert flow. A fourth pass (2026-07-25, refactoring auth-service to Stage 2 and adding `GET /me`/`POST /logout`) found `services/auth-service/Dockerfile`'s builder stage still only did `COPY services/auth-service/cmd ./cmd` — a leftover from the Stage-1 single-file build — so the container image build broke immediately once `internal/` packages existed (`package auth-service/internal/... is not in std`); fixed to `COPY services/auth-service .`, matching every other Stage-2 service's Dockerfile. This same pass also corrected this file's stale claims that ride-service was still Stage 1 (it's been fully Stage-2 layered since 2026-07-21 per `PLAN.md`) and that the API Gateway was merely planned (Kong has been live since the prior session, just undocumented here until now).
 
 ### Matching algorithm status
 
@@ -157,4 +167,4 @@ Command/query handlers are constructed via `NewXHandler(...)` functions that bui
 
 ### Auth
 
-JWT-based (`golang-jwt/jwt/v5`), HS256, secret from `JWT_SECRET` env var (default `secret_change_me` — never rely on this outside local dev). Access + refresh tokens are both plain JWTs; refresh tokens are additionally persisted in `auth.refresh_token` so they can be revoked/validated server-side. Downstream services expect the caller (gateway, in the target design) to forward an `X-User-Id` header — `ride-service`'s `POST /request-ride` reads it directly rather than validating the JWT itself.
+JWT-based (`golang-jwt/jwt/v5`), HS256, secret from `JWT_SECRET` env var (default `secret_change_me` — never rely on this outside local dev). Access + refresh tokens are both plain JWTs; refresh tokens are additionally persisted in `auth.refresh_token` so they can be revoked/validated server-side — `POST /logout` deletes one, scoped to the caller's own `X-User-Id` (never a token-body field, so a caller can only revoke their own sessions). `GET /me` returns the caller's own profile, likewise identified by `X-User-Id`. Every JWT's `iss` claim is `"myubergo-auth"` (`auth-service/internal/infrastructure/security/jwt_issuer.go`) and must stay in sync with the `jwt_secrets` key configured for Kong's consumer in `gateway/kong.yml`, or every token fails Kong's `jwt` plugin. Downstream services never validate the JWT themselves — Kong does that at the edge and injects `X-User-Id`/`X-User-Email`/`X-User-Role` from the token's own claims (see "API Gateway (Kong)" above); `ride-service`'s `POST /request-ride` and every other protected handler just read the injected header.

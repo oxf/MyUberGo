@@ -5,13 +5,13 @@ meta {
 }
 
 post {
-  url: http://localhost:8001/request-ride
+  url: http://localhost:8090/api/ride/request-ride
   body: json
   auth: inherit
 }
 
 headers {
-  X-User-Id: 7b3b2efe-c19f-4426-a10c-fca7bd371b6c
+  Authorization: Bearer {{auth_token}}
 }
 
 body:json {

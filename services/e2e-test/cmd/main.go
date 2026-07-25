@@ -100,10 +100,16 @@ func main() {
 func loadConfig() config {
 	cfg := config{}
 
-	flag.StringVar(&cfg.authURL, "auth-url", getenv("E2E_AUTH_URL", "http://localhost:8000"), "auth-service base URL")
-	flag.StringVar(&cfg.rideURL, "ride-url", getenv("E2E_RIDE_URL", "http://localhost:8001"), "ride-service base URL")
-	flag.StringVar(&cfg.driverURL, "driver-url", getenv("E2E_DRIVER_URL", "http://localhost:8003"), "driver-service base URL")
-	flag.StringVar(&cfg.matchingURL, "matching-url", getenv("E2E_MATCHING_URL", "http://localhost:8002"), "matching-service base URL")
+	// auth/ride/driver now go through Kong (the API gateway) — see
+	// gateway/kong.yml and CLAUDE.md's "API Gateway" section. Each base URL
+	// includes the /api/<service> prefix Kong routes on and strips before
+	// forwarding, so apiclient paths below (e.g. "/login", "/ride") don't
+	// change. matching-service has no gateway route (internal/Kafka-driven
+	// today), so it's still reached directly.
+	flag.StringVar(&cfg.authURL, "auth-url", getenv("E2E_AUTH_URL", "http://localhost:8090/api/auth"), "auth-service base URL (via gateway)")
+	flag.StringVar(&cfg.rideURL, "ride-url", getenv("E2E_RIDE_URL", "http://localhost:8090/api/ride"), "ride-service base URL (via gateway)")
+	flag.StringVar(&cfg.driverURL, "driver-url", getenv("E2E_DRIVER_URL", "http://localhost:8090/api/driver"), "driver-service base URL (via gateway)")
+	flag.StringVar(&cfg.matchingURL, "matching-url", getenv("E2E_MATCHING_URL", "http://localhost:8002"), "matching-service base URL (direct, no gateway route)")
 	flag.IntVar(&cfg.clients, "clients", getenvInt("E2E_CLIENTS", 5), "number of virtual clients")
 	flag.IntVar(&cfg.drivers, "drivers", getenvInt("E2E_DRIVERS", 3), "number of virtual drivers")
 	flag.DurationVar(&cfg.rideInterval, "ride-interval", getenvDuration("E2E_RIDE_INTERVAL", 5*time.Second), "base interval between rides per client (jittered +/-50%)")

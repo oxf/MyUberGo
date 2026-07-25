@@ -1,0 +1,195 @@
+_format_version: "3.0"
+_transform: true
+
+# Single consumer representing "any authenticated MyUberGo user" — every
+# access token shares the same iss/HS256 secret, so they all resolve to this
+# one consumer. Per-user identity comes from the token's user_id/email/role
+# claims, injected as X-User-* headers by the post-function plugin below, not
+# from Kong's consumer model. Per-user *rate limiting* therefore keys off the
+# injected X-User-Id header (limit_by: header), not off the consumer.
+consumers:
+  - username: myubergo-app
+    jwt_secrets:
+      - key: myubergo-auth # must match the "iss" claim auth-service mints (see tokenIssuer in services/auth-service/cmd/main.go)
+        algorithm: HS256
+        secret: secret_change_me # local-dev default; override to match JWT_SECRET in real deployments
+
+services:
+  # -- auth-service: /signup, /login, /refresh are public (no token yet) --
+  - name: auth-service-public
+    url: http://auth-service:8000
+    routes:
+      - name: auth-public
+        paths:
+          - /api/auth
+        strip_path: true
+    plugins:
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: ip
+          minute: 20 # brute-force guard on signup/login/refresh; no user identity yet
+
+  # -- auth-service: GET /users is an admin listing, requires a valid token --
+  - name: auth-service-users
+    url: http://auth-service:8000/users
+    routes:
+      - name: auth-users
+        paths:
+          - /api/auth/users
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - &inject_user_headers |
+              local cjson = require("cjson.safe")
+              for _, h in ipairs({ "X-User-Id", "X-User-Email", "X-User-Role" }) do
+                kong.service.request.clear_header(h)
+              end
+              local auth_header = kong.request.get_header("authorization") or ""
+              local token = auth_header:match("^[Bb]earer%s+(.+)$")
+              if token then
+                local payload_b64 = token:match("^[^.]+%.([^.]+)%.")
+                if payload_b64 then
+                  payload_b64 = payload_b64:gsub("-", "+"):gsub("_", "/")
+                  local pad = #payload_b64 % 4
+                  if pad > 0 then
+                    payload_b64 = payload_b64 .. string.rep("=", 4 - pad)
+                  end
+                  local raw = ngx.decode_base64(payload_b64)
+                  local claims = raw and cjson.decode(raw)
+                  if claims then
+                    if claims.user_id then kong.service.request.set_header("X-User-Id", claims.user_id) end
+                    if claims.email then kong.service.request.set_header("X-User-Email", claims.email) end
+                    if claims.role then kong.service.request.set_header("X-User-Role", claims.role) end
+                  end
+                end
+              end
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 30
+
+  # -- auth-service: GET /me is the caller's own profile, requires a valid token --
+  - name: auth-service-me
+    url: http://auth-service:8000/me
+    routes:
+      - name: auth-me
+        paths:
+          - /api/auth/me
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 30
+
+  # -- auth-service: POST /logout revokes a refresh token, requires a valid token --
+  - name: auth-service-logout
+    url: http://auth-service:8000/logout
+    routes:
+      - name: auth-logout
+        paths:
+          - /api/auth/logout
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 30
+
+  # -- ride-service: everything requires a valid token --
+  - name: ride-service
+    url: http://ride-service:8001
+    routes:
+      - name: ride-protected
+        paths:
+          - /api/ride
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 60
+
+  # -- driver-service: everything requires a valid token --
+  - name: driver-service
+    url: http://driver-service:8003
+    routes:
+      - name: driver-protected
+        paths:
+          - /api/driver
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 60
+
+  # matching-service (8002) is Kafka/Redis-driven internally and has no
+  # gateway-facing consumer today (see CLAUDE.md "Matching algorithm
+  # status") — intentionally not routed here.

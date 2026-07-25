@@ -5,7 +5,7 @@ meta {
 }
 
 get {
-  url: http://localhost:8001/ride?page=1&pageSize=20&sortBy=createdAt&sortDir=desc
+  url: http://localhost:8090/api/ride/ride?page=1&pageSize=20&sortBy=createdAt&sortDir=desc
   body: json
   auth: inherit
 }
@@ -18,7 +18,7 @@ params:query {
 }
 
 headers {
-  X-User-Id: 4741fa01-7b4e-448b-a1e0-755bae6a5a49
+  Authorization: Bearer {{auth_token}}
 }
 
 settings {

@@ -5,13 +5,13 @@ meta {
 }
 
 put {
-  url: http://localhost:8003/driver-shift/f7069420-c34d-4ace-a7d7-e021b800ba53
+  url: http://localhost:8090/api/driver/driver-shift/f7069420-c34d-4ace-a7d7-e021b800ba53
   body: json
   auth: inherit
 }
 
 headers {
-  X-User-Id: f1277eb3-fb7c-4484-9870-791c07c7f9ab
+  Authorization: Bearer {{auth_token}}
 }
 
 body:json {

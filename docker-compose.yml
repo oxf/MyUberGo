@@ -78,8 +78,9 @@ services:
       JWT_SECRET: secret_change_me
       AUTH_TOKEN_EXP_MIN: '15'
       REFRESH_TOKEN_EXP_HOUR: '24'
-    ports:
-      - "8000:8000"
+    # No published host port: Kong is the only ingress (see gateway/kong.yml).
+    # Publishing this would let callers bypass jwt verification/rate limiting
+    # entirely by hitting the service directly.
     depends_on:
       postgres:
         condition: service_healthy
@@ -93,8 +94,7 @@ services:
       KAFKA_BROKER: kafka:29092
       JWT_SECRET: secret_change_me
       SERVICE_PORT: '8001'
-    ports:
-      - "8001:8001"
+    # No published host port — see the note on auth-service above.
     depends_on:
       postgres:
         condition: service_healthy
@@ -126,12 +126,42 @@ services:
       KAFKA_BROKER: kafka:29092
       JWT_SECRET: secret_change_me
       SERVICE_PORT: '8003'
-    ports:
-      - "8003:8003"
+    # No published host port — see the note on auth-service above.
     depends_on:
       postgres:
         condition: service_healthy
       kafka:
+        condition: service_started
+
+  kong:
+    image: kong:3.7
+    environment:
+      KONG_DATABASE: 'off'
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_LISTEN: '0.0.0.0:8000'
+      KONG_ADMIN_LISTEN: '127.0.0.1:8001'
+      KONG_LOG_LEVEL: notice
+      # pre/post-function plugins run in a Lua sandbox that blocks require()
+      # by default; explicitly allowlist the one module our header-injection
+      # script needs (see gateway/kong.yml) rather than disabling the sandbox.
+      KONG_UNTRUSTED_LUA_SANDBOX_REQUIRES: 'cjson.safe'
+    volumes:
+      - ./gateway/kong.yml:/kong/kong.yml:ro
+    ports:
+      - "8090:8000"
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      redis:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+      ride-service:
+        condition: service_started
+      driver-service:
         condition: service_started
 
   web:
@@ -141,9 +171,7 @@ services:
     ports:
       - "5173:80"
     depends_on:
-      - auth-service
-      - ride-service
-      - driver-service
+      - kong
 
 networks:
   default:

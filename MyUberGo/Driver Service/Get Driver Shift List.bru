@@ -5,7 +5,7 @@ meta {
 }
 
 get {
-  url: http://localhost:8003/driver-shift?page=1&pageSize=20&sortBy=startedAt&sortDir=desc
+  url: http://localhost:8090/api/driver/driver-shift?page=1&pageSize=20&sortBy=startedAt&sortDir=desc
   body: json
   auth: inherit
 }
@@ -15,6 +15,10 @@ params:query {
   pageSize: 20
   sortBy: startedAt
   sortDir: desc
+}
+
+headers {
+  Authorization: Bearer {{auth_token}}
 }
 
 settings {

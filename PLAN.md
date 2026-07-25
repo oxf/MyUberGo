@@ -14,7 +14,7 @@ Every service moves through the same 3 stages, deliberately, one at a time:
 
 | Service | Stage | Notes |
 |---|---|---|
-| auth-service | 1 | signup/login/refresh, all in `cmd/main.go` |
+| auth-service | 2 | full CQRS/DDD layering mirroring ride-service, no outbox (auth publishes no events); JWT/bcrypt behind `PasswordHasher`/`TokenIssuer` ports; adds `GET /me`, `POST /logout`, soft-delete columns on `auth.user` (see 2026-07-25 section below) |
 | ride-service | 2 | full CQRS/DDD layering (`domain`/`application`/`persistence`/`interfaces`/`workers`), decorator-wrapped handlers, transactional-outbox worker for `ride.requested`, plus a `ride.accepted` consumer (see 2026-07-21 section below) |
 | driver-service | 2 (+ early Stage 3 features) | full CQRS/DDD layering; graceful shutdown + health checks + logging/metrics decorators + a working transactional-outbox worker already present, but metrics is a logging-only stub (no Prometheus) and health's liveness check is hardcoded `true` (never fails) — real Stage 3 work still needed there |
 | matching-service | 2, complete for its current scope | full CQRS layering, HTTP layer, Kafka producer, graceful shutdown, Redis health checks; implements a simplified version of the README's matching algorithm (rating-only ranking, BROADCAST-only, pool-widening retry) — see the 2026-07-19 section below |
@@ -155,8 +155,19 @@ Follow-up not done yet: `client_actor.go`'s cancel test only exercises pre-match
 
 ---
 
+## auth-service: Stage 2 refactor + `/me`/`/logout` + docs sync for the API Gateway (2026-07-25)
+
+- `auth-service` moved to Stage 2, mirroring `ride-service`'s layering (`domain`/`application`/`persistence`/`interfaces`/`infrastructure`, decorator-wrapped CQRS handlers) but deliberately **without** an outbox — auth publishes no events and every write is a single statement. JWT/bcrypt logic moved behind `application/services` ports (`PasswordHasher`, `TokenIssuer`) with adapters in `infrastructure/security`; `cmd/main.go` is now a thin composition root.
+- New: `GET /me` (caller's own profile, from `X-User-Id`) and `POST /logout` (revokes one refresh token, scoped to the caller). `auth.user` gained `updated_at`/`deleted_at` (soft-delete, read-filtered everywhere; nothing sets `deleted_at` yet — forward-looking, like driver-service's outbox once was before it was wired up).
+- Two new protected Kong routes added for `/me`/`/logout` (`gateway/kong.yml`), mirroring the existing `auth-service-users` route.
+- Found while building the container image: `services/auth-service/Dockerfile`'s builder stage still only did `COPY services/auth-service/cmd ./cmd` — a leftover from the Stage-1 single-file build. Adding `internal/` packages broke the image build immediately (`package auth-service/internal/... is not in std`). Fixed to `COPY services/auth-service .`, matching every other Stage-2 service's Dockerfile.
+- **Docs sync, not new work**: the API Gateway (Kong, `gateway/kong.yml`) was built in the prior session but never documented in `CLAUDE.md`/`PLAN.md` — added an "API Gateway (Kong)" section to `CLAUDE.md` and corrected the "API Gateway... planned but not scaffolded" line. Also corrected `CLAUDE.md`'s stale claim that ride-service was still Stage 1 (`PLAN.md`'s own status table already had this right as of 2026-07-21; `CLAUDE.md` was never updated to match).
+- Verified end-to-end through Kong on a fresh `docker-compose up --build` (fresh Postgres volume, so `init.sql`'s new columns applied automatically): signup → login → `/me` → `/users` → bad-password (401) → bad-refresh (401) → `/logout` → refresh-with-revoked-token (401). Ran `services/e2e-test` against the live stack (`auth.me`, `auth.logout`, `auth.logout.refresh_rejected` all green).
+
+---
+
 ## Later (not detailed yet — revisit after matching-service)
 
-- **auth-service → Stage 2**: same layering as driver-service/ride-service; move JWT/bcrypt logic into an application/domain service.
+- ~~**auth-service → Stage 2**: same layering as driver-service/ride-service; move JWT/bcrypt logic into an application/domain service.~~ Done, see the 2026-07-25 section below.
 - **Cross-cutting Stage 3**: OpenAPI spec + codegen for HTTP contracts (replacing hand-written `contracts/http` structs), one gRPC call as a learning exercise (e.g. matching-service → driver-service for available drivers, alongside/instead of direct Postgres/HTTP access), a real Prometheus metrics client (replacing the logging stub), a real liveness probe for driver-service's health checker.
-- **Phase 3 of README's product roadmap**: Location, Billing, Notification services, and the API Gateway — new services, start each at Stage 1 like the others did.
+- **Phase 3 of README's product roadmap**: Location, Billing, Notification services — new services, start each at Stage 1 like the others did. (The API Gateway is done — Kong, see `CLAUDE.md`'s "API Gateway (Kong)" section and the 2026-07-25 section below.)

@@ -39,6 +39,10 @@ type RefreshResponse struct {
 	ExpiresIn   int    `json:"expiresIn"`
 }
 
+type LogoutRequest struct {
+	RefreshToken string `json:"refreshToken"`
+}
+
 type UserDto struct {
 	ID        string   `json:"id"`
 	Email     string   `json:"email"`

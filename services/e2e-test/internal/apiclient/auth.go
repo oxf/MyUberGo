@@ -34,9 +34,25 @@ func (c *AuthClient) Refresh(ctx context.Context, req contracts.RefreshRequest) 
 	return resp, err
 }
 
-func (c *AuthClient) ListUsers(ctx context.Context, page, pageSize int) (contracts.PagedResponse[contracts.UserDto], error) {
+// ListUsers hits /users, which is a protected route behind Kong (see
+// gateway/kong.yml) — unlike Signup/Login/Refresh, it needs a bearer token.
+func (c *AuthClient) ListUsers(ctx context.Context, accessToken string, page, pageSize int) (contracts.PagedResponse[contracts.UserDto], error) {
 	var resp contracts.PagedResponse[contracts.UserDto]
 	path := fmt.Sprintf("/users?page=%d&pageSize=%d", page, pageSize)
-	err := c.doJSON(ctx, http.MethodGet, path, nil, nil, &resp)
+	err := c.doJSON(ctx, http.MethodGet, path, bearerHeader(accessToken), nil, &resp)
 	return resp, err
+}
+
+// Me hits /me, the caller's own profile derived from the bearer token's own
+// claims (see gateway/kong.yml's inject_user_headers post-function).
+func (c *AuthClient) Me(ctx context.Context, accessToken string) (contracts.UserDto, error) {
+	var resp contracts.UserDto
+	err := c.doJSON(ctx, http.MethodGet, "/me", bearerHeader(accessToken), nil, &resp)
+	return resp, err
+}
+
+// Logout revokes one refresh token, scoped by the bearer token's own
+// X-User-Id claim.
+func (c *AuthClient) Logout(ctx context.Context, accessToken string, req contracts.LogoutRequest) error {
+	return c.doJSON(ctx, http.MethodPost, "/logout", bearerHeader(accessToken), req, nil)
 }

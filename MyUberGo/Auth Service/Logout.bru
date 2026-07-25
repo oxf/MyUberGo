@@ -1,0 +1,26 @@
+meta {
+  name: Logout
+  type: http
+  seq: 7
+}
+
+post {
+  url: http://localhost:8090/api/auth/logout
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "refreshToken": "{{refresh_token}}"
+  }
+}
+
+headers {
+  Authorization: Bearer {{auth_token}}
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

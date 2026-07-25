@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+// bearerHeader builds the Authorization header Kong's jwt plugin requires on
+// every route except auth-service's public signup/login/refresh (see
+// gateway/kong.yml). Kong derives X-User-Id/X-User-Email/X-User-Role from
+// this token's claims and overwrites any of those headers a caller sets
+// directly, so per-user identity now flows through the token, not headers.
+func bearerHeader(accessToken string) map[string]string {
+	return map[string]string{"Authorization": "Bearer " + accessToken}
+}
+
 // APIError is returned for any non-2xx response so actors can log the
 // status and body the service actually sent back.
 type APIError struct {

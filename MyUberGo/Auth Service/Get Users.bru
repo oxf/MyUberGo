@@ -5,7 +5,7 @@ meta {
 }
 
 get {
-  url: http://localhost:8000/users?page=1&pageSize=20&sortBy=createdAt&sortDir=desc
+  url: http://localhost:8090/api/auth/users?page=1&pageSize=20&sortBy=createdAt&sortDir=desc
   body: json
   auth: inherit
 }
@@ -15,6 +15,10 @@ params:query {
   pageSize: 20
   sortBy: createdAt
   sortDir: desc
+}
+
+headers {
+  Authorization: Bearer {{auth_token}}
 }
 
 settings {
