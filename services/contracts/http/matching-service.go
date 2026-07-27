@@ -19,6 +19,7 @@ type DriverOfferDto struct {
 	DestinationLng     float64 `json:"destinationLng"`
 	DestinationAddress string  `json:"destinationAddress"`
 	DistanceKm         float64 `json:"distanceKm"`
-	Price              float64 `json:"price"`
+	PriceMinor         int64   `json:"priceMinor"`
+	Currency           string  `json:"currency"`
 	ExpiresAt          string  `json:"expiresAt"`
 }

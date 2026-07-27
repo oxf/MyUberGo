@@ -46,8 +46,8 @@ func (c *RideRequestedConsumer) Run(ctx context.Context, topic string) {
 			continue
 		}
 
-		log.Printf("Ride request received. RideID=%s ClientID=%s Price=%.2f",
-			event.RideID, event.ClientID, event.Price)
+		log.Printf("Ride request received. RideID=%s ClientID=%s PriceMinor=%d %s",
+			event.RideID, event.ClientID, event.PriceMinor, event.Currency)
 
 		if err := c.handleRideRequested(ctx, event); err != nil {
 			log.Println("handle error:", err)

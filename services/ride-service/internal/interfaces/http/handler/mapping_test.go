@@ -10,7 +10,7 @@ func TestToRideDto_NoDriverAssigned(t *testing.T) {
 		ID: "r1", ClientID: "u1", Status: "Requested",
 		PickupLat: 1, PickupLng: 2, PickupAddress: "A",
 		DestLat: 3, DestLng: 4, DestAddress: "B",
-		EstimatedPrice: 10, EstimatedDistanceKm: 10, CreatedAt: "2026-07-21T10:00:00Z",
+		EstimatedPriceMinor: 1000, Currency: "EUR", EstimatedDistanceKm: 10, CreatedAt: "2026-07-21T10:00:00Z",
 	})
 	if dto.ID != "r1" || dto.ClientID != "u1" || dto.DriverID != nil {
 		t.Fatalf("bad mapping: %+v", dto)

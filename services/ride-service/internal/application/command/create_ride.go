@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"ride-service/internal/application/services"
 	"ride-service/internal/common/decorator"
 	"ride-service/internal/domain"
@@ -22,24 +23,29 @@ type CreateRide struct {
 	DestLat       float64
 	DestLng       float64
 	DestAddress   string
+	// TariffName defaults to "Standard" when empty.
+	TariffName string
 }
 
 type CreateRideResult struct {
 	RideID              string
 	Status              string
-	EstimatedPrice      float64
+	EstimatedPriceMinor int64
+	Currency            string
 	EstimatedDistanceKm float64
 	CreatedAt           string
 }
 
 type CreateRideHandler struct {
 	repo        domain.RideRepository
+	tariffRepo  domain.TariffRepository
 	outboxRepo  domain.OutboxRepository
 	transaction services.TransactionManager
 }
 
 func NewCreateRideHandler(
 	repo domain.RideRepository,
+	tariffRepo domain.TariffRepository,
 	outboxRepo domain.OutboxRepository,
 	transaction services.TransactionManager,
 	logger *logrus.Entry,
@@ -48,6 +54,7 @@ func NewCreateRideHandler(
 
 	handler := &CreateRideHandler{
 		repo:        repo,
+		tariffRepo:  tariffRepo,
 		outboxRepo:  outboxRepo,
 		transaction: transaction,
 	}
@@ -59,15 +66,43 @@ func NewCreateRideHandler(
 	)
 }
 
+const avgSpeedKmh = 30.0 // stub: no traffic/routing data exists yet
+
+func haversineKm(lat1, lng1, lat2, lng2 float64) float64 {
+	const earthRadiusKm = 6371.0
+	toRad := func(deg float64) float64 { return deg * math.Pi / 180 }
+
+	dLat := toRad(lat2 - lat1)
+	dLng := toRad(lng2 - lng1)
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(toRad(lat1))*math.Cos(toRad(lat2))*math.Sin(dLng/2)*math.Sin(dLng/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	return earthRadiusKm * c
+}
+
 func (h *CreateRideHandler) Handle(ctx context.Context, cmd CreateRide) (CreateRideResult, error) {
-	// Fare/distance are still hardcoded stubs, matching current behavior —
-	// no real calculation exists yet (ride.tariff is unread).
-	const distanceKm = 10.0
-	const price = 10.0
+	tariffName := cmd.TariffName
+	if tariffName == "" {
+		tariffName = "Standard"
+	}
+	tariff, err := h.tariffRepo.GetByName(ctx, tariffName)
+	if err != nil {
+		return CreateRideResult{}, err
+	}
+
+	distanceKm := haversineKm(cmd.PickupLat, cmd.PickupLng, cmd.DestLat, cmd.DestLng)
+	durationMin := distanceKm / avgSpeedKmh * 60
+
+	// Rounding rule (CLAUDE.md §2): fractional multiplication in float64,
+	// round once at the end, to int64. Never persist an intermediate float.
+	fareMinor := tariff.BaseFareMinor +
+		int64(math.Round(float64(tariff.PricePerKmMinor)*distanceKm)) +
+		int64(math.Round(float64(tariff.PricePerMinMinor)*durationMin))
+
 	createdAt := time.Now().UTC().Format(time.RFC3339)
 
 	var result CreateRideResult
-	err := h.transaction.WithinTransaction(ctx, func(ctx context.Context) error {
+	err = h.transaction.WithinTransaction(ctx, func(ctx context.Context) error {
 		ride := &domain.Ride{
 			ClientID:            cmd.ClientID,
 			Status:              "Requested",
@@ -77,7 +112,8 @@ func (h *CreateRideHandler) Handle(ctx context.Context, cmd CreateRide) (CreateR
 			DestLat:             cmd.DestLat,
 			DestLng:             cmd.DestLng,
 			DestAddress:         cmd.DestAddress,
-			EstimatedPrice:      price,
+			EstimatedPriceMinor: fareMinor,
+			Currency:            tariff.Currency,
 			EstimatedDistanceKm: distanceKm,
 		}
 
@@ -90,7 +126,8 @@ func (h *CreateRideHandler) Handle(ctx context.Context, cmd CreateRide) (CreateR
 			RideID:     id,
 			ClientID:   cmd.ClientID,
 			DistanceKm: distanceKm,
-			Price:      price,
+			PriceMinor: fareMinor,
+			Currency:   tariff.Currency,
 			PickupLocation: contractsKafka.LocationWithAddress{
 				Latitude:  cmd.PickupLat,
 				Longitude: cmd.PickupLng,
@@ -123,7 +160,8 @@ func (h *CreateRideHandler) Handle(ctx context.Context, cmd CreateRide) (CreateR
 		result = CreateRideResult{
 			RideID:              id,
 			Status:              "Requested",
-			EstimatedPrice:      price,
+			EstimatedPriceMinor: fareMinor,
+			Currency:            tariff.Currency,
 			EstimatedDistanceKm: distanceKm,
 			CreatedAt:           createdAt,
 		}

@@ -26,8 +26,8 @@ func (r *PostgresRideRepository) CreateRide(ctx context.Context, ride *domain.Ri
 		ctx,
 		`
 		INSERT INTO ride.ride
-			(client_id,status,pickup_lat,pickup_lng,pickup_address,dest_lat,dest_lng,dest_address,estimated_price,estimated_distance_km)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			(client_id,status,pickup_lat,pickup_lng,pickup_address,dest_lat,dest_lng,dest_address,estimated_price_minor,currency,estimated_distance_km)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		RETURNING id
 		`,
 		ride.ClientID,
@@ -38,7 +38,8 @@ func (r *PostgresRideRepository) CreateRide(ctx context.Context, ride *domain.Ri
 		ride.DestLat,
 		ride.DestLng,
 		ride.DestAddress,
-		ride.EstimatedPrice,
+		ride.EstimatedPriceMinor,
+		ride.Currency,
 		ride.EstimatedDistanceKm,
 	).Scan(&id)
 
@@ -57,7 +58,7 @@ func (r *PostgresRideRepository) GetRideList(ctx context.Context, req domain.Pag
 
 	query := fmt.Sprintf(`
 		SELECT id, client_id, driver_id, status, pickup_lat, pickup_lng, pickup_address,
-		       dest_lat, dest_lng, dest_address, estimated_price, estimated_distance_km, created_at
+		       dest_lat, dest_lng, dest_address, estimated_price_minor, currency, estimated_distance_km, bill_id, created_at
 		FROM ride.ride
 		ORDER BY %s %s
 		LIMIT $1 OFFSET $2
@@ -89,7 +90,7 @@ func (r *PostgresRideRepository) CountRides(ctx context.Context) (int, error) {
 func (r *PostgresRideRepository) GetRideByID(ctx context.Context, id string) (*domain.Ride, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, client_id, driver_id, status, pickup_lat, pickup_lng, pickup_address,
-		       dest_lat, dest_lng, dest_address, estimated_price, estimated_distance_km, created_at
+		       dest_lat, dest_lng, dest_address, estimated_price_minor, currency, estimated_distance_km, bill_id, created_at
 		FROM ride.ride
 		WHERE id = $1
 	`, id)
@@ -115,13 +116,26 @@ func (r *PostgresRideRepository) MarkRideMatched(ctx context.Context, rideID, dr
 	return err
 }
 
+// MarkRideBilled sets bill_id once billing-service publishes
+// payment.completed. The "AND bill_id IS NULL" guard makes this idempotent
+// against Kafka's at-least-once redelivery, same pattern as MarkRideMatched.
+func (r *PostgresRideRepository) MarkRideBilled(ctx context.Context, rideID, billID string) error {
+	executor := Executor(ctx, r.db)
+	_, err := executor.ExecContext(ctx, `
+		UPDATE ride.ride
+		SET bill_id = $1
+		WHERE id = $2 AND bill_id IS NULL
+	`, billID, rideID)
+	return err
+}
+
 // GetRideForUpdate locks the ride row within the current transaction so its
 // status/ownership can be checked and then mutated atomically.
 func (r *PostgresRideRepository) GetRideForUpdate(ctx context.Context, id string) (*domain.Ride, error) {
 	executor := Executor(ctx, r.db)
 	row := executor.QueryRowContext(ctx, `
 		SELECT id, client_id, driver_id, status, pickup_lat, pickup_lng, pickup_address,
-		       dest_lat, dest_lng, dest_address, estimated_price, estimated_distance_km, created_at
+		       dest_lat, dest_lng, dest_address, estimated_price_minor, currency, estimated_distance_km, bill_id, created_at
 		FROM ride.ride
 		WHERE id = $1
 		FOR UPDATE
@@ -178,19 +192,23 @@ func (r *PostgresRideRepository) CompleteRide(ctx context.Context, id string, fi
 func scanRide(row interface{ Scan(dest ...any) error }) (*domain.Ride, error) {
 	var d domain.Ride
 	var driverID sql.NullString
+	var billID sql.NullString
 	var createdAt time.Time
 
 	if err := row.Scan(
 		&d.ID, &d.ClientID, &driverID, &d.Status,
 		&d.PickupLat, &d.PickupLng, &d.PickupAddress,
 		&d.DestLat, &d.DestLng, &d.DestAddress,
-		&d.EstimatedPrice, &d.EstimatedDistanceKm, &createdAt,
+		&d.EstimatedPriceMinor, &d.Currency, &d.EstimatedDistanceKm, &billID, &createdAt,
 	); err != nil {
 		return nil, err
 	}
 
 	if driverID.Valid {
 		d.DriverID = &driverID.String
+	}
+	if billID.Valid {
+		d.BillID = &billID.String
 	}
 	d.CreatedAt = createdAt.Format(time.RFC3339)
 

@@ -2,6 +2,7 @@ import { usePagedQuery } from '../hooks/usePagedQuery';
 import { DataTable, type Column } from '../components/DataTable';
 import { Pagination } from '../components/Pagination';
 import type { RideDto } from '../api/types';
+import { formatMoney } from '../lib/money';
 
 const columns: Column<RideDto>[] = [
   { key: 'id', header: 'ID', render: (r) => <code title={r.id}>{r.id.slice(0, 8)}</code> },
@@ -10,7 +11,7 @@ const columns: Column<RideDto>[] = [
   { key: 'status', header: 'Status', sortable: true, render: (r) => r.status },
   { key: 'pickup', header: 'Pickup', render: (r) => r.pickup.address },
   { key: 'destination', header: 'Destination', render: (r) => r.destination.address },
-  { key: 'estimatedPrice', header: 'Price', sortable: true, render: (r) => r.estimatedPrice.toFixed(2) },
+  { key: 'estimatedPriceMinor', header: 'Price', sortable: true, render: (r) => formatMoney(r.estimatedPriceMinor, r.currency) },
   { key: 'estimatedDistanceKm', header: 'Km', sortable: true, render: (r) => r.estimatedDistanceKm.toFixed(2) },
   { key: 'createdAt', header: 'Created', sortable: true, render: (r) => new Date(r.createdAt).toLocaleString() },
 ];

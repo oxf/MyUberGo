@@ -82,7 +82,8 @@ func (h *MatchingHandler) GetDriverOffer(w http.ResponseWriter, r *http.Request)
 		DestinationLng:     offer.Ride.DestinationLng,
 		DestinationAddress: offer.Ride.DestinationAddress,
 		DistanceKm:         offer.Ride.DistanceKm,
-		Price:              offer.Ride.Price,
+		PriceMinor:         offer.Ride.PriceMinor,
+		Currency:           offer.Ride.Currency,
 		ExpiresAt:          offer.ExpiresAt.UTC().Format(time.RFC3339),
 	})
 }

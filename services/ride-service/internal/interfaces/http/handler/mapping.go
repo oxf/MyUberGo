@@ -22,7 +22,8 @@ func toRideDto(r *domain.Ride) contracts.RideDto {
 			Longitude: r.DestLng,
 			Address:   r.DestAddress,
 		},
-		EstimatedPrice:      r.EstimatedPrice,
+		EstimatedPriceMinor: r.EstimatedPriceMinor,
+		Currency:            r.Currency,
 		EstimatedDistanceKm: r.EstimatedDistanceKm,
 		CreatedAt:           r.CreatedAt,
 	}

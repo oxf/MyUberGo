@@ -34,12 +34,12 @@ func TestParseListParams_RejectsBadInput(t *testing.T) {
 }
 
 func TestParseListParams_ExplicitSortAndPaging(t *testing.T) {
-	r := httptest.NewRequest("GET", "/ride?page=3&pageSize=50&sortBy=estimatedPrice&sortDir=asc", nil)
+	r := httptest.NewRequest("GET", "/ride?page=3&pageSize=50&sortBy=estimatedPriceMinor&sortDir=asc", nil)
 	p, err := parseListParams(r, domain.RideSortColumns, "createdAt")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p.page != 3 || p.pageSize != 50 || p.sortBy != "estimatedPrice" || p.sortDir != "ASC" {
+	if p.page != 3 || p.pageSize != 50 || p.sortBy != "estimatedPriceMinor" || p.sortDir != "ASC" {
 		t.Fatalf("unexpected params: %+v", p)
 	}
 }

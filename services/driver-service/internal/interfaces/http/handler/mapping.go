@@ -21,11 +21,12 @@ func toDriverDto(d *domain.Driver) contracts.DriverDto {
 
 func toShiftDto(s *domain.Shift) contracts.ShiftDto {
 	return contracts.ShiftDto{
-		Id:            s.ID,
-		DriverId:      s.DriverID,
-		StartedAt:     s.StartedAt,
-		EndedAt:       s.EndedAt,
-		TotalRides:    s.TotalRides,
-		TotalEarnings: s.TotalEarnings,
+		Id:                 s.ID,
+		DriverId:           s.DriverID,
+		StartedAt:          s.StartedAt,
+		EndedAt:            s.EndedAt,
+		TotalRides:         s.TotalRides,
+		TotalEarningsMinor: s.TotalEarningsMinor,
+		Currency:           s.Currency,
 	}
 }

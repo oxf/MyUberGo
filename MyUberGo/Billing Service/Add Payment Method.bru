@@ -1,0 +1,31 @@
+meta {
+  name: Add Payment Method
+  type: http
+  seq: 1
+}
+
+post {
+  url: http://localhost:8090/api/billing/payment-methods
+  body: json
+  auth: inherit
+}
+
+headers {
+  Authorization: Bearer {{auth_token}}
+}
+
+body:json {
+  {
+    "providerPaymentMethodId": "pm_stub_ok",
+    "brand": "visa",
+    "last4": "4242",
+    "expMonth": 12,
+    "expYear": 2030,
+    "setDefault": true
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

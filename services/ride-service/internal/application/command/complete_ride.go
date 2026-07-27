@@ -70,9 +70,12 @@ func (h *CompleteRideHandler) Handle(ctx context.Context, cmd CompleteRide) (Com
 		}
 
 		event := contractsKafka.RideCompletedEvent{
-			RideID:     cmd.RideID,
-			DriverID:   cmd.DriverID,
-			FinishedAt: finishedAt.Format(time.RFC3339),
+			RideID:      cmd.RideID,
+			ClientID:    ride.ClientID,
+			DriverID:    cmd.DriverID,
+			AmountMinor: ride.EstimatedPriceMinor,
+			Currency:    ride.Currency,
+			FinishedAt:  finishedAt.Format(time.RFC3339),
 		}
 
 		payload, err := json.Marshal(event)

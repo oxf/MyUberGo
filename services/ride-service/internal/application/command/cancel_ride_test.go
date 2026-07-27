@@ -9,8 +9,8 @@ import (
 
 type fakeFeeCalculator struct{}
 
-func (fakeFeeCalculator) Calculate(ctx context.Context, ride *domain.Ride) (float64, error) {
-	return 0, nil
+func (fakeFeeCalculator) Calculate(ctx context.Context, ride *domain.Ride) (int64, string, error) {
+	return 0, ride.Currency, nil
 }
 
 func TestCancelRide_InProgressIsConflict(t *testing.T) {

@@ -19,14 +19,17 @@ type RideRequestedEvent struct {
 	PickupLocation      LocationWithAddress `json:"pickupLocation"`
 	DestinationLocation LocationWithAddress `json:"destinationLocation"`
 	DistanceKm          float64             `json:"distanceKm"`
-	Price               float64             `json:"price"`
+	PriceMinor          int64               `json:"priceMinor"`
+	Currency            string              `json:"currency"`
 	CreatedAt           string              `json:"createdAt"`
 }
 
 type RideCancelledEvent struct {
 	RideID      string  `json:"rideId"`
+	ClientID    string  `json:"clientId"`
 	DriverID    *string `json:"driverId,omitempty"`
-	Fee         float64 `json:"fee"`
+	FeeMinor    int64   `json:"feeMinor"`
+	Currency    string  `json:"currency"`
 	Reason      string  `json:"reason,omitempty"`
 	CancelledAt string  `json:"cancelledAt"`
 }
@@ -38,7 +41,10 @@ type RideStartedEvent struct {
 }
 
 type RideCompletedEvent struct {
-	RideID     string `json:"rideId"`
-	DriverID   string `json:"driverId"`
-	FinishedAt string `json:"finishedAt"`
+	RideID      string `json:"rideId"`
+	ClientID    string `json:"clientId"`
+	DriverID    string `json:"driverId"`
+	AmountMinor int64  `json:"amountMinor"`
+	Currency    string `json:"currency"`
+	FinishedAt  string `json:"finishedAt"`
 }

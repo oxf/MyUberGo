@@ -24,6 +24,12 @@ type ClientActor struct {
 	Interval time.Duration
 	Rnd      *rand.Rand
 
+	// PaymentMethodToken picks the StubProvider outcome for every charge
+	// attempt on this client's invoices (see billing-service's
+	// infrastructure/payment/stub) — "pm_stub_ok" (the default when empty)
+	// always succeeds, "pm_stub_decline" always fails with card_declined.
+	PaymentMethodToken string
+
 	// pending is the last ride request sent, kept so the read-back can be
 	// compared field by field.
 	pending contracts.CreateRideRequest
@@ -44,6 +50,7 @@ func (a *ClientActor) Run(ctx context.Context) {
 	// the createdAt-desc default sort.
 	a.verifyUserInList(ctx, acc)
 	a.verifyMe(ctx, acc)
+	a.attachAndVerifyPaymentMethod(ctx, acc)
 
 	a.decoy = a.signupAndLogin(ctx, a.ID+"-decoy", "decoy-"+a.Email, "E2E "+a.ID+" decoy", a.randomPhone(), contracts.RoleClient, a.Rnd)
 	if a.decoy == nil {
@@ -104,7 +111,7 @@ func (a *ClientActor) verifyRide(ctx context.Context, acc *account, rideID strin
 		v.EqFloat("dest.lat", ride.Destination.Latitude, a.pending.DestLat)
 		v.EqFloat("dest.lng", ride.Destination.Longitude, a.pending.DestLng)
 		v.Eq("dest.address", ride.Destination.Address, a.pending.DestAddress)
-		v.True("estimatedPrice", ride.EstimatedPrice > 0, "expected > 0")
+		v.True("estimatedPriceMinor", ride.EstimatedPriceMinor > 0, "expected > 0")
 	}
 	a.record(a.ID, "ride.get", start, err, v)
 }
@@ -228,6 +235,14 @@ func (a *ClientActor) verifyUserInList(ctx context.Context, acc *account) {
 
 func (a *ClientActor) randomRideRequest() contracts.CreateRideRequest {
 	n := a.Rnd.Intn(1000)
+	tariffName := "Standard"
+	if n%5 == 0 {
+		// Occasionally exercise the USD tariff so a client accumulates
+		// rides in two currencies (BILLING_SPEC.md §10: a client with one
+		// EUR and one USD ride must have two distinct client_receivable
+		// balances, never a single summed one).
+		tariffName = "Standard USD"
+	}
 	return contracts.CreateRideRequest{
 		PickupLat:     50.40 + a.Rnd.Float64()*0.1,
 		PickupLng:     30.50 + a.Rnd.Float64()*0.1,
@@ -235,7 +250,53 @@ func (a *ClientActor) randomRideRequest() contracts.CreateRideRequest {
 		DestLat:       50.40 + a.Rnd.Float64()*0.1,
 		DestLng:       30.50 + a.Rnd.Float64()*0.1,
 		DestAddress:   fmt.Sprintf("Destination Ave %d", n),
+		TariffName:    tariffName,
 	}
+}
+
+// attachAndVerifyPaymentMethod adds this client's billing payment method
+// (pm_stub_ok by default, pm_stub_decline for the dedicated declining
+// client actor) right after signup, so every ride this client completes
+// has something for the ChargeWorker to charge.
+func (a *ClientActor) attachAndVerifyPaymentMethod(ctx context.Context, acc *account) {
+	token := a.PaymentMethodToken
+	if token == "" {
+		token = "pm_stub_ok"
+	}
+
+	start := time.Now()
+	added, err := a.Billing.AddPaymentMethod(ctx, acc.accessToken, contracts.AddPaymentMethodRequest{
+		ProviderPaymentMethodId: token,
+		Brand:                   "visa",
+		Last4:                   "4242",
+		ExpMonth:                12,
+		ExpYear:                 2030,
+		SetDefault:              true,
+	})
+	v := &Verify{}
+	if err == nil {
+		v.NotEmpty("id", added.Id)
+	}
+	a.record(a.ID, "billing.paymentmethod.add", start, err, v)
+	if err != nil {
+		return
+	}
+
+	start = time.Now()
+	methods, err := a.Billing.ListPaymentMethods(ctx, acc.accessToken)
+	v = &Verify{}
+	if err == nil {
+		found := false
+		for _, m := range methods {
+			if m.Id == added.Id {
+				found = true
+				v.Eq("isDefault", m.IsDefault, true)
+				v.Eq("status", m.Status, "active")
+			}
+		}
+		v.True("found", found, "expected the just-added method in the list")
+	}
+	a.record(a.ID, "billing.paymentmethod.list", start, err, v)
 }
 
 func (a *ClientActor) randomPhone() string {

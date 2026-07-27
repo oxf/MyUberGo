@@ -42,7 +42,8 @@ func (r *RideRepository) SaveRide(
 		"destinationLng":     event.DestinationLocation.Longitude,
 		"destinationAddress": event.DestinationLocation.Address,
 		"distanceKm":         event.DistanceKm,
-		"price":              event.Price,
+		"priceMinor":         event.PriceMinor,
+		"currency":           event.Currency,
 		//"tariffId":           event.TariffID,
 		"createdAt": event.CreatedAt,
 		"status":    "searching",
@@ -71,7 +72,8 @@ func (r *RideRepository) GetRide(ctx context.Context, rideID string) (*domain.Ri
 	ride.DestinationLat, _ = strconv.ParseFloat(m["destinationLat"], 64)
 	ride.DestinationLng, _ = strconv.ParseFloat(m["destinationLng"], 64)
 	ride.DistanceKm, _ = strconv.ParseFloat(m["distanceKm"], 64)
-	ride.Price, _ = strconv.ParseFloat(m["price"], 64)
+	ride.PriceMinor, _ = strconv.ParseInt(m["priceMinor"], 10, 64)
+	ride.Currency = m["currency"]
 	ride.DriverRating, _ = strconv.ParseFloat(m["driverRating"], 64)
 	return ride, nil
 }

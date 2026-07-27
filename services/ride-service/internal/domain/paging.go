@@ -15,6 +15,6 @@ type PageRequest struct {
 var RideSortColumns = map[string]string{
 	"createdAt":           "created_at",
 	"status":              "status",
-	"estimatedPrice":      "estimated_price",
+	"estimatedPriceMinor": "estimated_price_minor",
 	"estimatedDistanceKm": "estimated_distance_km",
 }

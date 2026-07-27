@@ -23,6 +23,7 @@ type config struct {
 	rideURL     string
 	driverURL   string
 	matchingURL string
+	billingURL  string
 
 	clients int
 	drivers int
@@ -54,6 +55,7 @@ func main() {
 		Driver:   apiclient.NewDriverClient(cfg.driverURL),
 		Ride:     apiclient.NewRideClient(cfg.rideURL),
 		Matching: apiclient.NewMatchingClient(cfg.matchingURL),
+		Billing:  apiclient.NewBillingClient(cfg.billingURL),
 		Stats:    stats.NewCollector(256),
 	}
 
@@ -89,6 +91,19 @@ func main() {
 		wg.Go(func() { actor.Run(ctx) })
 	}
 
+	// One dedicated declining client (BILLING_SPEC.md §9's e2e-test step):
+	// every invoice it ever generates is charged against pm_stub_decline, so
+	// its rides are the ones that eventually reach uncollectible.
+	decliningClient := &actors.ClientActor{
+		Deps:               deps,
+		ID:                 "decline-client-0",
+		Email:              fmt.Sprintf("decline-client-%d@e2e.local", runID),
+		Interval:           cfg.rideInterval,
+		Rnd:                rand.New(rand.NewSource(cfg.seed + 9000)),
+		PaymentMethodToken: "pm_stub_decline",
+	}
+	wg.Go(func() { decliningClient.Run(ctx) })
+
 	for i := 0; i < cfg.drivers; i++ {
 		actor := &actors.DriverActor{
 			Deps:     deps,
@@ -120,6 +135,7 @@ func loadConfig() config {
 	flag.StringVar(&cfg.rideURL, "ride-url", getenv("E2E_RIDE_URL", "http://localhost:8090/api/ride"), "ride-service base URL (via gateway)")
 	flag.StringVar(&cfg.driverURL, "driver-url", getenv("E2E_DRIVER_URL", "http://localhost:8090/api/driver"), "driver-service base URL (via gateway)")
 	flag.StringVar(&cfg.matchingURL, "matching-url", getenv("E2E_MATCHING_URL", "http://localhost:8002"), "matching-service base URL (direct, no gateway route)")
+	flag.StringVar(&cfg.billingURL, "billing-url", getenv("E2E_BILLING_URL", "http://localhost:8090/api/billing"), "billing-service base URL (via gateway)")
 	flag.IntVar(&cfg.clients, "clients", getenvInt("E2E_CLIENTS", 5), "number of virtual clients")
 	flag.IntVar(&cfg.drivers, "drivers", getenvInt("E2E_DRIVERS", 3), "number of virtual drivers")
 	flag.DurationVar(&cfg.rideInterval, "ride-interval", getenvDuration("E2E_RIDE_INTERVAL", 5*time.Second), "base interval between rides per client (jittered +/-50%)")

@@ -1,0 +1,25 @@
+meta {
+  name: Get Ledger Balance
+  type: http
+  seq: 7
+}
+
+get {
+  url: http://localhost:8090/api/billing/ledger/balance?type=platform_revenue&currency=EUR
+  body: none
+  auth: inherit
+}
+
+params:query {
+  type: platform_revenue
+  currency: EUR
+}
+
+headers {
+  Authorization: Bearer {{admin_auth_token}}
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

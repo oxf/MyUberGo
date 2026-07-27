@@ -303,6 +303,99 @@ services:
           header_name: X-User-Id
           minute: 300
 
+  # -- billing-service: caller-scoped routes require a valid token; ownership
+  # of a payment method/invoice is checked in-service against X-Client-Id,
+  # not at the gateway (Kong has no concept of invoice ownership) --
+  - name: billing-service
+    url: http://billing-service:8005
+    routes:
+      - name: billing-protected
+        paths:
+          - /api/billing
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 300
+
+  # -- billing-service: GET /invoices is an admin listing, requires Admin
+  # role — same paths+methods ranking trick as the other three admin-list
+  # routes above (matches ahead of the broader billing-protected route). --
+  - name: billing-service-admin-list
+    url: http://billing-service:8005/invoices
+    routes:
+      - name: billing-admin-list
+        paths:
+          - ~/api/billing/invoices$
+        methods:
+          - GET
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+            - *require_admin
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 300
+
+  # -- billing-service: GET /ledger/balance is a debug/regression-test
+  # endpoint (e2e-test asserts ledger invariants against it) — Admin-only,
+  # same paths+methods ranking trick as the other admin-list routes. --
+  - name: billing-service-ledger-balance
+    url: http://billing-service:8005/ledger/balance
+    routes:
+      - name: billing-ledger-balance
+        paths:
+          - ~/api/billing/ledger/balance$
+        methods:
+          - GET
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+            - *require_admin
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 300
+
   # matching-service (8002) is Kafka/Redis-driven internally and has no
   # gateway-facing consumer today (see CLAUDE.md "Matching algorithm
   # status") — intentionally not routed here.

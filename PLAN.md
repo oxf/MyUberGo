@@ -18,7 +18,8 @@ Every service moves through the same 3 stages, deliberately, one at a time:
 | ride-service | 2 | full CQRS/DDD layering (`domain`/`application`/`persistence`/`interfaces`/`workers`), decorator-wrapped handlers, transactional-outbox worker for `ride.requested`, plus a `ride.accepted` consumer (see 2026-07-21 section below) |
 | driver-service | 2 (+ early Stage 3 features) | full CQRS/DDD layering; graceful shutdown + health checks + logging/metrics decorators + a working transactional-outbox worker already present, but metrics is a logging-only stub (no Prometheus) and health's liveness check is hardcoded `true` (never fails) — real Stage 3 work still needed there |
 | matching-service | 2, complete for its current scope | full CQRS layering, HTTP layer, Kafka producer, graceful shutdown, Redis health checks; implements a simplified version of the README's matching algorithm (rating-only ranking, BROADCAST-only, pool-widening retry) — see the 2026-07-19 section below |
-| e2e-test | n/a (tooling, not a service) | continuous client-activity simulator: N virtual clients + M virtual drivers (goroutine-per-actor) drive auth/driver/ride over HTTP with deep read-back verification and periodic stats; run manually via `go run ./cmd` against the compose stack — deliberately NOT in docker-compose. See `services/e2e-test/README.md` |
+| billing-service | 2 | full CQRS/DDD layering copying ride-service's shape; transactional-outbox worker for `payment.completed`/`payment.failed`; a `ChargeWorker` (same ticker+select shape) sweeping open invoices through a stub `PaymentProvider`; double-entry ledger with append-only entries — see the 2026-07-25 section below |
+| e2e-test | n/a (tooling, not a service) | continuous client-activity simulator: N virtual clients + M virtual drivers (goroutine-per-actor) drive auth/driver/ride/billing over HTTP with deep read-back verification and periodic stats; run manually via `go run ./cmd` against the compose stack — deliberately NOT in docker-compose. See `services/e2e-test/README.md` |
 
 ## Admin dashboard + paged/sorted list endpoints (2026-07-18)
 
@@ -180,6 +181,102 @@ Fixed a data-model inconsistency: `ride.ride.client_id` was `auth.user(id)` (a u
 - [x] `go build`/`go vet`/`go test` clean on all 4 services; `web`'s `tsc --noEmit` clean
 
 ---
+
+## Money representation refactor + billing-service (2026-07-25)
+
+Built `billing-service` per `docs/billing/BILLING_SPEC.md` — a Stage-2 service that turns
+completed/fee-bearing rides into invoices, collects them through a pluggable payment provider (a
+stub for now), and records every money movement in a double-entry ledger. Real Stripe integration
+is out of scope for this pass; see the spec's §9 for the deferred list.
+
+**Step 1 — money as integer minor units + currency, repo-wide** (own commit, gate before any
+billing work): `ride.tariff`/`ride.ride`/`driver.shift` money columns renamed to `*_minor BIGINT` +
+`currency CHAR(3)` (rename, not retype, so the compiler finds every call site); a `"Standard USD"`
+tariff seeded alongside the four EUR ones so multi-currency is exercisable from real traffic, not
+just unit tests. `RideRequestedEvent`/`RideCompletedEvent`/`RideCancelledEvent` all gained a
+**`ClientID`** field — missing from the original spec draft, and load-bearing: without it
+billing-service cannot know whom to invoice, and there's no sync service-to-service HTTP path to
+look it up (D2 in the spec forbids introducing one). `ride-service` gained real tariff-driven fare
+calculation (was hardcoded `distanceKm=10.0, price=10.0`): haversine distance between pickup/dest,
+`fare = base + per_km*distance + per_min*duration`, all in minor units, rounded once at the end per
+the spec's rounding rule. `CreateRideRequest` gained an optional `tariffName`. matching-service also
+touched (`domain.Ride.PriceMinor`, Redis hash fields, `DriverOfferDto`) — the original spec draft
+missed that it persists `RideRequestedEvent.Price` too. `driver.shift.total_earnings` renamed to
+`total_earnings_minor` but deliberately **not** accumulated into — the authoritative driver-earnings
+number is the ledger's `driver_payable` balance; duplicating it into a mutable shift column would be
+exactly the stored-balance anti-pattern the ledger's own invariants forbid. `ride-service`'s
+`CancellationFeeCalculator` port signature changed to `(int64, string, error)`; its stub now returns
+a flat 300-minor-unit fee when a driver was already assigned (was always 0, permanently dead) so the
+cancellation-fee billing path is actually exercisable.
+
+**Step 2 — `billing` schema**: `customer`, `payment_method` (partial unique index: one active
+default per client), `invoice` (**`UNIQUE (ride_id, type)`** — the sole idempotency guard against a
+redelivered Kafka event), `invoice_line`, `payment` (deterministic `idempotency_key`,
+`invoice:{id}:attempt:{n}`), `ledger_account`/`ledger_transaction`/`ledger_entry` (append-only), and
+`outbox_message`. One correction to the spec's own schema: a plain `UNIQUE(type, owner_id, currency)`
+on `ledger_account` does **not** collapse platform-level accounts (`owner_id IS NULL`) to one row per
+currency, since Postgres treats every NULL as distinct in a unique index — replaced with a
+`COALESCE(owner_id, sentinel-uuid)` expression index.
+
+**Steps 3–9 — service + pipeline**: `services/billing-service`, Stage 2 from day one, copying
+ride-service's layering and every shared piece (decorator/errors/reqctx, persistence helpers,
+outbox worker, health/kafka/metrics/shutdown infra) by copy, matching this repo's existing
+no-shared-runtime-module convention. `PaymentProvider` port defined in its own vocabulary
+(`ChargeResult{Status, ProviderIntentID, FailureCode, FailureMessage}`), not mirroring Stripe's shape
+— the entire reason a real Stripe adapter stays additive later instead of a domain refactor.
+`StubProvider` picks outcomes from the payment method token (`pm_stub_ok`/`pm_stub_decline`/
+`pm_stub_insufficient`), caches by idempotency key. `ride.completed`/`ride.cancelled` consumers →
+`CreateInvoiceFromRide` command posting **T1** (`invoice_opened`: client_receivable debited;
+platform_revenue + driver_payable credited, split by `PLATFORM_COMMISSION_BPS` via truncating
+integer division so the two always sum exactly to the fare — no `driver_payable` leg for a
+cancellation fee, 100% to `platform_revenue`). A `ChargeWorker` (ticker+select, same shape as
+`OutboxWorker`) sweeps invoices due for collection, posts **T2** (`payment_succeeded`) on success or
+retries with backoff (`PAYMENT_BACKOFF`, default `1m,5m,30m`) up to `MAX_PAYMENT_ATTEMPTS` (default
+3) before posting **T3** (`invoice_uncollectible`) — `driver_payable` deliberately stays posted from
+T1 even here, since the driver is still owed money the platform never collected. Not in the original
+spec, needed: a client with no active payment method fails with `no_payment_method`, counting toward
+`attempt_count` like any other decline. `ride-service` gained a `payment.completed` consumer +
+`MarkRideBilled` command setting `ride.ride.bill_id`, closing a loop the README had documented as
+target-only. Kong gained `billing-service` (caller-scoped, ownership checked in-service against
+`X-Client-Id` since Kong has no concept of invoice ownership), `billing-service-admin-list`
+(`GET /invoices`, Admin-only), and `billing-service-ledger-balance` (`GET /ledger/balance`,
+Admin-only — the cheapest possible regression check for the ledger invariants), all following the
+existing paths+methods-ranking trick.
+
+**Real bug found and fixed during manual verification** (not caught by unit tests, since it only
+manifests against a real Postgres transaction): the idempotency no-op path was broken. On a
+`(ride_id, type)` unique-violation, `CreateInvoiceFromRideHandler.Handle` logged and returned `nil`
+from *inside* the `WithinTransaction` closure — but a real SQL error aborts the Postgres transaction
+server-side regardless of whether the Go code "handles" it, so `WithinTransaction`'s subsequent
+`tx.Commit()` itself failed with `"current transaction is aborted"`, turning the intended no-op into
+a real error every time. Fixed by returning the error from the closure (so `WithinTransaction` rolls
+back — always safe, even on an already-aborted transaction) and only translating
+`ErrDuplicateInvoice` into a successful `nil` *after* `WithinTransaction` returns. Verified via a
+manual Kafka replay of a `ride.completed` message: before the fix, `commands.createinvoicefromride`
+recorded `.failure`; after, it recorded `.success` with the "no-op" log line and no duplicate ledger
+transaction.
+
+**e2e-test**: `apiclient/billing.go`; every `ClientActor` attaches a payment method right after
+signup (`billing.paymentmethod.add`/`.list`), occasionally requests against the `"Standard USD"`
+tariff; a dedicated `decline-client-0` always uses `pm_stub_decline`; `DriverActor` polls
+`GET /rides/{rideId}/invoice` after completing a ride for a terminal `paid`/`uncollectible` status
+(`billing.invoice.get`) and then exercises `GET /ledger/balance` (`billing.ledger.balance`) as a
+cheap end-to-end ledger-query smoke test. Bruno gained a `Billing Service` folder; `web/` gained an
+Admin-only Invoices page and a `formatMoney` helper (money is formatted at the display edge only,
+never divided in component state).
+
+**Verified**: `go build`/`go vet`/`go test` clean on all 5 services (including new ledger-invariant
+and fare-split unit tests in billing-service) and e2e-test; `web`'s `tsc --noEmit` clean; a fresh
+`docker-compose down -v && up --build` applies the new schema cleanly; a live `services/e2e-test` run
+against Kong showed 0 http/verify failures across every billing op; manual verification confirmed
+the idempotency guard (Kafka replay → no duplicate invoice/ledger transaction after the fix above),
+the full decline→uncollectible→T3 path (with `driver_payable` correctly still posted), and Kong's
+auth boundary (`GET /api/billing/invoices` 403s a Client token and 200s the seeded admin; a Client
+reading another client's invoice 403s in-service).
+
+**Deferred, per the spec**: real Stripe adapter/webhooks, driver payouts/Connect, client
+wallet/credits/promos/refunds, pre-ride payment-method validation, FX conversion, receipt rendering.
+See `docs/billing/BILLING_SPEC.md` §9 for the full list and why each stays additive.
 
 ## Later (not detailed yet — revisit after matching-service)
 

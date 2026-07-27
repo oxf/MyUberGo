@@ -1,0 +1,20 @@
+meta {
+  name: Get Invoice By Ride Id
+  type: http
+  seq: 5
+}
+
+get {
+  url: http://localhost:8090/api/billing/rides/00000000-0000-0000-0000-000000000000/invoice
+  body: none
+  auth: inherit
+}
+
+headers {
+  Authorization: Bearer {{auth_token}}
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

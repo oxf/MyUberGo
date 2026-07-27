@@ -27,6 +27,7 @@ type Deps struct {
 	Driver   *apiclient.DriverClient
 	Ride     *apiclient.RideClient
 	Matching *apiclient.MatchingClient
+	Billing  *apiclient.BillingClient
 	Stats    *stats.Collector
 
 	// AdminAccessToken is fetched once at startup (see LoginAsAdmin) and

@@ -11,7 +11,9 @@ type Ride struct {
 	DestLat             float64
 	DestLng             float64
 	DestAddress         string
-	EstimatedPrice      float64
+	EstimatedPriceMinor int64
+	Currency            string
 	EstimatedDistanceKm float64
-	CreatedAt           string // RFC3339
+	BillID              *string // nil until billing-service publishes payment.completed
+	CreatedAt           string  // RFC3339
 }

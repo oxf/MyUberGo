@@ -6,6 +6,7 @@ import { UsersPage } from './pages/UsersPage';
 import { DriversPage } from './pages/DriversPage';
 import { ShiftsPage } from './pages/ShiftsPage';
 import { RidesPage } from './pages/RidesPage';
+import { InvoicesPage } from './pages/InvoicesPage';
 import './index.css';
 
 createRoot(document.getElementById('root')!).render(
@@ -18,6 +19,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/drivers" element={<DriversPage />} />
           <Route path="/shifts" element={<ShiftsPage />} />
           <Route path="/rides" element={<RidesPage />} />
+          <Route path="/invoices" element={<InvoicesPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

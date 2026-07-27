@@ -76,6 +76,7 @@ export function App() {
         <NavLink to="/drivers">Drivers</NavLink>
         <NavLink to="/shifts">Shifts</NavLink>
         <NavLink to="/rides">Rides</NavLink>
+        <NavLink to="/invoices">Invoices</NavLink>
       </nav>
       <main>
         <Outlet />

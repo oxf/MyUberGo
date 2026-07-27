@@ -42,11 +42,11 @@ func (r *PostgresShiftRepository) UpdateShift(
 		`
 		UPDATE driver.shift
 		SET total_rides=$1,
-		    total_earnings=$2
+		    total_earnings_minor=$2
 		WHERE id=$3
 		`,
 		s.TotalRides,
-		s.TotalEarnings,
+		s.TotalEarningsMinor,
 		s.ID,
 	)
 	if err != nil {
@@ -98,7 +98,7 @@ func (r *PostgresShiftRepository) GetShiftList(ctx context.Context, req domain.P
 	}
 
 	query := fmt.Sprintf(`
-        SELECT id, driver_id, started_at, ended_at, total_rides, total_earnings
+        SELECT id, driver_id, started_at, ended_at, total_rides, total_earnings_minor, currency
         FROM driver.shift
         ORDER BY %s %s
         LIMIT $1 OFFSET $2
@@ -129,7 +129,7 @@ func (r *PostgresShiftRepository) CountShifts(ctx context.Context) (int, error) 
 
 func (r *PostgresShiftRepository) GetShiftByID(ctx context.Context, id string) (*domain.Shift, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, driver_id, started_at, ended_at, total_rides, total_earnings
+		SELECT id, driver_id, started_at, ended_at, total_rides, total_earnings_minor, currency
 		FROM driver.shift
 		WHERE id = $1
 	`, id)
@@ -148,7 +148,7 @@ func scanShift(row interface{ Scan(dest ...any) error }) (*domain.Shift, error) 
 	var startedAt time.Time
 	var endedAt sql.NullTime
 
-	if err := row.Scan(&d.ID, &d.DriverID, &startedAt, &endedAt, &d.TotalRides, &d.TotalEarnings); err != nil {
+	if err := row.Scan(&d.ID, &d.DriverID, &startedAt, &endedAt, &d.TotalRides, &d.TotalEarningsMinor, &d.Currency); err != nil {
 		return nil, err
 	}
 

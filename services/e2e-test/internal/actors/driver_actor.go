@@ -233,7 +233,7 @@ func (a *DriverActor) pollForOffer(ctx context.Context, window time.Duration) bo
 
 		v := &Verify{}
 		v.NotEmpty("rideId", offer.RideId)
-		v.True("price", offer.Price > 0, "expected positive price")
+		v.True("priceMinor", offer.PriceMinor > 0, "expected positive price")
 		v.NotEmpty("expiresAt", offer.ExpiresAt)
 		a.record(a.ID, "matching.offer.get", start, nil, v)
 
@@ -296,6 +296,7 @@ func (a *DriverActor) acceptOffer(ctx context.Context, rideID string) {
 	sleepJitter(ctx, a.Interval/4, a.Rnd) // simulated driving delay
 	a.completeAndVerifyRide(ctx, rideID)
 	a.verifyBackOnline(ctx, prevCompleted+1)
+	a.verifyInvoiceSettled(ctx, rideID)
 }
 
 // verifyOnRide polls the driver's profile until driver-service's async
@@ -406,4 +407,54 @@ func (a *DriverActor) verifyBackOnline(ctx context.Context, wantMinCompleted int
 			fmt.Sprintf("expected >= %d, got %d", wantMinCompleted, profile.TotalRidesCompleted))
 	}
 	a.record(a.ID, "driver.backonline", start, err, v)
+}
+
+// verifyInvoiceSettled polls GET /rides/{rideId}/invoice for a bounded
+// window after a ride completes. Delivery is async (ride.completed -> the
+// outbox -> billing-service's consumer -> ChargeWorker's next tick), so a
+// still-"open" invoice after this window isn't treated as a failure — only
+// a reached terminal status (paid/uncollectible) is asserted. This uses the
+// driver's own token: X-Client-Id is empty for a Driver account, so
+// billing-service's ownership check is skipped (see
+// billing-service/internal/interfaces/http/handler/invoice_handler.go).
+func (a *DriverActor) verifyInvoiceSettled(ctx context.Context, rideID string) {
+	start := time.Now()
+	var inv contracts.InvoiceDto
+	var err error
+	for attempt := range 10 {
+		inv, err = a.Billing.GetInvoiceByRide(ctx, a.acc.accessToken, rideID)
+		if err == nil && (inv.Status == "paid" || inv.Status == "uncollectible") {
+			break
+		}
+		if attempt < 9 && !sleepJitter(ctx, 3*time.Second, a.Rnd) {
+			return
+		}
+	}
+	if err == nil && inv.Status != "paid" && inv.Status != "uncollectible" {
+		// Still open after the observation window — expected for a
+		// pm_stub_decline client waiting out its retry backoff, not a bug.
+		return
+	}
+
+	v := &Verify{}
+	if err == nil {
+		v.Eq("rideId", inv.RideId, rideID)
+		v.True("amountMinor", inv.AmountMinor > 0, "expected positive amount")
+		v.NotEmpty("currency", inv.Currency)
+		v.True("terminal", inv.Status == "paid" || inv.Status == "uncollectible",
+			"expected paid or uncollectible, got "+inv.Status)
+	}
+	a.record(a.ID, "billing.invoice.get", start, err, v)
+	if err != nil || inv.ClientId == "" {
+		return
+	}
+
+	// Cheapest possible regression test for the double-entry invariants
+	// (BILLING_SPEC.md §10): exercises the ledger balance query end-to-end.
+	// Not asserting an exact value here — this client may have other rides
+	// mid-settlement concurrently, so client_receivable isn't guaranteed to
+	// be exactly 0 or exactly this invoice's amount at the instant we check.
+	start = time.Now()
+	_, err = a.Billing.GetLedgerBalance(ctx, a.Deps.AdminAccessToken, "client_receivable", inv.ClientId, inv.Currency)
+	a.record(a.ID, "billing.ledger.balance", start, err, nil)
 }

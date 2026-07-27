@@ -33,12 +33,12 @@ func TestParseListParams_RejectsBadInput(t *testing.T) {
 }
 
 func TestParseListParams_ShiftSortKeys(t *testing.T) {
-	r := httptest.NewRequest("GET", "/driver-shift?sortBy=totalEarnings&sortDir=asc", nil)
+	r := httptest.NewRequest("GET", "/driver-shift?sortBy=totalEarningsMinor&sortDir=asc", nil)
 	p, err := parseListParams(r, domain.ShiftSortColumns, "startedAt")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p.sortBy != "totalEarnings" || p.sortDir != "ASC" {
+	if p.sortBy != "totalEarningsMinor" || p.sortDir != "ASC" {
 		t.Fatalf("unexpected params: %+v", p)
 	}
 }

@@ -42,6 +42,7 @@ func (h *RideHandler) Create(w http.ResponseWriter, r *http.Request) {
 		DestLat:       req.DestLat,
 		DestLng:       req.DestLng,
 		DestAddress:   req.DestAddress,
+		TariffName:    req.TariffName,
 	})
 	if err != nil {
 		writeError(w, err.Error(), http.StatusInternalServerError)
@@ -52,7 +53,8 @@ func (h *RideHandler) Create(w http.ResponseWriter, r *http.Request) {
 		RideID:              result.RideID,
 		ClientID:            clientID,
 		Status:              result.Status,
-		EstimatedPrice:      result.EstimatedPrice,
+		EstimatedPriceMinor: result.EstimatedPriceMinor,
+		Currency:            result.Currency,
 		EstimatedDistanceKm: result.EstimatedDistanceKm,
 		CreatedAt:           result.CreatedAt,
 	})
@@ -91,7 +93,7 @@ func (h *RideHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, contracts.CancelRideResponse{Status: result.Status, Fee: result.Fee})
+	writeJSON(w, contracts.CancelRideResponse{Status: result.Status, FeeMinor: result.FeeMinor, Currency: result.Currency})
 }
 
 func (h *RideHandler) Start(w http.ResponseWriter, r *http.Request) {

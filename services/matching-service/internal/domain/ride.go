@@ -20,7 +20,8 @@ type Ride struct {
 	DestinationLng     float64
 	DestinationAddress string
 	DistanceKm         float64
-	Price              float64
+	PriceMinor         int64
+	Currency           string
 	// DriverRating is the matched driver's rating, cached at MarkMatched time
 	// so a later cancellation can restore them to drivers:online without a
 	// cross-service lookup. Zero until matched.

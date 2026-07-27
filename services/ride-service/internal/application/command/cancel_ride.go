@@ -20,8 +20,9 @@ type CancelRide struct {
 }
 
 type CancelRideResult struct {
-	Status string
-	Fee    float64
+	Status   string
+	FeeMinor int64
+	Currency string
 }
 
 type CancelRideHandler struct {
@@ -72,9 +73,10 @@ func (h *CancelRideHandler) Handle(ctx context.Context, cmd CancelRide) (CancelR
 			return err
 		}
 
-		var fee float64
+		var feeMinor int64
+		feeCurrency := ride.Currency
 		if ride.DriverID != nil {
-			fee, err = h.feeCalculator.Calculate(ctx, ride)
+			feeMinor, feeCurrency, err = h.feeCalculator.Calculate(ctx, ride)
 			if err != nil {
 				return err
 			}
@@ -82,8 +84,10 @@ func (h *CancelRideHandler) Handle(ctx context.Context, cmd CancelRide) (CancelR
 
 		event := contractsKafka.RideCancelledEvent{
 			RideID:      cmd.RideID,
+			ClientID:    ride.ClientID,
 			DriverID:    ride.DriverID,
-			Fee:         fee,
+			FeeMinor:    feeMinor,
+			Currency:    feeCurrency,
 			Reason:      cmd.Reason,
 			CancelledAt: time.Now().UTC().Format(time.RFC3339),
 		}
@@ -101,7 +105,7 @@ func (h *CancelRideHandler) Handle(ctx context.Context, cmd CancelRide) (CancelR
 			return err
 		}
 
-		result = CancelRideResult{Status: "Cancelled", Fee: fee}
+		result = CancelRideResult{Status: "Cancelled", FeeMinor: feeMinor, Currency: feeCurrency}
 		return nil
 	})
 

@@ -39,6 +39,7 @@ func main() {
 	kafkaBroker := getenv("KAFKA_BROKER", "kafka:29092")
 
 	rideRepo := persistence.NewPostgresRideRepository(db)
+	tariffRepo := persistence.NewPostgresTariffRepository(db)
 	outboxRepo := persistence.NewPostgresOutboxRepository(db)
 	transactionManager := persistence.NewPostgresTransactionManager(db)
 	feeCalculator := fee.NewStubCalculator()
@@ -49,8 +50,9 @@ func main() {
 
 	application := app.Application{
 		Commands: app.Commands{
-			CreateRide:      command.NewCreateRideHandler(rideRepo, outboxRepo, transactionManager, logger, metricsClient),
+			CreateRide:      command.NewCreateRideHandler(rideRepo, tariffRepo, outboxRepo, transactionManager, logger, metricsClient),
 			MarkRideMatched: command.NewMarkRideMatchedHandler(rideRepo, logger, metricsClient),
+			MarkRideBilled:  command.NewMarkRideBilledHandler(rideRepo, logger, metricsClient),
 			CancelRide:      command.NewCancelRideHandler(rideRepo, outboxRepo, transactionManager, feeCalculator, logger, metricsClient),
 			StartRide:       command.NewStartRideHandler(rideRepo, outboxRepo, transactionManager, logger, metricsClient),
 			CompleteRide:    command.NewCompleteRideHandler(rideRepo, outboxRepo, transactionManager, logger, metricsClient),
@@ -115,6 +117,15 @@ func main() {
 	go func() {
 		defer shutdownManager.Done()
 		rideAcceptedConsumer.Run(workerCtx, "ride.accepted")
+	}()
+
+	// payment.completed consumer: sets ride.ride.bill_id once billing-service
+	// collects payment for the ride.
+	paymentCompletedConsumer := consumers.NewPaymentCompletedConsumer(application, kafkaBroker)
+	shutdownManager.Add(1)
+	go func() {
+		defer shutdownManager.Done()
+		paymentCompletedConsumer.Run(workerCtx, "payment.completed")
 	}()
 
 	// Start server in a goroutine

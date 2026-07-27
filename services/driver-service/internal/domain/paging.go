@@ -21,8 +21,8 @@ var DriverSortColumns = map[string]string{
 }
 
 var ShiftSortColumns = map[string]string{
-	"startedAt":     "started_at",
-	"endedAt":       "ended_at",
-	"totalRides":    "total_rides",
-	"totalEarnings": "total_earnings",
+	"startedAt":          "started_at",
+	"endedAt":            "ended_at",
+	"totalRides":         "total_rides",
+	"totalEarningsMinor": "total_earnings_minor",
 }

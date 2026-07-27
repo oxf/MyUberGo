@@ -27,6 +27,7 @@ Flags override environment variables; both are optional.
 | `-ride-url` | `E2E_RIDE_URL` | `http://localhost:8090/api/ride` | ride-service base URL, via the Kong gateway |
 | `-driver-url` | `E2E_DRIVER_URL` | `http://localhost:8090/api/driver` | driver-service base URL, via the Kong gateway |
 | `-matching-url` | `E2E_MATCHING_URL` | `http://localhost:8002` | matching-service base URL — reached directly, it has no gateway route (see `gateway/kong.yml`) |
+| `-billing-url` | `E2E_BILLING_URL` | `http://localhost:8090/api/billing` | billing-service base URL, via the Kong gateway |
 
 auth/ride/driver now go through Kong (see the repo-root `gateway/` directory and CLAUDE.md's "API Gateway" section) rather than being hit directly — their host ports are no longer published by docker-compose.
 | `-clients` | `E2E_CLIENTS` | `5` | number of virtual clients |
@@ -39,11 +40,11 @@ auth/ride/driver now go through Kong (see the repo-root `gateway/` directory and
 
 ## What each actor does
 
-**Client** (`client-N`): signup (`Client` role, unique per-run email) → login → loop: `POST /request-ride` with randomized coordinates → `GET /ride/{id}` asserting the full field round-trip, status `Requested`, no driver assigned, price > 0. Every 5th iteration checks the ride appears in `GET /ride` (via the shared admin token — see below); every 10th refreshes the access token.
+**Client** (`client-N`): signup (`Client` role, unique per-run email) → login → attaches a billing payment method (`POST /payment-methods` with `pm_stub_ok`, op `billing.paymentmethod.add`, then GET-verified in the list, op `billing.paymentmethod.list`) → loop: `POST /request-ride` with randomized coordinates (occasionally against the `Standard USD` tariff — see below) → `GET /ride/{id}` asserting the full field round-trip, status `Requested`, no driver assigned, price > 0. Every 5th iteration checks the ride appears in `GET /ride` (via the shared admin token — see below); every 10th refreshes the access token. One dedicated `decline-client-0` runs the same loop but attaches `pm_stub_decline` instead, so its invoices are the ones that eventually go `uncollectible`.
 
 **Driver** (`driver-N`): signup (`Driver` role) → login → `POST /driver` → GET-verify → loop: `POST /driver-shift/create` → GET-verify (`endedAt` empty) → `PUT /driver-shift/{id}` status `Online` (emits `shift.updated` through the outbox → Kafka) → work period, during which it polls `GET /drivers/{driverId}/offer` on matching-service every ~2s (op `matching.offer.get`) → status `Ended` → GET-verify `endedAt` set. Every 4th cycle updates the licence plate and verifies the round-trip (`driver.driver` no longer stores name/phone — see below).
 
-When a poll during the work period finds an offer, the driver accepts it via `POST /rides/{rideId}/accept` (op `matching.ride.accept`) and deep-verifies: the offer disappears (`GET /drivers/{driverId}/offer` now 404s, another `matching.offer.get`) and a duplicate `POST /rides/{rideId}/accept` now 409s (op `matching.ride.accept.dup`). A 409 on the *first* accept just means another driver won the race for that ride; it's recorded under `matching.ride.accept` as a legitimate outcome, not a failure.
+When a poll during the work period finds an offer, the driver accepts it via `POST /rides/{rideId}/accept` (op `matching.ride.accept`) and deep-verifies: the offer disappears (`GET /drivers/{driverId}/offer` now 404s, another `matching.offer.get`) and a duplicate `POST /rides/{rideId}/accept` now 409s (op `matching.ride.accept.dup`). A 409 on the *first* accept just means another driver won the race for that ride; it's recorded under `matching.ride.accept` as a legitimate outcome, not a failure. After completing the ride, it polls `GET /rides/{rideId}/invoice` for up to ~30s for a terminal `paid`/`uncollectible` status (op `billing.invoice.get`; a still-`open` invoice after that window is normal async lag, not a failure) and, once terminal, calls `GET /ledger/balance` for that invoice's client/currency (op `billing.ledger.balance`) — the cheapest possible smoke test that the ledger query pipeline itself is healthy.
 
 HTTP failures and verification mismatches are logged per actor and counted per operation in the report — they never kill the process, so the simulator can be started before/while the stack is coming up.
 

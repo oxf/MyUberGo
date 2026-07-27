@@ -45,13 +45,36 @@ export interface ShiftDto {
   startedAt: string;
   endedAt?: string | null;
   totalRides: number;
-  totalEarnings: number;
+  totalEarningsMinor: number;
+  currency: string;
 }
 
 export interface LocationDto {
   latitude: number;
   longitude: number;
   address: string;
+}
+
+export interface InvoiceLineDto {
+  kind: string;
+  amountMinor: number;
+  currency: string;
+  description: string;
+}
+
+export interface InvoiceDto {
+  id: string;
+  rideId: string;
+  clientId: string;
+  driverId?: string | null;
+  type: string;
+  status: string;
+  amountMinor: number;
+  currency: string;
+  attemptCount: number;
+  lines: InvoiceLineDto[];
+  createdAt: string;
+  paidAt?: string | null;
 }
 
 export interface RideDto {
@@ -61,7 +84,8 @@ export interface RideDto {
   status: string;
   pickup: LocationDto;
   destination: LocationDto;
-  estimatedPrice: number;
+  estimatedPriceMinor: number;
+  currency: string;
   estimatedDistanceKm: number;
   createdAt: string;
 }

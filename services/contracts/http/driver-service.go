@@ -27,12 +27,13 @@ type UpdateDriverDto struct {
 }
 
 type ShiftDto struct {
-	Id            string  `json:"id"`
-	DriverId      string  `json:"driverId"`
-	StartedAt     string  `json:"startedAt"`
-	EndedAt       *string `json:"endedAt,omitempty"`
-	TotalRides    int     `json:"totalRides"`
-	TotalEarnings float64 `json:"totalEarnings"`
+	Id                 string  `json:"id"`
+	DriverId           string  `json:"driverId"`
+	StartedAt          string  `json:"startedAt"`
+	EndedAt            *string `json:"endedAt,omitempty"`
+	TotalRides         int     `json:"totalRides"`
+	TotalEarningsMinor int64   `json:"totalEarningsMinor"`
+	Currency           string  `json:"currency"`
 }
 type CreateShiftRequest struct {
 	DriverId string `json:"driverId"`

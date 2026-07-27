@@ -6,7 +6,7 @@ A distributed, event-driven clone of Uber built in Go to learn microservices pat
 
 ## 🏗️ Architecture Overview
 
-The system is designed as 8 services communicating asynchronously via **Apache Kafka** (event streaming) and synchronously via **REST/HTTP**. **4 are implemented today** (Auth, Ride, Matching, Driver); **4 are planned** (Location, Billing, Notification, API Gateway) — see status markers in the section below.
+The system is designed as 8 services communicating asynchronously via **Apache Kafka** (event streaming) and synchronously via **REST/HTTP**. **5 are implemented today** (Auth, Ride, Matching, Driver, Billing); **2 are planned** (Location, Notification); an API Gateway (Kong) fronts the implemented services — see status markers in the section below.
 
 ### System Architecture Diagram (target design)
 
@@ -41,7 +41,7 @@ Creates ride requests, estimates fare/distance from tariffs, manages the ride st
 **Kafka publishes**: `ride.requested`, `ride.cancelled`.
 **Kafka subscribes**: `ride.accepted` (→ set driver/matched_at/status), `ride.started`, `ride.finished`, `payment.completed` (→ set bill_id).
 
-> Current code implements `POST /request-ride`, `GET /ride`, `GET /ride/{id}`, `DELETE /ride/{id}` (cancel; no `/api` prefix, different route names than the target above) with a flat `ride.ride` table and a single fixed tariff — `ride.tariff` exists in the schema but isn't read. Publishes both `ride.requested` and, as of the cancel endpoint, `ride.cancelled`; consumes `ride.accepted` (→ `Matched`) but not yet `ride.started`/`ride.finished`/`payment.completed`. Cancellation fee is a stub that always returns `$0` — real fee logic needs the not-yet-built Billing service.
+> Current code implements `POST /request-ride`, `GET /ride`, `GET /ride/{id}`, `DELETE /ride/{id}` (cancel; no `/api` prefix, different route names than the target above) with a flat `ride.ride` table. `ride.tariff` is now read: fare is `base_fare_minor + price_per_km_minor*distanceKm + price_per_min_minor*durationMin` (haversine distance, an assumed average speed for duration), all in integer minor units + an ISO-4217 `currency` — see CLAUDE.md's money-representation invariant. `POST /request-ride` accepts an optional `tariffName` (defaults `"Standard"`); a `"Standard USD"` tariff is also seeded, so multi-currency is exercisable end-to-end. Publishes `ride.requested`/`ride.completed`/`ride.cancelled` (all now carrying `clientId` + the money fields billing-service needs) and consumes `ride.accepted` (→ `Matched`) and `payment.completed` (→ sets `bill_id`, closing the loop billing-service's `ChargeWorker` opens). Cancellation fee is a stub flat 300 minor units, charged only when a driver was already assigned — real per-distance/per-time fee logic is still future work, but the path is no longer permanently dead.
 
 ### 3. Matching Service — ✅ Implemented, simplified algorithm (Port `:8002`)
 
@@ -81,16 +81,20 @@ Receives real-time GPS pings over WebSocket, keeps live location in Redis, archi
 
 **Kafka subscribes**: `ride.started` (begin tracking), `ride.finished` (archive + build polyline + clean up Redis).
 
-### 6. Billing Service — 🚧 Planned (target port `:8005`)
+### 6. Billing Service — ✅ Implemented, Stripe integration deferred (Port `:8005`)
 
-Stores payment methods, creates orders on ride completion, executes payments, generates receipts, and computes driver commissions.
+Turns completed/fee-bearing rides into invoices, collects them through a pluggable payment provider, and records every money movement in a double-entry ledger. Real card processing is out of scope for this pass — see `docs/billing/BILLING_SPEC.md` for the full design and what's deliberately deferred (§9 there).
 
-**Schema**: `PAYMENT_METHOD`, `ORDER` (status: pending/completed/failed/refunded, Stripe payment_intent_id), `ORDER_ITEM`, `RECEIPT`, `COMMISSION` (gross/platform fee/net, paid status).
+**Schema** (`billing` schema in `services/shared/migrations/init.sql`): `customer` (one row per client per provider), `payment_method` (brand/last4 display metadata only — never a PAN/CVC; a partial unique index enforces at most one active default per client), `invoice` (`ride_fare`/`cancellation_fee`, `open`/`paid`/`uncollectible`/`void`; **`UNIQUE (ride_id, type)`** is the idempotency guard against redelivered Kafka events), `invoice_line`, `payment` (one row per collection attempt, deterministic `idempotency_key`), `ledger_account`/`ledger_transaction`/`ledger_entry` (append-only double-entry bookkeeping — account types `client_receivable`/`driver_payable`/`platform_revenue`/`psp_clearing`/`psp_fees`/`bad_debt`, one account per `(type, owner, currency)`), `outbox_message`.
 
-**HTTP**: `POST /api/billing/payment-methods`, `GET /api/billing/receipts/{rideId}`.
+**HTTP**: `POST /payment-methods`, `GET /payment-methods`, `DELETE /payment-methods/{id}` (caller-scoped via Kong's `X-Client-Id`); `GET /invoices/{id}`, `GET /rides/{rideId}/invoice` (caller-scoped, authorized in-service against the invoice's own `client_id`); `GET /invoices` (Admin-only at Kong, paged); `GET /ledger/balance?type&currency&ownerId` (Admin-only — the cheapest possible regression check for the ledger invariants).
 
-**Kafka subscribes**: `ride.finished` (→ create order, charge, receipt, commission), `ride.cancelled` (→ cancellation fee if within 5 min of match).
-**Kafka publishes**: `payment.completed`, `payment.failed`.
+**Kafka subscribes**: `ride.completed` → `CreateInvoiceFromRide` (`type=ride_fare`) + posts the `invoice_opened` ledger transaction (client_receivable debited; platform_revenue + driver_payable credited, split by `PLATFORM_COMMISSION_BPS`, truncating division so the two always sum exactly to the fare). `ride.cancelled` → same pipeline with `type=cancellation_fee` when `feeMinor > 0` (100% to `platform_revenue`, no `driver_payable` leg) — skipped entirely when the fee is zero, which is most cancellations today.
+**Kafka publishes**: `payment.completed`, `payment.failed` (via the same transactional-outbox pattern as ride/driver-service).
+
+A `ChargeWorker` (ticker+`select`, same shape as the outbox workers) sweeps invoices whose `next_attempt_at` has elapsed, calls the `PaymentProvider` port — a `StubProvider` for now, picking its outcome from the payment method's token (`pm_stub_ok` succeeds, `pm_stub_decline`/`pm_stub_insufficient` fail with the matching code; a client with no active payment method fails with `no_payment_method`) — and posts `payment_succeeded` (psp_clearing debited, client_receivable credited) on success. On failure it backs off (`PAYMENT_BACKOFF`, default `1m,5m,30m`) and retries up to `MAX_PAYMENT_ATTEMPTS` (default 3), after which the invoice goes `uncollectible` and posts `invoice_uncollectible` (bad_debt debited, client_receivable credited) — `driver_payable` deliberately stays posted from the first transaction, since the driver is still owed money the platform never collected; that divergence is the entire reason for double-entry bookkeeping over a single balance column.
+
+The `PaymentProvider` port speaks its own vocabulary (`ChargeResult{Status, ProviderIntentID, FailureCode, FailureMessage}`), not Stripe's — the whole point is that a real Stripe adapter becomes an implementation of this port, not a domain refactor. Deferred and why it stays additive: real Stripe adapter/webhooks (the `provider`/`provider_payment_intent_id` columns already exist; `payment.status` already models `processing`), driver payouts (`driver_payable` is posted from day one specifically so this doesn't need a schema backfill later), refunds/disputes/wallet/promos/FX. See `docs/billing/BILLING_SPEC.md` §9 for the full list.
 
 ### 7. Notification Service — 🚧 Planned (target port `:8006`)
 

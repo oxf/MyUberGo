@@ -1,0 +1,20 @@
+meta {
+  name: Remove Payment Method
+  type: http
+  seq: 3
+}
+
+delete {
+  url: http://localhost:8090/api/billing/payment-methods/00000000-0000-0000-0000-000000000000
+  body: none
+  auth: inherit
+}
+
+headers {
+  Authorization: Bearer {{auth_token}}
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

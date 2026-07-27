@@ -2,6 +2,7 @@ import { usePagedQuery } from '../hooks/usePagedQuery';
 import { DataTable, type Column } from '../components/DataTable';
 import { Pagination } from '../components/Pagination';
 import type { ShiftDto } from '../api/types';
+import { formatMoney } from '../lib/money';
 
 const columns: Column<ShiftDto>[] = [
   { key: 'id', header: 'ID', render: (s) => <code title={s.id}>{s.id.slice(0, 8)}</code> },
@@ -9,7 +10,7 @@ const columns: Column<ShiftDto>[] = [
   { key: 'startedAt', header: 'Started', sortable: true, render: (s) => new Date(s.startedAt).toLocaleString() },
   { key: 'endedAt', header: 'Ended', sortable: true, render: (s) => (s.endedAt ? new Date(s.endedAt).toLocaleString() : '—') },
   { key: 'totalRides', header: 'Rides', sortable: true, render: (s) => s.totalRides },
-  { key: 'totalEarnings', header: 'Earnings', sortable: true, render: (s) => s.totalEarnings.toFixed(2) },
+  { key: 'totalEarningsMinor', header: 'Earnings', sortable: true, render: (s) => formatMoney(s.totalEarningsMinor, s.currency) },
 ];
 
 export function ShiftsPage() {

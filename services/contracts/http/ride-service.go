@@ -13,13 +13,17 @@ type CreateRideRequest struct {
 	DestLng       float64 `json:"destLng"`
 	PickupAddress string  `json:"pickupAddress"`
 	DestAddress   string  `json:"destAddress"`
+	// TariffName selects the fare table (ride.tariff.name); defaults to
+	// "Standard" when omitted.
+	TariffName string `json:"tariffName,omitempty"`
 }
 
 type CreateRideResponse struct {
 	RideID              string  `json:"rideId"`
 	ClientID            string  `json:"clientId"`
 	Status              string  `json:"status"`
-	EstimatedPrice      float64 `json:"estimatedPrice"`
+	EstimatedPriceMinor int64   `json:"estimatedPriceMinor"`
+	Currency            string  `json:"currency"`
 	EstimatedDistanceKm float64 `json:"estimatedDistanceKm"`
 	CreatedAt           string  `json:"createdAt"`
 }
@@ -31,7 +35,8 @@ type RideDto struct {
 	Status              string          `json:"status"`
 	Pickup              LocationRequest `json:"pickup"`
 	Destination         LocationRequest `json:"destination"`
-	EstimatedPrice      float64         `json:"estimatedPrice"`
+	EstimatedPriceMinor int64           `json:"estimatedPriceMinor"`
+	Currency            string          `json:"currency"`
 	EstimatedDistanceKm float64         `json:"estimatedDistanceKm"`
 	CreatedAt           string          `json:"createdAt"`
 }
@@ -41,8 +46,9 @@ type CancelRideRequest struct {
 }
 
 type CancelRideResponse struct {
-	Status string  `json:"status"`
-	Fee    float64 `json:"fee"`
+	Status   string `json:"status"`
+	FeeMinor int64  `json:"feeMinor"`
+	Currency string `json:"currency"`
 }
 
 type StartRideRequest struct {

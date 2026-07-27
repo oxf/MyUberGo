@@ -133,6 +133,25 @@ services:
       kafka:
         condition: service_started
 
+  billing-service:
+    build:
+      context: .
+      dockerfile: services/billing-service/Dockerfile
+    environment:
+      PG_DSN: postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable
+      KAFKA_BROKER: kafka:29092
+      SERVICE_PORT: '8005'
+      PLATFORM_COMMISSION_BPS: '2000'
+      MAX_PAYMENT_ATTEMPTS: '3'
+      PAYMENT_BACKOFF: '1m,5m,30m'
+      CHARGE_WORKER_INTERVAL_SEC: '5'
+    # No published host port — see the note on auth-service above.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
   kong:
     image: kong:3.7
     environment:
@@ -162,6 +181,8 @@ services:
       ride-service:
         condition: service_started
       driver-service:
+        condition: service_started
+      billing-service:
         condition: service_started
 
   web:
