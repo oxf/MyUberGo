@@ -422,15 +422,54 @@ func (r *fakeOutboxRepo) Insert(ctx context.Context, m *domain.OutboxMessage) er
 }
 
 func (r *fakeOutboxRepo) GetUnprocessedBatch(ctx context.Context, limit int) ([]*domain.OutboxMessage, error) {
-	panic("not used by ChargeWorker tests")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var result []*domain.OutboxMessage
+	for _, m := range r.messages {
+		if m.Processed {
+			continue
+		}
+		result = append(result, m)
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result, nil
 }
 
 func (r *fakeOutboxRepo) MarkProcessed(ctx context.Context, id string) error {
-	panic("not used by ChargeWorker tests")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range r.messages {
+		if m.ID == id {
+			m.Processed = true
+			return nil
+		}
+	}
+	return commonerrors.ErrNotFound
 }
 
 func (r *fakeOutboxRepo) IncrementRetries(ctx context.Context, id string) error {
-	panic("not used by ChargeWorker tests")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range r.messages {
+		if m.ID == id {
+			m.Retries++
+			return nil
+		}
+	}
+	return commonerrors.ErrNotFound
+}
+
+func (r *fakeOutboxRepo) get(id string) *domain.OutboxMessage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range r.messages {
+		if m.ID == id {
+			return m
+		}
+	}
+	return nil
 }
 
 func (r *fakeOutboxRepo) countByTopic(topic string) int {
