@@ -38,11 +38,12 @@ jobs:
         run: go test ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
-          # v6's default golangci-lint (1.64.8, built with Go 1.24) can't
-          # parse a `go 1.26` toolchain directive in go.mod. Pinned to the
-          # v2 release actually verified locally against this repo's
+          # v6 only supports golangci-lint v1, whose latest release predates
+          # Go 1.26 support entirely (can't parse this repo's `go 1.26`
+          # toolchain directive). v7 is required for golangci-lint v2 — the
+          # v2.12.2 release actually verified locally against this repo's
           # .golangci.yml (v2 schema) and go1.26 modules.
           version: v2.12.2
           working-directory: services/${{ matrix.service }}
@@ -59,7 +60,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
 
