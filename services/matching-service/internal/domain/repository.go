@@ -37,6 +37,9 @@ type OfferRepository interface {
 	// CurrentOffer returns ("", zero, nil) when the driver has no live offer.
 	CurrentOffer(ctx context.Context, driverID string) (rideID string, expiresAt time.Time, err error)
 	HasCurrentOffer(ctx context.Context, driverID string) (bool, error)
+	// HasCurrentOffers is HasCurrentOffer for many drivers in one pipelined
+	// round-trip — used by BroadcastOffersHandler's candidate-filtering loop.
+	HasCurrentOffers(ctx context.Context, driverIDs []string) (map[string]bool, error)
 	ClearCurrentOffer(ctx context.Context, driverID string) error
 	// TryAccept is the atomic claim: SET ride:{id}:accepted_by NX. false = lost the race.
 	TryAccept(ctx context.Context, rideID, driverID string, ttl time.Duration) (bool, error)
@@ -47,6 +50,9 @@ type OfferRepository interface {
 	// racing the cancellation is rejected by IsCancelled.
 	SetCancelled(ctx context.Context, rideID string) error
 	OfferCount(ctx context.Context, driverID string) (int64, error)
+	// OfferCounts is OfferCount for many drivers in one pipelined round-trip
+	// — used by BroadcastOffersHandler's candidate-filtering loop.
+	OfferCounts(ctx context.Context, driverIDs []string) (map[string]int64, error)
 	IncrOfferCount(ctx context.Context, driverID string) error
 	SetPending(ctx context.Context, p PendingRide) error
 	DeletePending(ctx context.Context, rideID string) error

@@ -40,6 +40,11 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
+          # v6's default golangci-lint (1.64.8, built with Go 1.24) can't
+          # parse a `go 1.26` toolchain directive in go.mod. Pinned to the
+          # v2 release actually verified locally against this repo's
+          # .golangci.yml (v2 schema) and go1.26 modules.
+          version: v2.12.2
           working-directory: services/${{ matrix.service }}
           args: --config=${{ github.workspace }}/.golangci.yml
 

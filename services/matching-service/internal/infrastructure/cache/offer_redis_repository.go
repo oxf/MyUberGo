@@ -71,6 +71,33 @@ func (r *OfferRepository) HasCurrentOffer(ctx context.Context, driverID string) 
 	return n > 0, err
 }
 
+// HasCurrentOffers pipelines one EXISTS per driver into a single round-trip
+// instead of the caller looping HasCurrentOffer one driver at a time. The
+// aggregate error from pipe.Exec is deliberately ignored — with EXISTS every
+// queued command always resolves to an integer (never redis.Nil), so any
+// real failure surfaces on that command's own Result() below instead of
+// requiring a second, ambiguous error channel to reason about.
+func (r *OfferRepository) HasCurrentOffers(ctx context.Context, driverIDs []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(driverIDs))
+	if len(driverIDs) == 0 {
+		return out, nil
+	}
+	pipe := r.rdb.Pipeline()
+	cmds := make(map[string]*redis.IntCmd, len(driverIDs))
+	for _, id := range driverIDs {
+		cmds[id] = pipe.Exists(ctx, offerKey(id))
+	}
+	_, _ = pipe.Exec(ctx)
+	for id, cmd := range cmds {
+		n, err := cmd.Result()
+		if err != nil {
+			return nil, err
+		}
+		out[id] = n > 0
+	}
+	return out, nil
+}
+
 func (r *OfferRepository) ClearCurrentOffer(ctx context.Context, driverID string) error {
 	return r.rdb.Del(ctx, offerKey(driverID)).Err()
 }
@@ -108,6 +135,41 @@ func (r *OfferRepository) OfferCount(ctx context.Context, driverID string) (int6
 		return 0, err
 	}
 	return strconv.ParseInt(v, 10, 64)
+}
+
+// OfferCounts pipelines one GET per driver into a single round-trip instead
+// of the caller looping OfferCount one driver at a time. Like
+// HasCurrentOffers, the aggregate error from pipe.Exec is ignored in favor
+// of each command's own Result() — GET on a missing rate-limit key resolves
+// to redis.Nil per-command (meaning "no offers sent yet this window", count
+// 0), not a real failure.
+func (r *OfferRepository) OfferCounts(ctx context.Context, driverIDs []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(driverIDs))
+	if len(driverIDs) == 0 {
+		return out, nil
+	}
+	pipe := r.rdb.Pipeline()
+	cmds := make(map[string]*redis.StringCmd, len(driverIDs))
+	for _, id := range driverIDs {
+		cmds[id] = pipe.Get(ctx, rateKey(id))
+	}
+	_, _ = pipe.Exec(ctx)
+	for id, cmd := range cmds {
+		v, err := cmd.Result()
+		if err == redis.Nil {
+			out[id] = 0
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, nil
 }
 
 // IncrOfferCount bumps the per-driver notification counter and resets its

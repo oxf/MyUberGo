@@ -2,7 +2,8 @@ package command
 
 import (
 	"context"
-	"reflect"
+	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,13 +67,19 @@ type fakeOffers struct {
 	offered        map[string]bool
 	busy           map[string]bool
 	counts         map[string]int64
-	offeredNow     []string
 	pending        []domain.PendingRide
 	deletedPending []string
 	currentOffer   map[string]string // driverID -> rideID
 	acceptedBy     string
 	cancelled      bool
 	cleared        []string
+
+	// mu guards offeredNow: BroadcastOffersHandler now calls TryOffer
+	// concurrently (one goroutine per target), so this fake must be safe for
+	// concurrent mutation the same way a real Redis-backed implementation
+	// would be.
+	mu         sync.Mutex
+	offeredNow []string
 }
 
 func (f *fakeOffers) OfferedDrivers(ctx context.Context, rideID string) (map[string]bool, error) {
@@ -81,12 +88,28 @@ func (f *fakeOffers) OfferedDrivers(ctx context.Context, rideID string) (map[str
 func (f *fakeOffers) HasCurrentOffer(ctx context.Context, id string) (bool, error) {
 	return f.busy[id], nil
 }
+func (f *fakeOffers) HasCurrentOffers(ctx context.Context, ids []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		out[id] = f.busy[id]
+	}
+	return out, nil
+}
 func (f *fakeOffers) OfferCount(ctx context.Context, id string) (int64, error) {
 	return f.counts[id], nil
 }
+func (f *fakeOffers) OfferCounts(ctx context.Context, ids []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(ids))
+	for _, id := range ids {
+		out[id] = f.counts[id]
+	}
+	return out, nil
+}
 func (f *fakeOffers) IncrOfferCount(ctx context.Context, id string) error { return nil }
 func (f *fakeOffers) TryOffer(ctx context.Context, rideID, driverID string, ttl time.Duration) (bool, error) {
+	f.mu.Lock()
 	f.offeredNow = append(f.offeredNow, driverID)
+	f.mu.Unlock()
 	return true, nil
 }
 func (f *fakeOffers) SetPending(ctx context.Context, p domain.PendingRide) error {
@@ -163,8 +186,13 @@ func TestBroadcastOffers_SkipsOfferedAndRateLimited(t *testing.T) {
 	if err := h.Handle(context.Background(), BroadcastOffers{RideID: "r1", Attempt: 1}); err != nil {
 		t.Fatal(err)
 	}
+	// Targets are now offered concurrently (one goroutine per target), so
+	// TryOffer's call order is no longer deterministic — compare as sets.
 	want := []string{"d", "e"}
-	if !reflect.DeepEqual(offers.offeredNow, want) {
+	got := append([]string(nil), offers.offeredNow...)
+	sort.Strings(got)
+	sort.Strings(want)
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("got %v want %v", offers.offeredNow, want)
 	}
 }
