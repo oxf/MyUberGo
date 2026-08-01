@@ -41,5 +41,11 @@ func (r *PostgresCustomerRepository) Create(ctx context.Context, c *domain.Custo
 		VALUES ($1, $2, $3)
 		RETURNING id
 	`, c.ClientID, c.Provider, c.ProviderCustomerID).Scan(&id)
-	return id, err
+	if err != nil {
+		if isUniqueViolation(err) {
+			return "", domain.ErrCustomerExists
+		}
+		return "", err
+	}
+	return id, nil
 }

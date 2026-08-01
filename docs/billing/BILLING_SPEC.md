@@ -21,7 +21,7 @@ money movement in a double-entry ledger.
 - e2e-test coverage of the happy path and the decline path.
 
 **Explicitly out of scope (v1)** — see §9 for why and what stays additive.
-- Real Stripe adapter, webhooks, `psp_event` inbox, reconciliation, PSP-fee capture.
+- Real Stripe adapter, webhooks, `psp_event` inbox (✅ built in a later pass, 2026-08-01 — see §9), reconciliation, PSP-fee capture (still deferred).
 - Driver payouts / Stripe Connect (`driver_payable` **is** modelled — see §5).
 - Client wallet, credits, promos, refunds, disputes.
 - Authorize-hold at match / capture at completion.
@@ -348,9 +348,9 @@ and the client has open invoices.
 
 | Deferred | Why it's safe to defer | What keeps it additive |
 |---|---|---|
-| Stripe adapter | Stub proves the pipeline first | The `PaymentProvider` port and the domain result type; `provider` columns everywhere |
-| Webhooks + `psp_event` inbox | No real async provider yet | `payment.status` already models `processing`; `provider_payment_intent_id` column already exists |
-| Poller for stuck `processing` payments | Unreachable with a sync stub | Same |
+| ~~Stripe adapter~~ ✅ done (2026-08-01) | Stub proved the pipeline first | Delivered as `StripeProvider` (`internal/infrastructure/payment/stripe`), implementing the same `PaymentProvider`/`CustomerVault` ports — no domain refactor needed, exactly as planned |
+| ~~Webhooks + `psp_event` inbox~~ ✅ done (2026-08-01) | No real async provider was wired up yet | Delivered as `WebhookHandler` + `billing.psp_event`; `payment.status`'s pre-existing `processing` state and `provider_payment_intent_id` column were exactly what this needed, no schema change |
+| Poller for stuck `processing` payments | Now reachable (real async provider exists), but not yet built | Same as above — this is the next open item |
 | PSP fee capture | Fee is only known from a Stripe balance transaction | `psp_fees` account type already declared |
 | Reconciliation runs | Needs real provider data to reconcile against | The ledger is the reconciliation target and exists from day one |
 | Driver payouts / Connect | Own phase | `driver_payable` is posted from day one — this is the expensive one to retrofit, so it is **not** deferred |

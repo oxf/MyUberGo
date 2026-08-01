@@ -33,16 +33,21 @@ type InvoiceLine struct {
 }
 
 type Invoice struct {
-	ID            string
-	RideID        string
-	ClientID      string
-	DriverID      *string
-	Type          string
-	Status        string
-	AmountMinor   int64
-	Currency      string
+	ID          string
+	RideID      string
+	ClientID    string
+	DriverID    *string
+	Type        string
+	Status      string
+	AmountMinor int64
+	Currency    string
+	// AttemptCount is derived at read time (a correlated subquery over
+	// billing.payment, COUNT(*) WHERE invoice_id=...) — not a stored
+	// column. Consistent with the ledger's own "never a stored column,
+	// compute at query time" rule. Populated by every query method below;
+	// there is deliberately no writer method on this interface.
 	AttemptCount  int
-	NextAttemptAt *string // RFC3339, nil while processing/uncollectible/paid
+	NextAttemptAt *string // RFC3339 — the retry SCHEDULE only; see billing.payment.ClaimedUntil for the claim lease
 	CreatedAt     string
 	PaidAt        *string
 	Lines         []InvoiceLine
@@ -68,10 +73,14 @@ type InvoiceRepository interface {
 	// GetDueForCharge locks (FOR UPDATE SKIP LOCKED) open invoices whose
 	// next_attempt_at has elapsed, for the ChargeWorker sweep.
 	GetDueForCharge(ctx context.Context, limit int) ([]*Invoice, error)
-	MarkPaid(ctx context.Context, id, paidAt string) error
-	// RecordFailedAttempt increments attempt_count and sets the next sweep
-	// time; nextAttemptAt nil means "don't sweep again" (used together with
-	// MarkUncollectible once attempts are exhausted).
-	RecordFailedAttempt(ctx context.Context, id string, nextAttemptAt *string) error
-	MarkUncollectible(ctx context.Context, id string) error
+	// MarkPaid is guarded to WHERE status='open' and reports whether the
+	// guard won (rows-affected > 0) — see PaymentRepository.MarkSucceeded
+	// for why this matters once a webhook can race the worker for the same
+	// invoice.
+	MarkPaid(ctx context.Context, id, paidAt string) (bool, error)
+	// SetNextAttemptAt arms (non-nil) or clears (nil) the retry schedule —
+	// used by the finalize step (to schedule the next retry, or to stop
+	// sweeping while a webhook-only "processing" outcome is pending).
+	SetNextAttemptAt(ctx context.Context, id string, nextAttemptAt *string) error
+	MarkUncollectible(ctx context.Context, id string) (bool, error)
 }

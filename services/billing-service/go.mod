@@ -7,6 +7,7 @@ require (
 	github.com/oxf/MyUber/contracts v0.0.0-00010101000000-000000000000
 	github.com/segmentio/kafka-go v0.4.28
 	github.com/sirupsen/logrus v1.9.4
+	github.com/stripe/stripe-go/v84 v84.4.1
 )
 
 require (

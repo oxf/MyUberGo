@@ -1,68 +1,76 @@
 package workers
 
 import (
+	app "billing-service/internal/application"
+	"billing-service/internal/application/command"
 	"billing-service/internal/application/services"
 	commonerrors "billing-service/internal/common/errors"
 	"billing-service/internal/domain"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
-	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
 	"github.com/sirupsen/logrus"
 )
 
-// ChargeWorker sweeps open invoices whose retry deadline has elapsed,
-// attempts collection through the PaymentProvider port, and posts the
-// resulting ledger transaction (T2 on success, T3 once attempts are
-// exhausted) — same ticker+select shape as OutboxWorker.
+// ChargeWorker sweeps open invoices whose retry deadline has elapsed and
+// attempts collection through the PaymentProvider port. Each tick runs in
+// three phases:
+//
+//  1. claim  — a single short DB transaction that locks due invoices
+//     (FOR UPDATE SKIP LOCKED), then for each one decides: skip (an
+//     in-flight attempt is still within its claimed_until lease), resume
+//     (the lease expired — reuse the same idempotency key), or start fresh.
+//  2. charge — the provider call itself, with NO transaction open and no
+//     row locks held. This is the entire reason claim/charge/finalize are
+//     split: a real provider is a network round-trip, which must never
+//     happen inside a Postgres transaction holding FOR UPDATE locks.
+//  3. finalize — FinalizeChargeSucceeded/FinalizeChargeFailed (their own
+//     short transactions), shared with the webhook handler so the ledger
+//     is posted exactly once no matter which caller resolves first.
 type ChargeWorker struct {
 	invoiceRepo       domain.InvoiceRepository
 	paymentRepo       domain.PaymentRepository
 	paymentMethodRepo domain.PaymentMethodRepository
-	ledgerRepo        domain.LedgerRepository
-	outboxRepo        domain.OutboxRepository
+	customerRepo      domain.CustomerRepository
 	provider          services.PaymentProvider
 	transaction       services.TransactionManager
+	application       app.Application
+	providerName      string
 	logger            *logrus.Entry
 	interval          time.Duration
 	batchSize         int
-	maxAttempts       int
-	backoff           []time.Duration
-	commissionBps     int64
+	leaseDuration     time.Duration
 }
 
 func NewChargeWorker(
 	invoiceRepo domain.InvoiceRepository,
 	paymentRepo domain.PaymentRepository,
 	paymentMethodRepo domain.PaymentMethodRepository,
-	ledgerRepo domain.LedgerRepository,
-	outboxRepo domain.OutboxRepository,
+	customerRepo domain.CustomerRepository,
 	provider services.PaymentProvider,
 	transaction services.TransactionManager,
+	application app.Application,
+	providerName string,
 	logger *logrus.Entry,
 	interval time.Duration,
-	maxAttempts int,
-	backoff []time.Duration,
-	commissionBps int64,
+	leaseDuration time.Duration,
 ) *ChargeWorker {
 
 	return &ChargeWorker{
 		invoiceRepo:       invoiceRepo,
 		paymentRepo:       paymentRepo,
 		paymentMethodRepo: paymentMethodRepo,
-		ledgerRepo:        ledgerRepo,
-		outboxRepo:        outboxRepo,
+		customerRepo:      customerRepo,
 		provider:          provider,
 		transaction:       transaction,
+		application:       application,
+		providerName:      providerName,
 		logger:            logger,
 		interval:          interval,
 		batchSize:         defaultBatchSize,
-		maxAttempts:       maxAttempts,
-		backoff:           backoff,
-		commissionBps:     commissionBps,
+		leaseDuration:     leaseDuration,
 	}
 }
 
@@ -83,175 +91,258 @@ func (w *ChargeWorker) Run(ctx context.Context) {
 }
 
 func (w *ChargeWorker) processBatch(ctx context.Context) error {
-	return w.transaction.WithinTransaction(ctx, func(txCtx context.Context) error {
+	claims, err := w.claimBatch(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, claim := range claims {
+		w.resolve(ctx, claim)
+	}
+	return nil
+}
+
+// chargeClaim is everything the charge/finalize phases need, entirely
+// derived from data already committed by claimBatch — neither phase reads
+// the DB again except through the finalize commands' own transactions.
+type chargeClaim struct {
+	PaymentID               string
+	InvoiceID               string
+	ImmediateFailure        bool
+	FailureCode             string
+	FailureMessage          string
+	IdempotencyKey          string
+	ProviderCustomerID      string
+	ProviderPaymentMethodID string
+	AmountMinor             int64
+	Currency                string
+}
+
+// claimBatch locks and claims the whole due batch in one transaction. A
+// genuine error from claimOne (a failed SQL statement) aborts the Postgres
+// transaction server-side regardless of Go-level handling — so on error the
+// whole batch is abandoned for this tick rather than continuing to touch an
+// already-aborted transaction (the same lesson CreateInvoiceFromRideHandler
+// learned the hard way). FOR UPDATE SKIP LOCKED plus the resume/skip logic
+// make retrying the whole batch next tick safe.
+func (w *ChargeWorker) claimBatch(ctx context.Context) ([]chargeClaim, error) {
+	var claims []chargeClaim
+	err := w.transaction.WithinTransaction(ctx, func(txCtx context.Context) error {
 		invoices, err := w.invoiceRepo.GetDueForCharge(txCtx, w.batchSize)
 		if err != nil {
 			return err
 		}
 
+		lease := time.Now().UTC().Add(w.leaseDuration).Format(time.RFC3339)
+
 		for _, inv := range invoices {
-			if err := w.attempt(txCtx, inv); err != nil {
-				w.logger.WithError(err).WithField("invoice_id", inv.ID).Error("charge worker: attempt failed")
+			claim, err := w.claimOne(txCtx, inv, lease)
+			if err != nil {
+				return err
+			}
+			if claim != nil {
+				claims = append(claims, *claim)
 			}
 		}
-
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return claims, nil
 }
 
-func (w *ChargeWorker) attempt(ctx context.Context, inv *domain.Invoice) error {
+// claimOne returns nil (no error) when the invoice should be skipped this
+// tick — an in-flight attempt is still within its claimed_until lease, so
+// neither reclaiming nor re-charging is appropriate.
+func (w *ChargeWorker) claimOne(ctx context.Context, inv *domain.Invoice, lease string) (*chargeClaim, error) {
+	existing, err := w.paymentRepo.GetNonTerminalByInvoiceID(ctx, inv.ID)
+	if err != nil && !errors.Is(err, commonerrors.ErrNotFound) {
+		return nil, err
+	}
+
+	if err == nil {
+		leased, err := leaseActive(existing.ClaimedUntil)
+		if err != nil {
+			return nil, err
+		}
+		if leased {
+			return nil, nil
+		}
+		// Lease expired: resume. Reuse the same idempotency key/attempt
+		// number untouched — the unchanged key is what lets the provider
+		// (real or stub) recognize a retried request instead of charging
+		// twice. Extend the lease so a subsequent tick doesn't also try to
+		// resume while THIS resume is charging.
+		if err := w.paymentRepo.SetClaimedUntil(ctx, existing.ID, lease); err != nil {
+			return nil, err
+		}
+		return w.buildClaim(ctx, inv, existing)
+	}
+
+	// No non-terminal payment row: a fresh attempt. inv.AttemptCount is
+	// already derived (a correlated subquery over billing.payment) by the
+	// same query that returned this invoice via GetDueForCharge — no
+	// separate count call needed.
 	attemptNo := inv.AttemptCount + 1
 	idempotencyKey := fmt.Sprintf("invoice:%s:attempt:%d", inv.ID, attemptNo)
 
 	pm, err := w.paymentMethodRepo.GetDefaultActive(ctx, inv.ClientID)
 	if err != nil {
-		if errors.Is(err, commonerrors.ErrNotFound) {
-			// Not in BILLING_SPEC.md, but needed: a client with no active
-			// payment method is a distinguishable failure, not a crash —
-			// it counts toward attempt_count like any other decline.
-			code, message := "no_payment_method", "client has no active default payment method"
-			if _, err := w.paymentRepo.Create(ctx, &domain.Payment{
-				InvoiceID: inv.ID, AttemptNo: attemptNo, Provider: domain.ProviderStub,
-				AmountMinor: inv.AmountMinor, Currency: inv.Currency,
-				Status: domain.PaymentStatusFailed, FailureCode: &code, FailureMessage: &message,
-				IdempotencyKey: idempotencyKey,
-			}); err != nil {
-				return err
-			}
-			return w.afterFailedAttempt(ctx, inv, attemptNo, code)
+		if !errors.Is(err, commonerrors.ErrNotFound) {
+			return nil, err
 		}
-		return err
+		// Not in BILLING_SPEC.md, but needed: a client with no active
+		// payment method is a distinguishable failure, not a crash — it
+		// counts toward attempt_count like any other decline. Created as
+		// Pending (not Failed) even though no provider call happens: resolve()
+		// below still routes this through FinalizeChargeFailed to schedule the
+		// backoff/uncollectible transition, and MarkFailed's guarded UPDATE
+		// only matches a pending/processing row — inserting this already-Failed
+		// would make that guard a permanent no-op, so the invoice's
+		// next_attempt_at would never advance and GetDueForCharge would
+		// re-select (and re-fail) it every single tick forever.
+		code, message := "no_payment_method", "client has no active default payment method"
+		paymentID, err := w.paymentRepo.Create(ctx, &domain.Payment{
+			InvoiceID: inv.ID, AttemptNo: attemptNo, Provider: w.providerName,
+			AmountMinor: inv.AmountMinor, Currency: inv.Currency,
+			Status: domain.PaymentStatusPending, IdempotencyKey: idempotencyKey,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &chargeClaim{
+			PaymentID: paymentID, InvoiceID: inv.ID, ImmediateFailure: true,
+			FailureCode: code, FailureMessage: message,
+		}, nil
 	}
 
 	paymentID, err := w.paymentRepo.Create(ctx, &domain.Payment{
-		InvoiceID: inv.ID, AttemptNo: attemptNo, Provider: domain.ProviderStub,
+		InvoiceID: inv.ID, AttemptNo: attemptNo, Provider: w.providerName,
 		PaymentMethodID: &pm.ID, AmountMinor: inv.AmountMinor, Currency: inv.Currency,
 		Status: domain.PaymentStatusPending, IdempotencyKey: idempotencyKey,
+		ClaimedUntil: &lease,
 	})
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	// A payment method can only exist for a client that already has a
+	// billing.customer row for this provider (AddPaymentMethodHandler
+	// always creates the customer first) — so this lookup failing would be
+	// a genuine data inconsistency, surfaced as an error rather than
+	// defended against.
+	customer, err := w.customerRepo.GetByClientID(ctx, inv.ClientID, w.providerName)
+	if err != nil {
+		return nil, err
+	}
+
+	return &chargeClaim{
+		PaymentID: paymentID, InvoiceID: inv.ID,
+		IdempotencyKey: idempotencyKey, ProviderCustomerID: customer.ProviderCustomerID,
+		ProviderPaymentMethodID: pm.ProviderPaymentMethodID,
+		AmountMinor:             inv.AmountMinor, Currency: inv.Currency,
+	}, nil
+}
+
+func (w *ChargeWorker) buildClaim(ctx context.Context, inv *domain.Invoice, existing *domain.Payment) (*chargeClaim, error) {
+	if existing.PaymentMethodID == nil {
+		// A no-payment-method claim (see claimOne) whose FinalizeChargeFailed
+		// call didn't complete on a prior tick (e.g. a transient DB error) —
+		// still Pending, with no payment method to resume charging against.
+		// Retry the same immediate-failure finalization rather than erroring
+		// out the whole batch.
+		return &chargeClaim{
+			PaymentID: existing.ID, InvoiceID: inv.ID, ImmediateFailure: true,
+			FailureCode: "no_payment_method", FailureMessage: "client has no active default payment method",
+		}, nil
+	}
+	pm, err := w.paymentMethodRepo.GetByID(ctx, *existing.PaymentMethodID)
+	if err != nil {
+		return nil, err
+	}
+	customer, err := w.customerRepo.GetByClientID(ctx, inv.ClientID, w.providerName)
+	if err != nil {
+		return nil, err
+	}
+	return &chargeClaim{
+		PaymentID: existing.ID, InvoiceID: inv.ID,
+		IdempotencyKey: existing.IdempotencyKey, ProviderCustomerID: customer.ProviderCustomerID,
+		ProviderPaymentMethodID: pm.ProviderPaymentMethodID,
+		AmountMinor:             existing.AmountMinor, Currency: existing.Currency,
+	}, nil
+}
+
+// leaseActive reports whether a claimed_until timestamp is still in the
+// future. A nil timestamp (shouldn't happen for a non-terminal row) is
+// treated as not-leased, so a data inconsistency degrades to "resumable"
+// rather than a permanently stuck claim.
+func leaseActive(claimedUntil *string) (bool, error) {
+	if claimedUntil == nil {
+		return false, nil
+	}
+	t, err := time.Parse(time.RFC3339, *claimedUntil)
+	if err != nil {
+		return false, err
+	}
+	return t.After(time.Now().UTC()), nil
+}
+
+func (w *ChargeWorker) resolve(ctx context.Context, claim chargeClaim) {
+	if claim.ImmediateFailure {
+		if err := w.application.Commands.FinalizeChargeFailed.Handle(ctx, command.FinalizeChargeFailed{
+			PaymentID: claim.PaymentID, InvoiceID: claim.InvoiceID,
+			FailureCode: claim.FailureCode, FailureMessage: claim.FailureMessage,
+		}); err != nil {
+			w.logger.WithError(err).WithField("invoice_id", claim.InvoiceID).Error("charge worker: finalize (no payment method) failed")
+		}
+		return
 	}
 
 	result, err := w.provider.Charge(ctx, services.ChargeRequest{
-		IdempotencyKey:          idempotencyKey,
-		ProviderPaymentMethodID: pm.ProviderPaymentMethodID,
-		AmountMinor:             inv.AmountMinor,
-		Currency:                inv.Currency,
+		IdempotencyKey:          claim.IdempotencyKey,
+		ProviderCustomerID:      claim.ProviderCustomerID,
+		ProviderPaymentMethodID: claim.ProviderPaymentMethodID,
+		AmountMinor:             claim.AmountMinor,
+		Currency:                claim.Currency,
 	})
 	if err != nil {
-		return err
+		// A transport/API error, not a card decline — treat it as a failed
+		// attempt so it counts toward the retry budget instead of spinning
+		// forever; a transient outage still recovers via the next scheduled
+		// retry.
+		result = services.ChargeResult{Status: services.ChargeFailed, FailureCode: "provider_error", FailureMessage: err.Error()}
 	}
 
 	switch result.Status {
 	case services.ChargeSucceeded:
-		return w.onSucceeded(ctx, inv, paymentID, result)
-	case services.ChargeProcessing:
-		// Unreachable with the v1 stub (D6): leave the payment row pending
-		// and next_attempt_at unset until a future webhook/poller resolves
-		// it — do not record a failed attempt.
-		return nil
-	default: // Failed / RequiresAction
-		if err := w.paymentRepo.MarkFailed(ctx, paymentID, result.FailureCode, result.FailureMessage); err != nil {
-			return err
+		if err := w.application.Commands.FinalizeChargeSucceeded.Handle(ctx, command.FinalizeChargeSucceeded{
+			PaymentID: claim.PaymentID, InvoiceID: claim.InvoiceID, ProviderIntentID: result.ProviderIntentID,
+		}); err != nil {
+			w.logger.WithError(err).WithField("invoice_id", claim.InvoiceID).Error("charge worker: finalize (succeeded) failed")
 		}
-		return w.afterFailedAttempt(ctx, inv, attemptNo, result.FailureCode)
+	case services.ChargeProcessing:
+		// A genuinely async outcome — not produced by the stub, and not
+		// expected for a card charge even with real Stripe (D6), but
+		// modeled from day one. Mark the payment processing (guarded — a
+		// second call from a later resume or the webhook handler is a safe
+		// no-op) and stop the routine sweep: only the webhook or Phase 3's
+		// reconciliation drift-detector should resolve this from here.
+		if won, err := w.paymentRepo.MarkProcessing(ctx, claim.PaymentID, result.ProviderIntentID); err != nil || !won {
+			if err != nil {
+				w.logger.WithError(err).WithField("invoice_id", claim.InvoiceID).Error("charge worker: mark processing failed")
+			}
+			return
+		}
+		if err := w.invoiceRepo.SetNextAttemptAt(ctx, claim.InvoiceID, nil); err != nil {
+			w.logger.WithError(err).WithField("invoice_id", claim.InvoiceID).Error("charge worker: clearing next_attempt_at failed")
+		}
+	default: // Failed / RequiresAction
+		if err := w.application.Commands.FinalizeChargeFailed.Handle(ctx, command.FinalizeChargeFailed{
+			PaymentID: claim.PaymentID, InvoiceID: claim.InvoiceID,
+			FailureCode: result.FailureCode, FailureMessage: result.FailureMessage,
+		}); err != nil {
+			w.logger.WithError(err).WithField("invoice_id", claim.InvoiceID).Error("charge worker: finalize (failed) failed")
+		}
 	}
-}
-
-// onSucceeded posts T2 (BILLING_SPEC.md §5): psp_clearing debited,
-// client_receivable credited, then marks the invoice paid and queues
-// payment.completed on the outbox.
-func (w *ChargeWorker) onSucceeded(ctx context.Context, inv *domain.Invoice, paymentID string, result services.ChargeResult) error {
-	if err := w.paymentRepo.MarkSucceeded(ctx, paymentID, result.ProviderIntentID); err != nil {
-		return err
-	}
-
-	paidAt := time.Now().UTC().Format(time.RFC3339)
-	if err := w.invoiceRepo.MarkPaid(ctx, inv.ID, paidAt); err != nil {
-		return err
-	}
-
-	legs := []domain.LedgerLeg{
-		{AccountType: domain.LedgerAccountPSPClearing, Currency: inv.Currency, Direction: domain.LedgerDirectionDebit, AmountMinor: inv.AmountMinor},
-		{AccountType: domain.LedgerAccountClientReceivable, OwnerID: inv.ClientID, Currency: inv.Currency, Direction: domain.LedgerDirectionCredit, AmountMinor: inv.AmountMinor},
-	}
-	if err := w.ledgerRepo.PostTransaction(ctx, domain.LedgerTxPaymentSucceeded, "invoice", inv.ID, inv.Currency, legs); err != nil {
-		return err
-	}
-
-	driverID := ""
-	platformFeeMinor := inv.AmountMinor
-	driverPayableMinor := int64(0)
-	if inv.Type == domain.InvoiceTypeRideFare && inv.DriverID != nil {
-		driverID = *inv.DriverID
-		platformFeeMinor = inv.AmountMinor * w.commissionBps / 10000
-		driverPayableMinor = inv.AmountMinor - platformFeeMinor
-	}
-
-	event := contractsKafka.PaymentCompletedEvent{
-		RideID: inv.RideID, InvoiceID: inv.ID, ClientID: inv.ClientID, DriverID: driverID,
-		AmountMinor: inv.AmountMinor, PlatformFeeMinor: platformFeeMinor, DriverPayableMinor: driverPayableMinor,
-		Currency: inv.Currency, PaidAt: paidAt,
-	}
-	payload, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-	return w.outboxRepo.Insert(ctx, &domain.OutboxMessage{
-		Topic: "payment.completed", EventType: "PaymentCompleted", Payload: payload,
-	})
-}
-
-// afterFailedAttempt either schedules the next retry with backoff, or —
-// once maxAttempts is exhausted — marks the invoice uncollectible, posts T3
-// (Dr bad_debt, Cr client_receivable — driver_payable deliberately stays
-// posted from T1, since the driver is still owed money the platform never
-// collected), and queues payment.failed.
-func (w *ChargeWorker) afterFailedAttempt(ctx context.Context, inv *domain.Invoice, attemptNo int, failureCode string) error {
-	if attemptNo < w.maxAttempts {
-		next := time.Now().UTC().Add(w.backoffFor(attemptNo)).Format(time.RFC3339)
-		return w.invoiceRepo.RecordFailedAttempt(ctx, inv.ID, &next)
-	}
-
-	if err := w.invoiceRepo.RecordFailedAttempt(ctx, inv.ID, nil); err != nil {
-		return err
-	}
-	if err := w.invoiceRepo.MarkUncollectible(ctx, inv.ID); err != nil {
-		return err
-	}
-
-	legs := []domain.LedgerLeg{
-		{AccountType: domain.LedgerAccountBadDebt, Currency: inv.Currency, Direction: domain.LedgerDirectionDebit, AmountMinor: inv.AmountMinor},
-		{AccountType: domain.LedgerAccountClientReceivable, OwnerID: inv.ClientID, Currency: inv.Currency, Direction: domain.LedgerDirectionCredit, AmountMinor: inv.AmountMinor},
-	}
-	if err := w.ledgerRepo.PostTransaction(ctx, domain.LedgerTxInvoiceUncollectible, "invoice", inv.ID, inv.Currency, legs); err != nil {
-		return err
-	}
-
-	event := contractsKafka.PaymentFailedEvent{
-		RideID: inv.RideID, InvoiceID: inv.ID, ClientID: inv.ClientID,
-		AmountMinor: inv.AmountMinor, Currency: inv.Currency, FailureCode: failureCode,
-		FailedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-	payload, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-	return w.outboxRepo.Insert(ctx, &domain.OutboxMessage{
-		Topic: "payment.failed", EventType: "PaymentFailed", Payload: payload,
-	})
-}
-
-func (w *ChargeWorker) backoffFor(attemptNo int) time.Duration {
-	idx := attemptNo - 1
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= len(w.backoff) {
-		idx = len(w.backoff) - 1
-	}
-	if idx < 0 {
-		return time.Minute
-	}
-	return w.backoff[idx]
 }

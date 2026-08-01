@@ -396,6 +396,33 @@ services:
           header_name: X-User-Id
           minute: 300
 
+  # -- billing-service: Stripe webhook delivery — no jwt, no
+  # inject_user_headers. Stripe never has a MyUberGo token; the signature
+  # verification inside WebhookHandler (over the RAW body, against
+  # STRIPE_WEBHOOK_SECRET) is the actual auth boundary here, not Kong. Only
+  # registered by cmd/main.go when PAYMENT_PROVIDER=stripe — with the stub
+  # provider this route 404s at billing-service, which is fine since nothing
+  # is configured to deliver to it in that mode. Same paths+methods ranking
+  # trick as the admin routes above, so this wins over the broader
+  # billing-protected route despite being declared after it. --
+  - name: billing-service-webhook
+    url: http://billing-service:8005/webhooks/stripe
+    routes:
+      - name: billing-webhook-stripe
+        paths:
+          - ~/api/billing/webhooks/stripe$
+        methods:
+          - POST
+        strip_path: true
+    plugins:
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: ip
+          minute: 300 # Stripe test-mode delivery + retries; no user identity to key off
+
   # matching-service (8002) is Kafka/Redis-driven internally and has no
   # gateway-facing consumer today (see CLAUDE.md "Matching algorithm
   # status") — intentionally not routed here.

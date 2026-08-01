@@ -4,10 +4,13 @@ import (
 	app "billing-service/internal/application"
 	"billing-service/internal/application/command"
 	"billing-service/internal/application/query"
+	"billing-service/internal/application/services"
 	"billing-service/internal/consumers"
+	"billing-service/internal/domain"
 	"billing-service/internal/infrastructure/health"
 	kafkainfra "billing-service/internal/infrastructure/kafka"
 	"billing-service/internal/infrastructure/metrics"
+	"billing-service/internal/infrastructure/payment/stripe"
 	"billing-service/internal/infrastructure/payment/stub"
 	"billing-service/internal/infrastructure/shutdown"
 	"billing-service/internal/interfaces/http/handler"
@@ -41,6 +44,7 @@ func main() {
 	commissionBps := int64(atoi(getenv("PLATFORM_COMMISSION_BPS", "2000")))
 	maxAttempts := atoi(getenv("MAX_PAYMENT_ATTEMPTS", "3"))
 	backoff := parseDurations(getenv("PAYMENT_BACKOFF", "1m,5m,30m"))
+	chargeLease := parseDuration(getenv("CHARGE_LEASE", "2m"), 2*time.Minute)
 
 	customerRepo := persistence.NewPostgresCustomerRepository(db)
 	paymentMethodRepo := persistence.NewPostgresPaymentMethodRepository(db)
@@ -48,17 +52,52 @@ func main() {
 	paymentRepo := persistence.NewPostgresPaymentRepository(db)
 	ledgerRepo := persistence.NewPostgresLedgerRepository(db)
 	outboxRepo := persistence.NewPostgresOutboxRepository(db)
+	pspEventRepo := persistence.NewPostgresPspEventRepository(db)
 	transactionManager := persistence.NewPostgresTransactionManager(db)
-	paymentProvider := stub.NewStubProvider()
+
+	// PAYMENT_PROVIDER selects which adapter implements PaymentProvider,
+	// CustomerVault, and (stripe only) ProviderEventParser — stub keeps the
+	// stack and the continuously-running e2e simulator offline and
+	// deterministic; stripe is sandbox/test-mode only, enforced by
+	// NewStripeProvider refusing any key that isn't sk_test_*. eventParser
+	// stays nil for stub: there is no real webhook source to verify, so the
+	// webhook route itself is never registered below.
+	providerName := getenv("PAYMENT_PROVIDER", domain.ProviderStub)
+	var paymentProvider services.PaymentProvider
+	var customerVault services.CustomerVault
+	var eventParser services.ProviderEventParser
+	switch providerName {
+	case domain.ProviderStripe:
+		stripeTimeout := time.Duration(atoi(getenv("STRIPE_TIMEOUT_SEC", "20"))) * time.Second
+		stripeProvider, err := stripe.NewStripeProvider(os.Getenv("STRIPE_SECRET_KEY"), os.Getenv("STRIPE_WEBHOOK_SECRET"), stripeTimeout)
+		if err != nil {
+			log.Fatal(err)
+		}
+		paymentProvider = stripeProvider
+		customerVault = stripeProvider
+		eventParser = stripeProvider
+	case domain.ProviderStub:
+		stubProvider := stub.NewStubProvider()
+		paymentProvider = stubProvider
+		customerVault = stubProvider
+	default:
+		log.Fatalf("unknown PAYMENT_PROVIDER %q (want %q or %q)", providerName, domain.ProviderStub, domain.ProviderStripe)
+	}
 
 	logger := logrus.NewEntry(logrus.New())
 	metricsClient := metrics.NewLoggingMetricsClient(logger)
 
 	application := app.Application{
 		Commands: app.Commands{
-			AddPaymentMethod:      command.NewAddPaymentMethodHandler(customerRepo, paymentMethodRepo, transactionManager, logger, metricsClient),
+			AddPaymentMethod:      command.NewAddPaymentMethodHandler(customerRepo, paymentMethodRepo, customerVault, transactionManager, providerName, logger, metricsClient),
 			RemovePaymentMethod:   command.NewRemovePaymentMethodHandler(paymentMethodRepo, invoiceRepo, transactionManager, logger, metricsClient),
 			CreateInvoiceFromRide: command.NewCreateInvoiceFromRideHandler(invoiceRepo, ledgerRepo, transactionManager, commissionBps, logger, metricsClient),
+			FinalizeChargeSucceeded: command.NewFinalizeChargeSucceededHandler(
+				invoiceRepo, paymentRepo, ledgerRepo, outboxRepo, transactionManager, commissionBps, logger, metricsClient,
+			),
+			FinalizeChargeFailed: command.NewFinalizeChargeFailedHandler(
+				invoiceRepo, paymentRepo, ledgerRepo, outboxRepo, transactionManager, maxAttempts, backoff, logger, metricsClient,
+			),
 		},
 		Queries: app.Queries{
 			GetInvoice:         query.NewGetInvoiceHandler(invoiceRepo, logger, metricsClient),
@@ -72,6 +111,10 @@ func main() {
 	paymentMethodHandler := handler.NewPaymentMethodHandler(application)
 	invoiceHandler := handler.NewInvoiceHandler(application)
 	ledgerHandler := handler.NewLedgerHandler(application)
+	var webhookHandler *handler.WebhookHandler
+	if eventParser != nil {
+		webhookHandler = handler.NewWebhookHandler(application, eventParser, pspEventRepo, paymentRepo, invoiceRepo, logger)
+	}
 
 	healthChecker := health.NewChecker(db, 5*time.Second)
 	healthChecker.Start()
@@ -89,6 +132,11 @@ func main() {
 	mux.HandleFunc("GET /invoices/{id}", invoiceHandler.GetByID)
 	mux.HandleFunc("GET /rides/{rideId}/invoice", invoiceHandler.GetByRideID)
 	mux.HandleFunc("GET /ledger/balance", ledgerHandler.GetBalance)
+	if webhookHandler != nil {
+		// Unauthenticated at Kong (see gateway/kong.yml) — the signature
+		// check inside WebhookHandler is the actual auth boundary here.
+		mux.HandleFunc("POST /webhooks/stripe", webhookHandler.StripeWebhook)
+	}
 
 	server := &http.Server{
 		Addr:         ":8005",
@@ -115,12 +163,14 @@ func main() {
 		outboxWorker.Run(workerCtx)
 	}()
 
-	// ChargeWorker: sweeps open invoices due for a collection attempt.
+	// ChargeWorker: sweeps open invoices due for a collection attempt. Its
+	// own transactions never hold the provider call — see
+	// internal/workers/charge_worker.go for why.
 	chargeWorker := workers.NewChargeWorker(
-		invoiceRepo, paymentRepo, paymentMethodRepo, ledgerRepo, outboxRepo,
-		paymentProvider, transactionManager, logger,
+		invoiceRepo, paymentRepo, paymentMethodRepo, customerRepo,
+		paymentProvider, transactionManager, application, providerName, logger,
 		time.Duration(atoi(getenv("CHARGE_WORKER_INTERVAL_SEC", "5")))*time.Second,
-		maxAttempts, backoff, commissionBps,
+		chargeLease,
 	)
 	shutdownManager.Add(1)
 	go func() {
@@ -163,6 +213,14 @@ func getenv(k, d string) string {
 }
 
 func atoi(s string) int { v, _ := strconv.Atoi(s); return v }
+
+func parseDuration(s string, def time.Duration) time.Duration {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return def
+	}
+	return d
+}
 
 func parseDurations(s string) []time.Duration {
 	parts := strings.Split(s, ",")

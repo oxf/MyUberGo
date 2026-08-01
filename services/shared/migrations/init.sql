@@ -212,6 +212,14 @@ CREATE UNIQUE INDEX idx_payment_method_one_default
     ON billing.payment_method(client_id)
     WHERE is_default AND status = 'active';
 
+-- Prevents a retried/double-submitted POST /payment-methods from creating
+-- two rows for the same underlying provider card. AddPaymentMethodHandler
+-- treats the resulting unique-violation as an idempotent no-op (re-reads
+-- and returns the existing row), the same idiom as ErrDuplicateInvoice.
+CREATE UNIQUE INDEX idx_payment_method_dedupe
+    ON billing.payment_method(client_id, provider, provider_payment_method_id)
+    WHERE status = 'active';
+
 CREATE TABLE IF NOT EXISTS billing.invoice (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     ride_id UUID NOT NULL REFERENCES ride.ride(id),
@@ -221,7 +229,14 @@ CREATE TABLE IF NOT EXISTS billing.invoice (
     status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'paid', 'uncollectible', 'void')),
     amount_minor BIGINT NOT NULL,
     currency CHAR(3) NOT NULL,
-    attempt_count INTEGER NOT NULL DEFAULT 0,
+    -- attempt_count is NOT a column here — it's derived at read time via a
+    -- correlated subquery over billing.payment (COUNT(*) WHERE invoice_id=...),
+    -- consistent with the ledger's own "never a stored column, compute at
+    -- query time" rule a few tables down. next_attempt_at is purely the
+    -- retry SCHEDULE now; the in-flight claim LEASE lives on
+    -- billing.payment.claimed_until instead — the two were conflated on this
+    -- one column before this migration, which is what made ChargeWorker's
+    -- claim/resume logic implicit rather than schema-documented.
     next_attempt_at TIMESTAMPTZ,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -263,6 +278,12 @@ CREATE TABLE IF NOT EXISTS billing.payment (
     -- Format: invoice:{invoice_id}:attempt:{attempt_no} — deterministic, so a
     -- crashed-and-retried attempt reuses the same key and cannot double-charge.
     idempotency_key TEXT NOT NULL,
+    -- The in-flight claim lease: ChargeWorker's claim step sets this to
+    -- NOW()+CHARGE_LEASE so a crashed worker's claim is recoverable (resumed
+    -- once the lease elapses) without another tick re-charging while the
+    -- first attempt might still be in flight. Purely a claim concept —
+    -- unrelated to invoice.next_attempt_at's retry scheduling.
+    claimed_until TIMESTAMPTZ,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (invoice_id, attempt_no),
@@ -270,6 +291,13 @@ CREATE TABLE IF NOT EXISTS billing.payment (
 );
 
 CREATE INDEX idx_payment_invoice_id ON billing.payment(invoice_id);
+
+-- The webhook handler (Phase 2) looks a payment up by this exact column —
+-- this index makes that lookup provably 1:1 rather than merely "correct
+-- because the code never produces a duplicate."
+CREATE UNIQUE INDEX idx_payment_provider_intent
+    ON billing.payment(provider_payment_intent_id)
+    WHERE provider_payment_intent_id IS NOT NULL;
 
 -- Ledger: append-only double-entry bookkeeping. Balances are always
 -- SUM(credits) - SUM(debits) computed at query time, never a stored column.
@@ -325,3 +353,21 @@ CREATE TABLE IF NOT EXISTS billing.outbox_message (
 );
 
 CREATE INDEX idx_billing_outbox_processed ON billing.outbox_message(processed);
+
+-- Inbound Stripe webhook inbox. id is Stripe's own event id (e.g.
+-- "evt_..."), so a redelivered webhook hits this primary key's
+-- unique-violation as the idempotency guard — the same insert-then-process
+-- idiom as billing.invoice's (ride_id, type) constraint. processed_at is
+-- NULL until the event's effect (a Finalize* command or a MarkProcessing
+-- status flip) has actually been applied, not merely stored — a delivery
+-- that fails mid-processing leaves this NULL so the next redelivery retries
+-- the effect instead of being silently swallowed as "already seen."
+CREATE TABLE IF NOT EXISTS billing.psp_event (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    api_version TEXT NOT NULL DEFAULT '',
+    payload JSONB NOT NULL,
+    received_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    processed_at TIMESTAMPTZ,
+    process_error TEXT
+);

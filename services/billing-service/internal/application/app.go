@@ -16,6 +16,11 @@ type Commands struct {
 	AddPaymentMethod      decorator.CommandHandler[command.AddPaymentMethod, command.AddPaymentMethodResult]
 	RemovePaymentMethod   decorator.CommandHandlerNoResult[command.RemovePaymentMethod]
 	CreateInvoiceFromRide decorator.CommandHandlerNoResult[command.CreateInvoiceFromRide]
+	// FinalizeChargeSucceeded/FinalizeChargeFailed resolve a ChargeWorker
+	// attempt (and, in a later pass, a payment-provider webhook) through one
+	// shared code path — see finalize_charge_succeeded.go's comment.
+	FinalizeChargeSucceeded decorator.CommandHandlerNoResult[command.FinalizeChargeSucceeded]
+	FinalizeChargeFailed    decorator.CommandHandlerNoResult[command.FinalizeChargeFailed]
 }
 
 type Queries struct {

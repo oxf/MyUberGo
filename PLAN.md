@@ -18,7 +18,7 @@ Every service moves through the same 3 stages, deliberately, one at a time:
 | ride-service | 2 | full CQRS/DDD layering (`domain`/`application`/`persistence`/`interfaces`/`workers`), decorator-wrapped handlers, transactional-outbox worker for `ride.requested`, plus a `ride.accepted` consumer (see 2026-07-21 section below) |
 | driver-service | 2 (+ early Stage 3 features) | full CQRS/DDD layering; graceful shutdown + health checks + logging/metrics decorators + a working transactional-outbox worker already present, but metrics is a logging-only stub (no Prometheus) and health's liveness check is hardcoded `true` (never fails) — real Stage 3 work still needed there |
 | matching-service | 2, complete for its current scope | full CQRS layering, HTTP layer, Kafka producer, graceful shutdown, Redis health checks; implements a simplified version of the README's matching algorithm (rating-only ranking, BROADCAST-only, pool-widening retry) — see the 2026-07-19 section below |
-| billing-service | 2 | full CQRS/DDD layering copying ride-service's shape; transactional-outbox worker for `payment.completed`/`payment.failed`; a `ChargeWorker` (same ticker+select shape) sweeping open invoices through a stub `PaymentProvider`; double-entry ledger with append-only entries — see the 2026-07-25 section below |
+| billing-service | 2 | full CQRS/DDD layering copying ride-service's shape; transactional-outbox worker for `payment.completed`/`payment.failed`; a `ChargeWorker` (same ticker+select shape) sweeping open invoices through a pluggable `PaymentProvider` (stub or a real, test-mode-only Stripe adapter, via `PAYMENT_PROVIDER`); double-entry ledger with append-only entries — see the 2026-07-25 and 2026-08-01 sections below |
 | e2e-test | n/a (tooling, not a service) | continuous client-activity simulator: N virtual clients + M virtual drivers (goroutine-per-actor) drive auth/driver/ride/billing over HTTP with deep read-back verification and periodic stats; run manually via `go run ./cmd` against the compose stack — deliberately NOT in docker-compose. See `services/e2e-test/README.md` |
 
 ## Admin dashboard + paged/sorted list endpoints (2026-07-18)
@@ -274,9 +274,72 @@ the full decline→uncollectible→T3 path (with `driver_payable` correctly stil
 auth boundary (`GET /api/billing/invoices` 403s a Client token and 200s the seeded admin; a Client
 reading another client's invoice 403s in-service).
 
-**Deferred, per the spec**: real Stripe adapter/webhooks, driver payouts/Connect, client
-wallet/credits/promos/refunds, pre-ride payment-method validation, FX conversion, receipt rendering.
+**Deferred, per the spec**: driver payouts/Connect, client wallet/credits/promos/refunds, pre-ride
+payment-method validation, FX conversion, receipt rendering, and a reconciliation poller for
+payments stuck in `processing` (real Stripe adapter/webhooks landed 2026-08-01 — see below, and
+that poller is the next open item on this list, now unblocked).
 See `docs/billing/BILLING_SPEC.md` §9 for the full list and why each stays additive.
+
+---
+
+## billing-service: real Stripe adapter + webhooks; ChargeWorker retry-spam fix (2026-08-01)
+
+Closed the first two items on the spec's §9 deferred list — a real, test-mode-only Stripe adapter
+now exists alongside the original stub, selected by `PAYMENT_PROVIDER=stub|stripe`:
+
+- `StripeProvider` (`internal/infrastructure/payment/stripe/stripe_provider.go`) implements
+  `PaymentProvider`/`CustomerVault`/`ProviderEventParser` against `stripe-go/v84`.
+  `EnsureCustomer` get-or-creates a Stripe customer per client, idempotent via a deterministic
+  `customer:{clientID}` key. `AttachPaymentMethod` attaches a payment-method token to that
+  customer and returns Stripe's own brand/last4/expiry (never the caller's self-asserted claim).
+  `Charge` creates an off-session, immediately-confirmed `PaymentIntent`, reusing the existing
+  `invoice:{id}:attempt:{n}` idempotency key as Stripe's own `Idempotency-Key` header — the same
+  crash-safety guarantee the stub already had, now backed by a real provider. `NewStripeProvider`
+  refuses to start on any secret key not prefixed `sk_test_`, keeping this sandbox-only, permanently,
+  enforced in code rather than only in docs.
+- `WebhookHandler` (`internal/interfaces/http/handler/webhook_handler.go`) + a new `billing.psp_event`
+  inbox table (`internal/domain/psp_event.go`, `internal/persistence/psp_event_postgres_repository.go`)
+  handle Stripe's async `payment_intent.succeeded`/`.payment_failed`/`.processing`/`.canceled`/
+  `.requires_action` callbacks: signature verified over the raw body before any decode, deduped by
+  Stripe's own event id, and dispatched through the exact same `FinalizeChargeSucceeded`/
+  `FinalizeChargeFailed` commands `ChargeWorker`'s synchronous path already used — so a race between
+  an instant answer and a delayed webhook can never double-post the ledger (the same guarded-update
+  idiom as every other finalize path in this service). `mapStripeOutcome` (`stripe_provider.go`) is
+  shared between the synchronous `Charge()` response and the webhook path, since a card decline on a
+  synchronously-confirmed `PaymentIntent` arrives from the Stripe SDK as an API error, not a 200 with
+  a failed status — one function normalizes both shapes so callers never need to know which occurred.
+- Kong already had a public (no jwt), path-matched route for `POST /api/billing/webhooks/stripe` from
+  a prior pass — no gateway changes needed here.
+- `services/e2e-test` already picks provider-aware fixture tokens (`cmd/main.go:78-85`):
+  `pm_card_visa`/`pm_card_chargeCustomerFail` under `PAYMENT_PROVIDER=stripe`, vs
+  `pm_stub_ok`/`pm_stub_decline` otherwise — no e2e-test code changes needed, just matching env vars
+  in its own shell (it's run manually, not in docker-compose).
+
+**Real bug found and fixed while verifying this end-to-end** (found by an actual docker-compose +
+e2e-test run, not a unit test): `ChargeWorker`'s "client has no active default payment method"
+branch (`internal/workers/charge_worker.go`) created the `billing.payment` row already in a terminal
+`Failed` status, then unconditionally called `FinalizeChargeFailed`. That handler's guarded
+`MarkFailed` UPDATE only matches a row still `pending`/`processing` — since the row was already
+`failed`, the guard permanently no-op'd, logging `"payment already resolved, skipping"` and returning
+before ever reaching the backoff/`uncollectible`/ledger/outbox logic. Because `next_attempt_at` was
+therefore never advanced, the same invoice was re-selected and re-failed on every single
+`ChargeWorker` tick (5s), forever — an infinite retry loop, independent of stub vs. Stripe. Fixed by
+creating that row `Pending` instead, so `FinalizeChargeFailed` can actually transition it through the
+same lifecycle as any other failed attempt; `buildClaim`'s resume path was also hardened for a
+resumed no-payment-method row instead of hard-erroring on the (no longer valid) assumption that it
+"can't happen." Covered by two new tests in `charge_worker_test.go`
+(`TestChargeWorker_NoPaymentMethod_DoesNotRetryEveryTick`,
+`TestChargeWorker_NoPaymentMethod_ExhaustedAttempts_MarksUncollectible`) — verified to fail against
+the pre-fix code and pass against the fix.
+
+**Verified**: `go build`/`go vet`/`go test ./...` clean in `services/billing-service`; a real Stripe
+test-mode charge (via a live docker-compose stack with `PAYMENT_PROVIDER=stripe`) confirmed
+end-to-end — the `PaymentIntent` appears in the Stripe dashboard and the corresponding invoice/
+payment rows show `paid` in Postgres.
+
+**Still deferred**: a reconciliation poller for payments stuck in `processing` (unblocked now that a
+real async provider exists, but not built this pass), PSP-fee capture, driver payouts/Connect,
+wallet/credits/refunds/FX. See `docs/billing/BILLING_SPEC.md` §9.
 
 ## Later (not detailed yet — revisit after matching-service)
 

@@ -54,14 +54,20 @@ func (r *PostgresInvoiceRepository) Create(ctx context.Context, inv *domain.Invo
 	return id, nil
 }
 
+// attempt_count is a correlated subquery, not a stored column (dropped from
+// billing.invoice — see init.sql) — every invoice-read method shares this
+// one SQL expression for it, including GetDueForCharge, so ChargeWorker's
+// claim step gets the current count for free on the same row it already
+// locked, with no separate repository call needed.
 const invoiceSelectCols = `
-	SELECT id, ride_id, client_id, driver_id, type, status, amount_minor, currency,
-	       attempt_count, next_attempt_at, created_at, paid_at
-	FROM billing.invoice
+	SELECT i.id, i.ride_id, i.client_id, i.driver_id, i.type, i.status, i.amount_minor, i.currency,
+	       (SELECT COUNT(*) FROM billing.payment p WHERE p.invoice_id = i.id) AS attempt_count,
+	       i.next_attempt_at, i.created_at, i.paid_at
+	FROM billing.invoice i
 `
 
 func (r *PostgresInvoiceRepository) GetByID(ctx context.Context, id string) (*domain.Invoice, error) {
-	row := r.db.QueryRowContext(ctx, invoiceSelectCols+` WHERE id = $1`, id)
+	row := r.db.QueryRowContext(ctx, invoiceSelectCols+` WHERE i.id = $1`, id)
 	inv, err := scanInvoice(row)
 	if err == sql.ErrNoRows {
 		return nil, commonerrors.ErrNotFound
@@ -76,7 +82,7 @@ func (r *PostgresInvoiceRepository) GetByID(ctx context.Context, id string) (*do
 }
 
 func (r *PostgresInvoiceRepository) GetByRideID(ctx context.Context, rideID, invoiceType string) (*domain.Invoice, error) {
-	row := r.db.QueryRowContext(ctx, invoiceSelectCols+` WHERE ride_id = $1 AND type = $2`, rideID, invoiceType)
+	row := r.db.QueryRowContext(ctx, invoiceSelectCols+` WHERE i.ride_id = $1 AND i.type = $2`, rideID, invoiceType)
 	inv, err := scanInvoice(row)
 	if err == sql.ErrNoRows {
 		return nil, commonerrors.ErrNotFound
@@ -156,10 +162,10 @@ func (r *PostgresInvoiceRepository) CountOpenByClientID(ctx context.Context, cli
 func (r *PostgresInvoiceRepository) GetDueForCharge(ctx context.Context, limit int) ([]*domain.Invoice, error) {
 	executor := Executor(ctx, r.db)
 	rows, err := executor.QueryContext(ctx, invoiceSelectCols+`
-		WHERE status = 'open' AND next_attempt_at IS NOT NULL AND next_attempt_at <= NOW()
-		ORDER BY next_attempt_at
+		WHERE i.status = 'open' AND i.next_attempt_at IS NOT NULL AND i.next_attempt_at <= NOW()
+		ORDER BY i.next_attempt_at
 		LIMIT $1
-		FOR UPDATE SKIP LOCKED
+		FOR UPDATE OF i SKIP LOCKED
 	`, limit)
 	if err != nil {
 		return nil, err
@@ -177,32 +183,42 @@ func (r *PostgresInvoiceRepository) GetDueForCharge(ctx context.Context, limit i
 	return result, rows.Err()
 }
 
-func (r *PostgresInvoiceRepository) MarkPaid(ctx context.Context, id, paidAt string) error {
+// MarkPaid is guarded to WHERE status='open' and reports whether the guard
+// won — see domain.InvoiceRepository for why (a webhook and ChargeWorker
+// racing to resolve the same invoice must not both post T2).
+func (r *PostgresInvoiceRepository) MarkPaid(ctx context.Context, id, paidAt string) (bool, error) {
 	executor := Executor(ctx, r.db)
-	_, err := executor.ExecContext(ctx, `
+	res, err := executor.ExecContext(ctx, `
 		UPDATE billing.invoice SET status = 'paid', paid_at = $2, next_attempt_at = NULL, updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND status = 'open'
 	`, id, paidAt)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
-func (r *PostgresInvoiceRepository) RecordFailedAttempt(ctx context.Context, id string, nextAttemptAt *string) error {
+func (r *PostgresInvoiceRepository) SetNextAttemptAt(ctx context.Context, id string, nextAttemptAt *string) error {
 	executor := Executor(ctx, r.db)
 	_, err := executor.ExecContext(ctx, `
-		UPDATE billing.invoice
-		SET attempt_count = attempt_count + 1, next_attempt_at = $2, updated_at = NOW()
+		UPDATE billing.invoice SET next_attempt_at = $2, updated_at = NOW()
 		WHERE id = $1
 	`, id, nextAttemptAt)
 	return err
 }
 
-func (r *PostgresInvoiceRepository) MarkUncollectible(ctx context.Context, id string) error {
+func (r *PostgresInvoiceRepository) MarkUncollectible(ctx context.Context, id string) (bool, error) {
 	executor := Executor(ctx, r.db)
-	_, err := executor.ExecContext(ctx, `
+	res, err := executor.ExecContext(ctx, `
 		UPDATE billing.invoice SET status = 'uncollectible', next_attempt_at = NULL, updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND status = 'open'
 	`, id)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 func scanInvoice(row interface{ Scan(dest ...any) error }) (*domain.Invoice, error) {

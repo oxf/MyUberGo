@@ -44,6 +44,20 @@ func (p *StubProvider) Charge(ctx context.Context, req services.ChargeRequest) (
 	return result, nil
 }
 
+// EnsureCustomer fabricates a deterministic id — no real provider-side
+// customer exists to create. Preserves the pre-Stripe behaviour of
+// AddPaymentMethodHandler exactly (it used to hardcode this same format).
+func (p *StubProvider) EnsureCustomer(ctx context.Context, clientID string) (string, error) {
+	return "cus_stub_" + clientID, nil
+}
+
+// AttachPaymentMethod returns empty details, so AddPaymentMethodHandler
+// falls back to whatever brand/last4 the caller supplied — the stub has no
+// real card data to report back.
+func (p *StubProvider) AttachPaymentMethod(ctx context.Context, providerCustomerID, providerPaymentMethodID string) (services.PaymentMethodDetails, error) {
+	return services.PaymentMethodDetails{}, nil
+}
+
 func randomHex() string {
 	b := make([]byte, 12)
 	if _, err := rand.Read(b); err != nil {

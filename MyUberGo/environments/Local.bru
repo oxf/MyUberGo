@@ -3,4 +3,9 @@ vars {
   refresh_token: x
   auth_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImV4YW1wbGVAZ21haWwuY29tIiwiZXhwIjoxNzg0OTY0NzQzLCJpYXQiOjE3ODQ5NjM4NDMsImlzcyI6Im15dWJlcmdvLWF1dGgiLCJyb2xlIjoiRHJpdmVyIiwidXNlcl9pZCI6ImU3MzBjMzU3LWNhMjAtNGYyYi05MzNjLTVkNGMyZmQyYTAwZiJ9.3IgTuEOqe74GPetSPbrrLVRSvHWdVhtLOLg3ZxlEXs8
   admin_auth_token: x
+  # Stripe test-mode fixture token for "Add Payment Method" — matches
+  # StubProvider's default (always succeeds) when billing-service runs with
+  # PAYMENT_PROVIDER=stub. Switch to pm_card_visa when testing against a
+  # PAYMENT_PROVIDER=stripe stack — pm_stub_ok isn't a real Stripe object.
+  payment_method_token: pm_stub_ok
 }

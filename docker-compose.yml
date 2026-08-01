@@ -145,6 +145,20 @@ services:
       MAX_PAYMENT_ATTEMPTS: '3'
       PAYMENT_BACKOFF: '1m,5m,30m'
       CHARGE_WORKER_INTERVAL_SEC: '5'
+      CHARGE_LEASE: '2m'
+      # PAYMENT_PROVIDER stays 'stub' by default so the stack and the
+      # continuously-running e2e-test simulator stay offline, deterministic
+      # and free. Set PAYMENT_PROVIDER=stripe and STRIPE_SECRET_KEY (a
+      # sandbox/test-mode sk_test_... key — real payments are never in
+      # scope) via a root .env file to exercise the real adapter; see
+      # .env.example.
+      PAYMENT_PROVIDER: '${PAYMENT_PROVIDER:-stub}'
+      STRIPE_SECRET_KEY: '${STRIPE_SECRET_KEY:-}'
+      # The Stripe CLI (`stripe listen`) prints its own whsec_... on
+      # startup, distinct from any Dashboard-registered endpoint secret —
+      # that printed value is what goes here for local webhook delivery.
+      STRIPE_WEBHOOK_SECRET: '${STRIPE_WEBHOOK_SECRET:-}'
+      STRIPE_TIMEOUT_SEC: '20'
     # No published host port — see the note on auth-service above.
     depends_on:
       postgres:

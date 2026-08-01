@@ -75,6 +75,17 @@ func main() {
 	// the DB persists between simulator runs.
 	runID := time.Now().Unix()
 
+	// PAYMENT_PROVIDER mirrors billing-service's own env var (same default,
+	// "stub") — pointing this simulator at a PAYMENT_PROVIDER=stripe stack
+	// is then just "set the same env var you already set for
+	// docker-compose". pm_stub_* tokens are StubProvider-only fixtures, not
+	// real Stripe objects — sending them straight to the real Stripe API
+	// 404s ("No such PaymentMethod"), which is what these two helpers exist
+	// to prevent.
+	paymentProvider := getenv("PAYMENT_PROVIDER", "stub")
+	log.Printf("payment provider: %s (default token %s, decline token %s)",
+		paymentProvider, defaultPaymentMethodToken(paymentProvider), declinePaymentMethodToken(paymentProvider))
+
 	log.Printf("starting simulator: %d clients, %d drivers (run %d, seed %d) — Ctrl-C to stop",
 		cfg.clients, cfg.drivers, runID, cfg.seed)
 
@@ -82,25 +93,26 @@ func main() {
 
 	for i := 0; i < cfg.clients; i++ {
 		actor := &actors.ClientActor{
-			Deps:     deps,
-			ID:       fmt.Sprintf("client-%d", i),
-			Email:    fmt.Sprintf("client-%d-%d@e2e.local", runID, i),
-			Interval: cfg.rideInterval,
-			Rnd:      rand.New(rand.NewSource(cfg.seed + int64(i))),
+			Deps:               deps,
+			ID:                 fmt.Sprintf("client-%d", i),
+			Email:              fmt.Sprintf("client-%d-%d@e2e.local", runID, i),
+			Interval:           cfg.rideInterval,
+			Rnd:                rand.New(rand.NewSource(cfg.seed + int64(i))),
+			PaymentMethodToken: defaultPaymentMethodToken(paymentProvider),
 		}
 		wg.Go(func() { actor.Run(ctx) })
 	}
 
 	// One dedicated declining client (BILLING_SPEC.md §9's e2e-test step):
-	// every invoice it ever generates is charged against pm_stub_decline, so
-	// its rides are the ones that eventually reach uncollectible.
+	// every invoice it ever generates is charged against the decline token,
+	// so its rides are the ones that eventually reach uncollectible.
 	decliningClient := &actors.ClientActor{
 		Deps:               deps,
 		ID:                 "decline-client-0",
 		Email:              fmt.Sprintf("decline-client-%d@e2e.local", runID),
 		Interval:           cfg.rideInterval,
 		Rnd:                rand.New(rand.NewSource(cfg.seed + 9000)),
-		PaymentMethodToken: "pm_stub_decline",
+		PaymentMethodToken: declinePaymentMethodToken(paymentProvider),
 	}
 	wg.Go(func() { decliningClient.Run(ctx) })
 
@@ -146,6 +158,29 @@ func loadConfig() config {
 	flag.Parse()
 
 	return cfg
+}
+
+// defaultPaymentMethodToken/declinePaymentMethodToken pick the fixture token
+// that actually works against whichever provider billing-service is
+// configured with. Stripe forbids attaching decline-simulating cards to a
+// Customer object at all ("You can't attach cards that simulate issuer
+// declines to a Customer object") — pm_card_chargeCustomerFail is Stripe's
+// purpose-built "attach succeeds, later off-session charge declines"
+// fixture, not the naive pm_card_visa_chargeDeclined. There is no
+// attachable "insufficient funds" fixture at all, so that failure_code
+// isn't reproducible against real Stripe — not attempted here.
+func defaultPaymentMethodToken(provider string) string {
+	if provider == "stripe" {
+		return "pm_card_visa"
+	}
+	return "pm_stub_ok"
+}
+
+func declinePaymentMethodToken(provider string) string {
+	if provider == "stripe" {
+		return "pm_card_chargeCustomerFail"
+	}
+	return "pm_stub_decline"
 }
 
 func getenv(key, def string) string {

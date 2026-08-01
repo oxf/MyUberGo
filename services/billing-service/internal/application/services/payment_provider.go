@@ -18,7 +18,11 @@ type ChargeRequest struct {
 	// IdempotencyKey is invoice:{invoice_id}:attempt:{attempt_no} —
 	// deterministic, so a crashed-and-retried attempt reuses the same key
 	// and the provider (real or stub) never double-charges.
-	IdempotencyKey          string
+	IdempotencyKey string
+	// ProviderCustomerID is required by a real off-session charge — it's
+	// what evidences the customer's prior authorization to be charged
+	// without their presence. The stub ignores it.
+	ProviderCustomerID      string
 	ProviderPaymentMethodID string
 	AmountMinor             int64
 	Currency                string

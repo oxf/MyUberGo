@@ -28,7 +28,13 @@ func (r *PostgresPaymentMethodRepository) Create(ctx context.Context, m *domain.
 		m.ClientID, m.Provider, m.ProviderPaymentMethodID, m.Brand, m.Last4,
 		m.ExpMonth, m.ExpYear, m.IsDefault, m.Status,
 	).Scan(&id)
-	return id, err
+	if err != nil {
+		if isUniqueViolation(err) {
+			return "", domain.ErrPaymentMethodExists
+		}
+		return "", err
+	}
+	return id, nil
 }
 
 func (r *PostgresPaymentMethodRepository) ClearDefault(ctx context.Context, clientID string) error {
@@ -84,6 +90,23 @@ func (r *PostgresPaymentMethodRepository) GetDefaultActive(ctx context.Context, 
 		FROM billing.payment_method
 		WHERE client_id = $1 AND is_default = TRUE AND status = 'active'
 	`, clientID)
+	m, err := scanPaymentMethod(row)
+	if err == sql.ErrNoRows {
+		return nil, commonerrors.ErrNotFound
+	}
+	return m, err
+}
+
+// GetActiveByProviderID re-reads the row after an ErrPaymentMethodExists
+// violation, so a retried attach returns the existing id instead of
+// erroring — matches idx_payment_method_dedupe's scope (client_id,
+// provider, provider_payment_method_id, WHERE status='active').
+func (r *PostgresPaymentMethodRepository) GetActiveByProviderID(ctx context.Context, clientID, provider, providerPaymentMethodID string) (*domain.PaymentMethod, error) {
+	row := r.db.QueryRowContext(ctx, `
+		SELECT id, client_id, provider, provider_payment_method_id, brand, last4, exp_month, exp_year, is_default, status, created_at
+		FROM billing.payment_method
+		WHERE client_id = $1 AND provider = $2 AND provider_payment_method_id = $3 AND status = 'active'
+	`, clientID, provider, providerPaymentMethodID)
 	m, err := scanPaymentMethod(row)
 	if err == sql.ErrNoRows {
 		return nil, commonerrors.ErrNotFound

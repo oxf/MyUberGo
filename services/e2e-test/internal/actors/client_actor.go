@@ -24,10 +24,13 @@ type ClientActor struct {
 	Interval time.Duration
 	Rnd      *rand.Rand
 
-	// PaymentMethodToken picks the StubProvider outcome for every charge
-	// attempt on this client's invoices (see billing-service's
-	// infrastructure/payment/stub) — "pm_stub_ok" (the default when empty)
-	// always succeeds, "pm_stub_decline" always fails with card_declined.
+	// PaymentMethodToken picks the payment provider's outcome for every
+	// charge attempt on this client's invoices — cmd/main.go resolves the
+	// right fixture token for whichever PAYMENT_PROVIDER billing-service is
+	// running (defaultPaymentMethodToken/declinePaymentMethodToken) and sets
+	// this explicitly for every actor. The "pm_stub_ok" fallback below is
+	// only a defensive default for the empty-string case; it is never what
+	// actually selects the token in normal operation.
 	PaymentMethodToken string
 
 	// pending is the last ride request sent, kept so the read-back can be
@@ -255,9 +258,10 @@ func (a *ClientActor) randomRideRequest() contracts.CreateRideRequest {
 }
 
 // attachAndVerifyPaymentMethod adds this client's billing payment method
-// (pm_stub_ok by default, pm_stub_decline for the dedicated declining
-// client actor) right after signup, so every ride this client completes
-// has something for the ChargeWorker to charge.
+// (the success token by default, the decline token for the dedicated
+// declining client actor — see cmd/main.go's provider-aware token mapping)
+// right after signup, so every ride this client completes has something
+// for the ChargeWorker to charge.
 func (a *ClientActor) attachAndVerifyPaymentMethod(ctx context.Context, acc *account) {
 	token := a.PaymentMethodToken
 	if token == "" {
