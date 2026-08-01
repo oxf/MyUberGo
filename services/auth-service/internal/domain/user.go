@@ -2,9 +2,15 @@ package domain
 
 import (
 	"errors"
+	"regexp"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
 )
+
+// emailPattern is a deliberately permissive shape check (local@domain.tld),
+// not a full RFC 5322 validator — good enough to reject obvious garbage
+// input without rejecting valid-but-unusual addresses.
+var emailPattern = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
 
 type User struct {
 	ID           string
@@ -28,6 +34,9 @@ type User struct {
 func NewUser(email, passwordHash, name, phone string, role contracts.UserRole) (*User, error) {
 	if email == "" {
 		return nil, errors.New("email is required")
+	}
+	if !emailPattern.MatchString(email) {
+		return nil, errors.New("email is not a valid address")
 	}
 	if passwordHash == "" {
 		return nil, errors.New("password is required")

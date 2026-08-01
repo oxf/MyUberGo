@@ -8,8 +8,9 @@ services:
       POSTGRES_DB: postgres
     volumes:
       - ./services/shared/migrations/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    ports:
-      - "5432:5432"
+    # No published host port: only services on the compose network should
+    # reach Postgres directly. Use `docker compose exec postgres psql ...`
+    # for local inspection instead of a host port.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -18,8 +19,9 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # No published host port: only services on the compose network should
+    # reach Redis directly. Use `docker compose exec redis redis-cli` for
+    # local inspection instead of a host port.
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

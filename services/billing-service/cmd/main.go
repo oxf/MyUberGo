@@ -140,7 +140,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:         ":8005",
-		Handler:      middleware.RequestID(mux),
+		Handler:      middleware.BodyLimit(middleware.RequestID(mux)),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,

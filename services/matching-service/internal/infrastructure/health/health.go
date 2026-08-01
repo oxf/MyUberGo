@@ -38,13 +38,13 @@ func NewChecker(rdb *redis.Client, checkInterval time.Duration) *Checker {
 
 // Start begins the background health check goroutine
 func (c *Checker) Start() {
-	ticker := time.NewTicker(c.checkInterval)
-	defer ticker.Stop()
-
 	// Initial health check
 	c.updateReady()
 
 	go func() {
+		ticker := time.NewTicker(c.checkInterval)
+		defer ticker.Stop()
+
 		for {
 			select {
 			case <-ticker.C:

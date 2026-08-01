@@ -42,7 +42,10 @@ func (h *ShiftHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *ShiftHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req contracts.UpdateShiftRequest
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	err := h.app.Commands.UpdateShift.Handle(r.Context(), command.UpdateShift{
 		ID: id, Status: req.Status,
@@ -86,8 +89,12 @@ func (h *ShiftHandler) GetList(w http.ResponseWriter, r *http.Request) {
 func (h *ShiftHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	result, err := h.app.Queries.GetShiftByID.Handle(r.Context(), query.GetShiftByID{ID: id})
-	if err != nil || result == nil {
+	if errors.Is(err, commonerrors.ErrNotFound) {
 		writeError(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		writeError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, toShiftDto(result))

@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"errors"
 
 	"auth-service/internal/application/services"
 	"auth-service/internal/common/decorator"
@@ -49,7 +50,17 @@ func NewSignupHandler(
 	)
 }
 
+// minPasswordLength is intentionally a plain length floor, not a full
+// complexity policy (upper/lower/digit/symbol classes) — a length minimum
+// blocks the worst offenders (empty, "1234") without the UX cost of a rule
+// set that rejects strong-but-unusual passwords.
+const minPasswordLength = 8
+
 func (h *SignupHandler) Handle(ctx context.Context, cmd Signup) (SignupResult, error) {
+	if len(cmd.Password) < minPasswordLength {
+		return SignupResult{}, errors.New("password must be at least 8 characters")
+	}
+
 	hash, err := h.hasher.Hash(cmd.Password)
 	if err != nil {
 		return SignupResult{}, err

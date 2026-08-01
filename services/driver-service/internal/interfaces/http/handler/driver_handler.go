@@ -44,7 +44,10 @@ func (h *DriverHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *DriverHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req contracts.UpdateDriverDto
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	err := h.app.Commands.UpdateDriver.Handle(r.Context(), command.UpdateDriver{
 		ID: id, VehicleType: req.VehicleType, LicencePlate: req.LicencePlate,
@@ -88,8 +91,12 @@ func (h *DriverHandler) GetList(w http.ResponseWriter, r *http.Request) {
 func (h *DriverHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	result, err := h.app.Queries.GetDriverByID.Handle(r.Context(), query.GetDriverByID{ID: id})
-	if err != nil || result == nil {
+	if errors.Is(err, commonerrors.ErrNotFound) {
 		writeError(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		writeError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, toDriverDto(result))

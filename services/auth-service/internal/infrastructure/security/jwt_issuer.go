@@ -41,7 +41,8 @@ func (j *JWTIssuer) IssueRefresh(userID string) (string, time.Time, error) {
 }
 
 func (j *JWTIssuer) ParseRefresh(tokenStr string) (string, error) {
-	token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) { return j.secret, nil })
+	token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) { return j.secret, nil },
+		jwt.WithValidMethods([]string{"HS256"}))
 	if err != nil || !token.Valid {
 		return "", errors.New("invalid token")
 	}

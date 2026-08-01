@@ -36,7 +36,7 @@ func (h *InvoiceHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if clientID != "" && inv.ClientID != clientID {
+	if clientID == "" || inv.ClientID != clientID {
 		writeError(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -62,7 +62,7 @@ func (h *InvoiceHandler) GetByRideID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if clientID != "" && inv.ClientID != clientID {
+	if clientID == "" || inv.ClientID != clientID {
 		writeError(w, "forbidden", http.StatusForbidden)
 		return
 	}
