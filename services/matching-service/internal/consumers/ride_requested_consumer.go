@@ -6,10 +6,16 @@ import (
 	"log"
 	app "matching-service/internal/application"
 	"matching-service/internal/application/command"
+	"time"
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
 	"github.com/segmentio/kafka-go"
 )
+
+// handleTimeout bounds how long a single message's command handling can
+// run, so a hung Redis call can't block the consumer's read loop (and, by
+// extension, every message behind it) indefinitely.
+const handleTimeout = 10 * time.Second
 
 type RideRequestedConsumer struct {
 	app    app.Application
@@ -56,6 +62,8 @@ func (c *RideRequestedConsumer) Run(ctx context.Context, topic string) {
 }
 
 func (c *RideRequestedConsumer) handleRideRequested(ctx context.Context, event contractsKafka.RideRequestedEvent) error {
+	ctx, cancel := context.WithTimeout(ctx, handleTimeout)
+	defer cancel()
 	if err := c.app.Commands.CreateRide.Handle(ctx, command.CreateRide{Event: event}); err != nil {
 		return err
 	}

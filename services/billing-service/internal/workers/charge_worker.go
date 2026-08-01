@@ -138,6 +138,21 @@ func (w *ChargeWorker) claimBatch(ctx context.Context) ([]chargeClaim, error) {
 		for _, inv := range invoices {
 			claim, err := w.claimOne(txCtx, inv, lease)
 			if err != nil {
+				if errors.Is(err, commonerrors.ErrNotFound) {
+					// A missing customer/payment-method row for this one
+					// invoice (e.g. its client's billing data predates a
+					// PAYMENT_PROVIDER switch) is a per-invoice data
+					// inconsistency, not a transient SQL failure — unlike a
+					// real statement error, a SELECT finding zero rows never
+					// aborts the surrounding Postgres transaction, so it's
+					// safe to skip just this one invoice rather than
+					// abandoning every other, unrelated invoice behind it
+					// for the rest of this batch (and every batch after,
+					// since nothing here ever resolves it).
+					w.logger.WithField("invoice_id", inv.ID).WithField("client_id", inv.ClientID).
+						Warn("charge worker: skipping invoice with missing customer/payment-method data")
+					continue
+				}
 				return err
 			}
 			if claim != nil {

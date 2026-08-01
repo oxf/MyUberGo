@@ -70,6 +70,7 @@ func (a *ClientActor) Run(ctx context.Context) {
 			a.cancelAndVerifyRide(ctx, acc, rideID)
 		} else {
 			a.verifyRide(ctx, acc, rideID)
+			a.verifyRideSettled(ctx, acc, rideID)
 		}
 		if iter%10 == 0 {
 			a.refresh(ctx, a.ID, acc)
@@ -117,6 +118,82 @@ func (a *ClientActor) verifyRide(ctx context.Context, acc *account, rideID strin
 		v.True("estimatedPriceMinor", ride.EstimatedPriceMinor > 0, "expected > 0")
 	}
 	a.record(a.ID, "ride.get", start, err, v)
+}
+
+// verifyRideSettled is a two-stage poll run after a ride that wasn't
+// cancelled: first wait for the ride to reach a terminal Completed status,
+// then (only if it does) wait for its invoice to settle. Both stages use
+// this client's own token — only the client who requested a ride can pass
+// billing-service's ownership check on GET /rides/{rideId}/invoice (see
+// billing-service/internal/interfaces/http/handler/invoice_handler.go).
+// This intentionally does NOT live on DriverActor: a driver's own token has
+// no client_id claim, so it can never legitimately read a ride's invoice.
+func (a *ClientActor) verifyRideSettled(ctx context.Context, acc *account, rideID string) {
+	// Stage 1: wait for the ride to complete. Only 3 driver actors serve
+	// however many clients are running, so most rides never reach Completed
+	// within any bounded window — that's normal load-shedding, not a bug.
+	// Soft: give up silently (no stat recorded) rather than treating "never
+	// picked up" as a failure.
+	var ride contracts.RideDto
+	var err error
+	completed := false
+	for attempt := range 10 {
+		ride, err = a.Ride.GetRide(ctx, acc.accessToken, rideID)
+		if err == nil && ride.Status == "Completed" {
+			completed = true
+			break
+		}
+		if attempt < 9 && !sleepJitter(ctx, 3*time.Second, a.Rnd) {
+			return
+		}
+	}
+	if !completed {
+		return
+	}
+
+	// Stage 2: poll for the invoice to settle. Delivery is async
+	// (ride.completed -> the outbox -> billing-service's consumer ->
+	// ChargeWorker's next tick), so a still-"open" invoice after this
+	// window isn't treated as a failure — only a reached terminal status
+	// (paid/uncollectible) is asserted.
+	start := time.Now()
+	var inv contracts.InvoiceDto
+	for attempt := range 10 {
+		inv, err = a.Billing.GetInvoiceByRide(ctx, acc.accessToken, rideID)
+		if err == nil && (inv.Status == "paid" || inv.Status == "uncollectible") {
+			break
+		}
+		if attempt < 9 && !sleepJitter(ctx, 3*time.Second, a.Rnd) {
+			return
+		}
+	}
+	if err == nil && inv.Status != "paid" && inv.Status != "uncollectible" {
+		// Still open after the observation window — expected for a
+		// pm_stub_decline client waiting out its retry backoff, not a bug.
+		return
+	}
+
+	v := &Verify{}
+	if err == nil {
+		v.Eq("rideId", inv.RideId, rideID)
+		v.True("amountMinor", inv.AmountMinor > 0, "expected positive amount")
+		v.NotEmpty("currency", inv.Currency)
+		v.True("terminal", inv.Status == "paid" || inv.Status == "uncollectible",
+			"expected paid or uncollectible, got "+inv.Status)
+	}
+	a.record(a.ID, "billing.invoice.get", start, err, v)
+	if err != nil || inv.ClientId == "" {
+		return
+	}
+
+	// Cheapest possible regression test for the double-entry invariants
+	// (BILLING_SPEC.md §10): exercises the ledger balance query end-to-end.
+	// Not asserting an exact value here — this client may have other rides
+	// mid-settlement concurrently, so client_receivable isn't guaranteed to
+	// be exactly 0 or exactly this invoice's amount at the instant we check.
+	start = time.Now()
+	_, err = a.Billing.GetLedgerBalance(ctx, a.Deps.AdminAccessToken, "client_receivable", inv.ClientId, inv.Currency)
+	a.record(a.ID, "billing.ledger.balance", start, err, nil)
 }
 
 // cancelAndVerifyRide deep-verifies the whole cancellation contract for a

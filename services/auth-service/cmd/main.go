@@ -23,8 +23,29 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const (
+	defaultPgDsn     = "postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable"
+	defaultJwtSecret = "secret_change_me"
+)
+
 func main() {
-	dsn := getenv("PG_DSN", "postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable")
+	// `app healthcheck` is invoked by Docker's HEALTHCHECK (see
+	// docker-compose.yml) — distroless has no shell/curl for a CMD-SHELL
+	// check, so the binary probes its own /health/ready and exits 0/1.
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		healthcheckSelf("http://localhost:8000/health/ready")
+	}
+
+	dsn := getenv("PG_DSN", defaultPgDsn)
+	jwtSecretStr := getenv("JWT_SECRET", defaultJwtSecret)
+	if os.Getenv("APP_ENV") == "production" {
+		if dsn == defaultPgDsn {
+			log.Fatal("refusing to start in production with the default PG_DSN — set a real PG_DSN")
+		}
+		if jwtSecretStr == defaultJwtSecret {
+			log.Fatal("refusing to start in production with the default JWT_SECRET — set a real JWT_SECRET")
+		}
+	}
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		log.Fatal(err)
@@ -33,7 +54,7 @@ func main() {
 	db.SetMaxIdleConns(atoi(getenv("DB_MAX_IDLE_CONNS", "10")))
 	db.SetConnMaxLifetime(time.Duration(atoi(getenv("DB_CONN_MAX_LIFETIME_MIN", "5"))) * time.Minute)
 
-	jwtSecret := []byte(getenv("JWT_SECRET", "secret_change_me"))
+	jwtSecret := []byte(jwtSecretStr)
 	accessTTL := time.Duration(atoi(getenv("AUTH_TOKEN_EXP_MIN", "15"))) * time.Minute
 	refreshTTL := time.Duration(atoi(getenv("REFRESH_TOKEN_EXP_HOUR", "24"))) * time.Hour
 
@@ -86,7 +107,7 @@ func main() {
 	// Create HTTP server
 	server := &http.Server{
 		Addr:         ":8000",
-		Handler:      middleware.BodyLimit(middleware.RequestID(mux)),
+		Handler:      middleware.BodyLimit(middleware.RequestID(middleware.Recover(logger)(mux))),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -96,12 +117,12 @@ func main() {
 	shutdownManager := shutdown.NewManager(server, 30*time.Second)
 
 	// Start server in a goroutine
-	go func() {
+	goSafe(logger, "http-server", func() {
 		log.Println("auth-service listening on :8000")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("Server error: %v\n", err)
 		}
-	}()
+	})
 
 	// Wait for shutdown signal and perform graceful shutdown
 	shutdownManager.WaitForShutdown()
@@ -115,3 +136,31 @@ func getenv(k, d string) string {
 }
 
 func atoi(s string) int { v, _ := strconv.Atoi(s); return v }
+
+// healthcheckSelf backs the `app healthcheck` subcommand: a plain HTTP GET
+// against the service's own readiness endpoint, exiting 0/1 for Docker.
+func healthcheckSelf(url string) {
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+// goSafe launches fn in a goroutine, recovering any panic so one bad
+// message/query doesn't take the whole process down silently.
+func goSafe(logger *logrus.Entry, name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.WithField("goroutine", name).WithField("panic", r).Error("recovered from panic")
+			}
+		}()
+		fn()
+	}()
+}

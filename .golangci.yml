@@ -1,0 +1,24 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  exclusions:
+    rules:
+      # json.Encode's error on an already-committed ResponseWriter, deferred
+      # Close() on readers/rows/DB handles/response bodies (the close error
+      # is essentially never actionable at that point), and
+      # ResponseWriter.Write of a fixed literal body (a Write failure just
+      # means the client already disconnected) are the intentionally-ignored
+      # patterns already used throughout the codebase. Everything else
+      # should be checked.
+      - linters:
+          - errcheck
+        text: 'Error return value of `.*\.(Close|Write|Encode)` is not checked'
+
+run:
+  timeout: 5m

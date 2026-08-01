@@ -25,6 +25,13 @@ import (
 )
 
 func main() {
+	// `app healthcheck` is invoked by Docker's HEALTHCHECK (see
+	// docker-compose.yml) — distroless has no shell/curl for a CMD-SHELL
+	// check, so the binary probes its own /health/ready and exits 0/1.
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		healthcheckSelf("http://localhost:" + getenv("SERVICE_PORT", "8002") + "/health/ready")
+	}
+
 	redisUrl := getenv("REDIS_URL", "redis:6379")
 	redisDb := redis.NewClient(&redis.Options{
 		Addr:     redisUrl,
@@ -79,7 +86,7 @@ func main() {
 	// Create HTTP server
 	server := &http.Server{
 		Addr:         ":" + port,
-		Handler:      middleware.BodyLimit(middleware.RequestID(mux)),
+		Handler:      middleware.BodyLimit(middleware.RequestID(middleware.Recover(logger)(mux))),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -97,35 +104,35 @@ func main() {
 	rideCancelledConsumer := consumers.NewRideCancelledConsumer(application, kafkaBroker)
 
 	shutdownManager.Add(3)
-	go func() {
+	goSafe(logger, "ride-requested-consumer", func() {
 		defer shutdownManager.Done()
 		rideConsumer.Run(bgCtx, "ride.requested")
-	}()
-	go func() {
+	})
+	goSafe(logger, "shift-updated-consumer", func() {
 		defer shutdownManager.Done()
 		driverConsumer.Run(bgCtx, "shift.updated")
-	}()
-	go func() {
+	})
+	goSafe(logger, "ride-cancelled-consumer", func() {
 		defer shutdownManager.Done()
 		rideCancelledConsumer.Run(bgCtx, "ride.cancelled")
-	}()
+	})
 
 	// Match retry worker: sweeps pending_ride:* and re-broadcasts offers for
 	// rides whose deadline lapsed without an accept.
 	retryWorker := workers.NewMatchRetryWorker(offerRepo, application.Commands.BroadcastOffers, logger, 5*time.Second)
 	shutdownManager.Add(1)
-	go func() {
+	goSafe(logger, "match-retry-worker", func() {
 		defer shutdownManager.Done()
 		retryWorker.Run(bgCtx)
-	}()
+	})
 
 	// Start server in a goroutine
-	go func() {
+	goSafe(logger, "http-server", func() {
 		log.Println("matching-service listening on :" + port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("Server error: %v\n", err)
 		}
-	}()
+	})
 
 	// Wait for shutdown signal and perform graceful shutdown
 	shutdownManager.WaitForShutdown()
@@ -136,4 +143,32 @@ func getenv(k, d string) string {
 		return v
 	}
 	return d
+}
+
+// healthcheckSelf backs the `app healthcheck` subcommand: a plain HTTP GET
+// against the service's own readiness endpoint, exiting 0/1 for Docker.
+func healthcheckSelf(url string) {
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+// goSafe launches fn in a goroutine, recovering any panic so one bad
+// message/query doesn't take the whole process down silently.
+func goSafe(logger *logrus.Entry, name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.WithField("goroutine", name).WithField("panic", r).Error("recovered from panic")
+			}
+		}()
+		fn()
+	}()
 }

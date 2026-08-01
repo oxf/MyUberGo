@@ -32,7 +32,7 @@ func (h *LedgerHandler) GetBalance(w http.ResponseWriter, r *http.Request) {
 		AccountType: accountType, OwnerID: ownerID, Currency: currency,
 	})
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 

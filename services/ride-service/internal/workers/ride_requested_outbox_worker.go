@@ -12,6 +12,13 @@ import (
 const (
 	defaultBatchSize      = 10
 	defaultPublishTimeout = 5 * time.Second
+	// defaultMaxRetries caps how many times a permanently-failing message is
+	// retried. Past the cap it's parked (skipped every tick, never marked
+	// processed) rather than retried forever at a fixed cadence — it stays
+	// visible via `SELECT * FROM outbox_message WHERE NOT processed AND
+	// retries >= 10` for manual investigation instead of silently spamming
+	// Kafka/logs indefinitely.
+	defaultMaxRetries = 10
 )
 
 // OutboxWorker drains ride.outbox_message and publishes each row to Kafka.
@@ -72,6 +79,12 @@ func (w *OutboxWorker) processBatch(ctx context.Context) error {
 		}
 
 		for _, m := range messages {
+			if m.Retries >= defaultMaxRetries {
+				w.logger.WithField("outbox_id", m.ID).WithField("retries", m.Retries).
+					Error("outbox worker: message exceeded max retries, parking (manual intervention required)")
+				continue
+			}
+
 			publishCtx, cancel := context.WithTimeout(txCtx, defaultPublishTimeout)
 			err := w.publisher.Publish(publishCtx, m.Topic, m.Payload)
 			cancel()

@@ -393,12 +393,6 @@ func (r *fakeLedgerRepo) GetBalance(ctx context.Context, accountType, ownerID, c
 	panic("not used by ChargeWorker tests")
 }
 
-func (r *fakeLedgerRepo) count() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.postings)
-}
-
 func (r *fakeLedgerRepo) countByType(txType string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

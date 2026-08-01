@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -75,7 +76,7 @@ func (h *DriverHandler) GetList(w http.ResponseWriter, r *http.Request) {
 		Page: params.page, PageSize: params.pageSize, SortBy: params.sortBy, SortDir: params.sortDir,
 	})
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -96,7 +97,7 @@ func (h *DriverHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, toDriverDto(result))
@@ -104,6 +105,14 @@ func (h *DriverHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 
 func writeError(w http.ResponseWriter, msg string, code int) {
 	http.Error(w, msg, code)
+}
+
+// writeInternalError logs the real error server-side and returns a generic
+// message to the client — the raw error text (which can include SQL/driver
+// internals) must never reach an HTTP response.
+func writeInternalError(w http.ResponseWriter, err error) {
+	log.Println("internal error:", err)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

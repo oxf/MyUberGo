@@ -60,5 +60,7 @@ func (c *ShiftUpdatedConsumer) Run(ctx context.Context, topic string) {
 }
 
 func (c *ShiftUpdatedConsumer) handleShiftUpdated(ctx context.Context, event contractsKafka.ShiftUpdatedEvent) error {
+	ctx, cancel := context.WithTimeout(ctx, handleTimeout)
+	defer cancel()
 	return c.app.Commands.UpsertDriver.Handle(ctx, command.UpsertDriver{Event: event})
 }

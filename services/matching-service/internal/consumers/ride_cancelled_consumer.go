@@ -48,11 +48,13 @@ func (c *RideCancelledConsumer) Run(ctx context.Context, topic string) {
 
 		log.Printf("Ride cancellation received. RideID=%s DriverID=%v", event.RideID, event.DriverID)
 
-		if err := c.app.Commands.CancelRide.Handle(ctx, command.CancelRide{
+		handleCtx, cancel := context.WithTimeout(ctx, handleTimeout)
+		if err := c.app.Commands.CancelRide.Handle(handleCtx, command.CancelRide{
 			RideID:   event.RideID,
 			DriverID: event.DriverID,
 		}); err != nil {
 			log.Println("handle error:", err)
 		}
+		cancel()
 	}
 }

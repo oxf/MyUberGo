@@ -58,7 +58,8 @@ func (c *RideCancelledConsumer) Run(ctx context.Context, topic string) {
 			continue
 		}
 
-		if err := c.app.Commands.CreateInvoiceFromRide.Handle(ctx, command.CreateInvoiceFromRide{
+		handleCtx, cancel := context.WithTimeout(ctx, handleTimeout)
+		if err := c.app.Commands.CreateInvoiceFromRide.Handle(handleCtx, command.CreateInvoiceFromRide{
 			RideID:      event.RideID,
 			ClientID:    event.ClientID,
 			DriverID:    event.DriverID,
@@ -68,5 +69,6 @@ func (c *RideCancelledConsumer) Run(ctx context.Context, topic string) {
 		}); err != nil {
 			log.Println("handle error:", err)
 		}
+		cancel()
 	}
 }

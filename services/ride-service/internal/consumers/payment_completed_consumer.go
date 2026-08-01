@@ -51,11 +51,13 @@ func (c *PaymentCompletedConsumer) Run(ctx context.Context, topic string) {
 
 		log.Printf("Payment completed received. RideID=%s InvoiceID=%s", event.RideID, event.InvoiceID)
 
-		if err := c.app.Commands.MarkRideBilled.Handle(ctx, command.MarkRideBilled{
+		handleCtx, cancel := context.WithTimeout(ctx, handleTimeout)
+		if err := c.app.Commands.MarkRideBilled.Handle(handleCtx, command.MarkRideBilled{
 			RideID:    event.RideID,
 			InvoiceID: event.InvoiceID,
 		}); err != nil {
 			log.Println("handle error:", err)
 		}
+		cancel()
 	}
 }

@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	app "ride-service/internal/application"
 	"ride-service/internal/application/command"
@@ -45,7 +46,7 @@ func (h *RideHandler) Create(w http.ResponseWriter, r *http.Request) {
 		TariffName:    req.TariffName,
 	})
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -89,7 +90,7 @@ func (h *RideHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "ride is already in a terminal state", http.StatusConflict)
 		return
 	case err != nil:
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -124,7 +125,7 @@ func (h *RideHandler) Start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "ride is not in a startable state", http.StatusConflict)
 		return
 	case err != nil:
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -159,7 +160,7 @@ func (h *RideHandler) Complete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "ride is not in progress", http.StatusConflict)
 		return
 	case err != nil:
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -177,7 +178,7 @@ func (h *RideHandler) GetList(w http.ResponseWriter, r *http.Request) {
 		Page: params.page, PageSize: params.pageSize, SortBy: params.sortBy, SortDir: params.sortDir,
 	})
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -198,7 +199,7 @@ func (h *RideHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, toRideDto(result))
@@ -206,6 +207,14 @@ func (h *RideHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 
 func writeError(w http.ResponseWriter, msg string, code int) {
 	http.Error(w, msg, code)
+}
+
+// writeInternalError logs the real error server-side and returns a generic
+// message to the client — the raw error text (which can include SQL/driver
+// internals) must never reach an HTTP response.
+func writeInternalError(w http.ResponseWriter, err error) {
+	log.Println("internal error:", err)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

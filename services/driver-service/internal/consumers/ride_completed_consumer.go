@@ -46,12 +46,14 @@ func (c *RideCompletedConsumer) Run(ctx context.Context, topic string) {
 			continue
 		}
 
-		if err := c.app.Commands.ProcessRideCompleted.Handle(ctx, command.ProcessRideCompleted{
+		handleCtx, cancel := context.WithTimeout(ctx, handleTimeout)
+		if err := c.app.Commands.ProcessRideCompleted.Handle(handleCtx, command.ProcessRideCompleted{
 			RideID:     event.RideID,
 			DriverID:   event.DriverID,
 			FinishedAt: event.FinishedAt,
 		}); err != nil {
 			log.Println("handle error:", err)
 		}
+		cancel()
 	}
 }

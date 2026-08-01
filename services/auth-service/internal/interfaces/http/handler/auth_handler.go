@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	app "auth-service/internal/application"
@@ -50,7 +51,7 @@ func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err.Error(), http.StatusConflict)
 		return
 	case err != nil:
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -74,7 +75,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	case err != nil:
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -100,7 +101,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid or expired refresh token", http.StatusUnauthorized)
 		return
 	case err != nil:
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -127,7 +128,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		UserID:       userID,
 		RefreshToken: req.RefreshToken,
 	}); err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -136,6 +137,14 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 
 func writeError(w http.ResponseWriter, msg string, code int) {
 	http.Error(w, msg, code)
+}
+
+// writeInternalError logs the real error server-side and returns a generic
+// message to the client — the raw error text (which can include SQL/driver
+// internals) must never reach an HTTP response.
+func writeInternalError(w http.ResponseWriter, err error) {
+	log.Println("internal error:", err)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

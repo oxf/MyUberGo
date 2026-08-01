@@ -47,7 +47,7 @@ func (h *PaymentMethodHandler) Create(w http.ResponseWriter, r *http.Request) {
 		SetDefault:              req.SetDefault,
 	})
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -63,7 +63,7 @@ func (h *PaymentMethodHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	methods, err := h.app.Queries.ListPaymentMethods.Handle(r.Context(), query.ListPaymentMethods{ClientID: clientID})
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -96,7 +96,7 @@ func (h *PaymentMethodHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "cannot remove the only active default while invoices are open", http.StatusConflict)
 		return
 	case err != nil:
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 

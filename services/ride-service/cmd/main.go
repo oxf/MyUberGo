@@ -26,8 +26,20 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const defaultPgDsn = "postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable"
+
 func main() {
-	dsn := getenv("PG_DSN", "postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable")
+	// `app healthcheck` is invoked by Docker's HEALTHCHECK (see
+	// docker-compose.yml) — distroless has no shell/curl for a CMD-SHELL
+	// check, so the binary probes its own /health/ready and exits 0/1.
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		healthcheckSelf("http://localhost:8001/health/ready")
+	}
+
+	dsn := getenv("PG_DSN", defaultPgDsn)
+	if os.Getenv("APP_ENV") == "production" && dsn == defaultPgDsn {
+		log.Fatal("refusing to start in production with the default PG_DSN — set a real PG_DSN")
+	}
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		log.Fatal(err)
@@ -87,7 +99,7 @@ func main() {
 	// Create HTTP server
 	server := &http.Server{
 		Addr:         ":8001",
-		Handler:      middleware.BodyLimit(middleware.RequestID(mux)),
+		Handler:      middleware.BodyLimit(middleware.RequestID(middleware.Recover(logger)(mux))),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -105,36 +117,36 @@ func main() {
 	shutdownManager.OnStop(cancelWorker)
 
 	shutdownManager.Add(1)
-	go func() {
+	goSafe(logger, "outbox-worker", func() {
 		defer shutdownManager.Done()
 		outboxWorker.Run(workerCtx)
-	}()
+	})
 
 	// ride.accepted consumer: flips a matched ride's driver_id/status/matched_at
 	// once matching-service publishes the match.
 	rideAcceptedConsumer := consumers.NewRideAcceptedConsumer(application, kafkaBroker)
 	shutdownManager.Add(1)
-	go func() {
+	goSafe(logger, "ride-accepted-consumer", func() {
 		defer shutdownManager.Done()
 		rideAcceptedConsumer.Run(workerCtx, "ride.accepted")
-	}()
+	})
 
 	// payment.completed consumer: sets ride.ride.bill_id once billing-service
 	// collects payment for the ride.
 	paymentCompletedConsumer := consumers.NewPaymentCompletedConsumer(application, kafkaBroker)
 	shutdownManager.Add(1)
-	go func() {
+	goSafe(logger, "payment-completed-consumer", func() {
 		defer shutdownManager.Done()
 		paymentCompletedConsumer.Run(workerCtx, "payment.completed")
-	}()
+	})
 
 	// Start server in a goroutine
-	go func() {
+	goSafe(logger, "http-server", func() {
 		log.Println("ride-service listening on :8001")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("Server error: %v\n", err)
 		}
-	}()
+	})
 
 	// Wait for shutdown signal and perform graceful shutdown
 	shutdownManager.WaitForShutdown()
@@ -148,3 +160,31 @@ func getenv(k, d string) string {
 }
 
 func atoi(s string) int { v, _ := strconv.Atoi(s); return v }
+
+// healthcheckSelf backs the `app healthcheck` subcommand: a plain HTTP GET
+// against the service's own readiness endpoint, exiting 0/1 for Docker.
+func healthcheckSelf(url string) {
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+// goSafe launches fn in a goroutine, recovering any panic so one bad
+// message/query doesn't take the whole process down silently.
+func goSafe(logger *logrus.Entry, name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.WithField("goroutine", name).WithField("panic", r).Error("recovered from panic")
+			}
+		}()
+		fn()
+	}()
+}

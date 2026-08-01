@@ -6,10 +6,16 @@ import (
 	"log"
 	app "ride-service/internal/application"
 	"ride-service/internal/application/command"
+	"time"
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
 	"github.com/segmentio/kafka-go"
 )
+
+// handleTimeout bounds how long a single message's command handling can
+// run, so a hung DB/dependency call can't block the consumer's read loop
+// (and, by extension, every message behind it) indefinitely.
+const handleTimeout = 10 * time.Second
 
 type RideAcceptedConsumer struct {
 	app    app.Application
@@ -48,12 +54,14 @@ func (c *RideAcceptedConsumer) Run(ctx context.Context, topic string) {
 
 		log.Printf("Ride accepted received. RideID=%s DriverID=%s", event.RideID, event.DriverID)
 
-		if err := c.app.Commands.MarkRideMatched.Handle(ctx, command.MarkRideMatched{
+		handleCtx, cancel := context.WithTimeout(ctx, handleTimeout)
+		if err := c.app.Commands.MarkRideMatched.Handle(handleCtx, command.MarkRideMatched{
 			RideID:     event.RideID,
 			DriverID:   event.DriverID,
 			AcceptedAt: event.AcceptedAt,
 		}); err != nil {
 			log.Println("handle error:", err)
 		}
+		cancel()
 	}
 }
