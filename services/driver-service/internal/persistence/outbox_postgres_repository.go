@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"driver-service/internal/domain"
+
+	"github.com/oxf/MyUber/observability/obsoutbox"
 )
 
 type PostgresOutboxRepository struct {
@@ -21,18 +23,35 @@ func (r *PostgresOutboxRepository) Insert(
 
 	executor := Executor(ctx, r.db)
 
+	// Captured here, not by callers: every outbox insert automatically
+	// carries forward whatever trace is active on ctx (the command
+	// handler's span), so no command handler needs to know this exists.
+	//
+	// traceContext is declared `any`, not []byte: a nil []byte boxed into
+	// an interface{} arg is NOT the same as a nil interface, so
+	// database/sql's NULL-detection would miss it and lib/pq would send an
+	// empty (not NULL) value — which then fails the jsonb column's
+	// implicit text->json cast with "invalid input syntax for type json"
+	// instead of storing NULL. Leaving this `any` at its zero value (a true
+	// nil interface) when there's no trace context avoids that.
+	var traceContext any
+	if tc := obsoutbox.MarshalTraceContext(ctx); tc != nil {
+		traceContext = tc
+	}
+
 	_, err := executor.ExecContext(
 		ctx,
 		`
 		INSERT INTO driver.outbox_message
-		(topic,event_type,payload,processed,retries)
-		VALUES ($1,$2,$3,$4,$5)
+		(topic,event_type,payload,processed,retries,trace_context)
+		VALUES ($1,$2,$3,$4,$5,$6)
 		`,
 		message.Topic,
 		message.EventType,
 		message.Payload,
 		message.Processed,
 		message.Retries,
+		traceContext,
 	)
 
 	return err
@@ -48,7 +67,7 @@ func (r *PostgresOutboxRepository) GetUnprocessedBatch(
 	rows, err := executor.QueryContext(
 		ctx,
 		`
-		SELECT id, topic, event_type, payload, processed, retries
+		SELECT id, topic, event_type, payload, processed, retries, trace_context
 		FROM driver.outbox_message
 		WHERE processed = false
 		ORDER BY created_at
@@ -67,7 +86,7 @@ func (r *PostgresOutboxRepository) GetUnprocessedBatch(
 	for rows.Next() {
 		var m domain.OutboxMessage
 
-		if err := rows.Scan(&m.ID, &m.Topic, &m.EventType, &m.Payload, &m.Processed, &m.Retries); err != nil {
+		if err := rows.Scan(&m.ID, &m.Topic, &m.EventType, &m.Payload, &m.Processed, &m.Retries, &m.TraceContext); err != nil {
 			return nil, err
 		}
 

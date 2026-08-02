@@ -70,6 +70,78 @@ services:
       postgres:
         condition: service_healthy
 
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    mem_limit: 512m
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  tempo:
+    image: grafana/tempo:latest
+    restart: unless-stopped
+    mem_limit: 512m
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+
+  loki:
+    image: grafana/loki:latest
+    restart: unless-stopped
+    mem_limit: 512m
+    command: ["-config.file=/etc/loki.yaml"]
+    volumes:
+      - ./observability/loki.yaml:/etc/loki.yaml:ro
+      - loki-data:/loki
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    mem_limit: 512m
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yaml"
+      - "--web.enable-otlp-receiver"
+      - "--enable-feature=exemplar-storage"
+    volumes:
+      - ./observability/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: 'true'
+      GF_FEATURE_TOGGLES_ENABLE: traceqlSearch
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka-ui
@@ -104,12 +176,20 @@ services:
       APP_ENV: '${APP_ENV:-}'
       AUTH_TOKEN_EXP_MIN: '15'
       REFRESH_TOKEN_EXP_HOUR: '24'
+      OTEL_SERVICE_NAME: auth-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=local'
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      LOG_LEVEL: '${LOG_LEVEL:-info}'
     # No published host port: Kong is the only ingress (see gateway/kong.yml).
     # Publishing this would let callers bypass jwt verification/rate limiting
     # entirely by hitting the service directly.
     depends_on:
       postgres:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   ride-service:
     build:
@@ -130,12 +210,20 @@ services:
       JWT_SECRET: '${JWT_SECRET:-secret_change_me}'
       APP_ENV: '${APP_ENV:-}'
       SERVICE_PORT: '8001'
+      OTEL_SERVICE_NAME: ride-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=local'
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      LOG_LEVEL: '${LOG_LEVEL:-info}'
     # No published host port — see the note on auth-service above.
     depends_on:
       postgres:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   matching-service:
     build:
@@ -154,6 +242,12 @@ services:
       KAFKA_BROKER: kafka:29092
       SERVICE_PORT: '8002'
       REDIS_URL: redis:6379
+      OTEL_SERVICE_NAME: matching-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=local'
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      LOG_LEVEL: '${LOG_LEVEL:-info}'
     ports:
       - "8002:8002"
     depends_on:
@@ -161,6 +255,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   driver-service:
     build:
@@ -181,12 +277,20 @@ services:
       JWT_SECRET: '${JWT_SECRET:-secret_change_me}'
       APP_ENV: '${APP_ENV:-}'
       SERVICE_PORT: '8003'
+      OTEL_SERVICE_NAME: driver-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=local'
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      LOG_LEVEL: '${LOG_LEVEL:-info}'
     # No published host port — see the note on auth-service above.
     depends_on:
       postgres:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   billing-service:
     build:
@@ -224,12 +328,20 @@ services:
       # that printed value is what goes here for local webhook delivery.
       STRIPE_WEBHOOK_SECRET: '${STRIPE_WEBHOOK_SECRET:-}'
       STRIPE_TIMEOUT_SEC: '20'
+      OTEL_SERVICE_NAME: billing-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=local'
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      LOG_LEVEL: '${LOG_LEVEL:-info}'
     # No published host port — see the note on auth-service above.
     depends_on:
       postgres:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   kong:
     image: kong:3.7
@@ -255,6 +367,11 @@ services:
       # by default; explicitly allowlist the one module our header-injection
       # script needs (see gateway/kong.yml) rather than disabling the sandbox.
       KONG_UNTRUSTED_LUA_SANDBOX_REQUIRES: 'cjson.safe'
+      # Kong's own internal spans (router, DNS, balancer, plugin phases) —
+      # exported via the opentelemetry plugin in gateway/kong.yml, which also
+      # emits a root span per proxied request even with this left at 'off'.
+      KONG_TRACING_INSTRUMENTATIONS: all
+      KONG_TRACING_SAMPLING_RATE: '1.0'
     volumes:
       - ./gateway/kong.yml:/kong/kong.yml:ro
     ports:
@@ -275,6 +392,8 @@ services:
         condition: service_healthy
       billing-service:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   web:
     build:
@@ -290,3 +409,9 @@ services:
 networks:
   default:
     driver: bridge
+
+volumes:
+  tempo-data:
+  loki-data:
+  prometheus-data:
+  grafana-data:

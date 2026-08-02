@@ -9,6 +9,14 @@ type OutboxMessage struct {
 	Payload   []byte
 	Processed bool
 	Retries   int
+	// TraceContext is the W3C trace context (and baggage) active when this
+	// row was inserted, captured by PostgresOutboxRepository.Insert — not
+	// set by callers. The outbox worker runs on its own background ticker
+	// context with no link back to the HTTP request that produced this row,
+	// so this is what lets the eventual Kafka publish still join that
+	// request's trace instead of starting a disconnected one. See
+	// github.com/oxf/MyUber/observability/obsoutbox.
+	TraceContext []byte
 }
 
 type OutboxRepository interface {

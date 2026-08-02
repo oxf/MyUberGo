@@ -7,6 +7,7 @@ import (
 	"driver-service/internal/domain"
 
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type ProcessRideCompleted struct {
@@ -19,6 +20,7 @@ type ProcessRideCompletedHandler struct {
 	profileRepo domain.DriverRepository
 	transaction services.TransactionManager
 	logger      *logrus.Entry
+	metrics     decorator.MetricsClient
 }
 
 func NewProcessRideCompletedHandler(
@@ -32,6 +34,7 @@ func NewProcessRideCompletedHandler(
 		profileRepo: profileRepo,
 		transaction: transaction,
 		logger:      logger,
+		metrics:     metricsClient,
 	}
 
 	return decorator.ApplyCommandDecoratorsNoResult[ProcessRideCompleted](
@@ -56,6 +59,10 @@ func (h *ProcessRideCompletedHandler) Handle(ctx context.Context, cmd ProcessRid
 		if !changed {
 			h.logger.Warnf("ride.completed: driver %s not flipped to Online (not currently OnRide) for ride %s; skipping total_rides_completed increment", cmd.DriverID, cmd.RideID)
 			return nil
+		}
+		if h.metrics != nil {
+			h.metrics.IncCounter(ctx, "myubergo.driver.status_transitions",
+				attribute.String("from", "OnRide"), attribute.String("to", "Online"))
 		}
 		return h.profileRepo.IncrementRidesCompleted(ctx, cmd.DriverID)
 	})

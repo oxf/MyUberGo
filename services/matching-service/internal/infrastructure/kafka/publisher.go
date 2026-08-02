@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/oxf/MyUber/observability/obskafka"
 	segmentio "github.com/segmentio/kafka-go"
 )
 
@@ -29,8 +30,9 @@ func NewPublisher(broker string) *Publisher {
 
 func (p *Publisher) Publish(ctx context.Context, topic string, payload []byte) error {
 	return p.writer.WriteMessages(ctx, segmentio.Message{
-		Topic: topic,
-		Value: payload,
+		Topic:   topic,
+		Value:   payload,
+		Headers: obskafka.Inject(ctx),
 	})
 }
 

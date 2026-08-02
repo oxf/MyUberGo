@@ -10,6 +10,7 @@ import (
 
 	contracts "github.com/oxf/MyUber/contracts/kafka"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type UpdateShift struct {
@@ -23,6 +24,7 @@ type UpdateShiftHandler struct {
 	outboxRepo  domain.OutboxRepository
 	transaction services.TransactionManager
 	logger      *logrus.Entry
+	metrics     decorator.MetricsClient
 }
 
 func NewUpdateShiftHandler(
@@ -40,6 +42,7 @@ func NewUpdateShiftHandler(
 		outboxRepo:  outboxRepo,
 		transaction: transaction,
 		logger:      logger,
+		metrics:     metricsClient,
 	}
 
 	return decorator.ApplyCommandDecoratorsNoResult[UpdateShift](
@@ -85,6 +88,10 @@ func (h *UpdateShiftHandler) Handle(
 				return err
 			} else if !changed {
 				h.logger.Warnf("shift %s: driver %s not flipped Offline->Online (not currently Offline)", cmd.ID, shift.DriverID)
+			} else if h.metrics != nil {
+				h.metrics.IncCounter(ctx, "myubergo.shifts.started")
+				h.metrics.IncCounter(ctx, "myubergo.driver.status_transitions",
+					attribute.String("from", "Offline"), attribute.String("to", "Online"))
 			}
 		case "Ended":
 			// Guarded so a driver who's OnRide when their shift ends stays
@@ -95,6 +102,10 @@ func (h *UpdateShiftHandler) Handle(
 				return err
 			} else if !changed {
 				h.logger.Warnf("shift %s: driver %s not flipped Online->Offline (not currently Online, e.g. still OnRide)", cmd.ID, shift.DriverID)
+			} else if h.metrics != nil {
+				h.metrics.IncCounter(ctx, "myubergo.shifts.ended")
+				h.metrics.IncCounter(ctx, "myubergo.driver.status_transitions",
+					attribute.String("from", "Online"), attribute.String("to", "Offline"))
 			}
 		}
 

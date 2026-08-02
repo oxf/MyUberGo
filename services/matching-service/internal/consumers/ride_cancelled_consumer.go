@@ -8,7 +8,10 @@ import (
 	"matching-service/internal/application/command"
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
+	"github.com/oxf/MyUber/observability/obskafka"
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type RideCancelledConsumer struct {
@@ -48,13 +51,22 @@ func (c *RideCancelledConsumer) Run(ctx context.Context, topic string) {
 
 		log.Printf("Ride cancellation received. RideID=%s DriverID=%v", event.RideID, event.DriverID)
 
-		handleCtx, cancel := context.WithTimeout(ctx, handleTimeout)
+		msgCtx := obskafka.Extract(ctx, msg.Headers)
+		msgCtx, span := tracer.Start(msgCtx, topic+" process",
+			trace.WithSpanKind(trace.SpanKindConsumer),
+			trace.WithAttributes(consumerSpanAttrs(topic)...),
+		)
+
+		handleCtx, cancel := context.WithTimeout(msgCtx, handleTimeout)
 		if err := c.app.Commands.CancelRide.Handle(handleCtx, command.CancelRide{
 			RideID:   event.RideID,
 			DriverID: event.DriverID,
 		}); err != nil {
 			log.Println("handle error:", err)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 		}
 		cancel()
+		span.End()
 	}
 }

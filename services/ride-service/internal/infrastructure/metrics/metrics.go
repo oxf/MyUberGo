@@ -1,32 +1,34 @@
 package metrics
 
 import (
+	"context"
 	"ride-service/internal/common/decorator"
+	"time"
 
-	"github.com/sirupsen/logrus"
+	"github.com/oxf/MyUber/observability/obsmetrics"
+	"go.opentelemetry.io/otel/attribute"
 )
 
-// LoggingMetricsClient logs all metrics to logrus
-type LoggingMetricsClient struct {
-	logger *logrus.Entry
+// NewOtelMetricsClient returns an OTel-backed MetricsClient exporting via
+// the OTLP pipeline configured by otelinit.Setup in cmd/main.go. Replaces
+// the old logging-only LoggingMetricsClient stub.
+func NewOtelMetricsClient(serviceName string) decorator.MetricsClient {
+	return obsmetrics.NewClient(serviceName)
 }
 
-func NewLoggingMetricsClient(logger *logrus.Entry) decorator.MetricsClient {
-	return &LoggingMetricsClient{logger: logger}
-}
-
-func (l *LoggingMetricsClient) Inc(key string, value int) {
-	l.logger.WithFields(logrus.Fields{
-		"metric_key": key,
-		"value":      value,
-	}).Info("Metric recorded")
-}
-
-// NoopMetricsClient discards all metrics
+// NoopMetricsClient discards all metrics — used by tests that don't care
+// about metrics recording.
 type NoopMetricsClient struct{}
 
 func NewNoopMetricsClient() decorator.MetricsClient {
 	return &NoopMetricsClient{}
 }
 
-func (n *NoopMetricsClient) Inc(key string, value int) {}
+func (n *NoopMetricsClient) IncCounter(ctx context.Context, name string, attrs ...attribute.KeyValue) {
+}
+
+func (n *NoopMetricsClient) RecordDuration(ctx context.Context, name string, d time.Duration, attrs ...attribute.KeyValue) {
+}
+
+func (n *NoopMetricsClient) RecordValue(ctx context.Context, name string, value float64, attrs ...attribute.KeyValue) {
+}

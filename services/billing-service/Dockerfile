@@ -9,6 +9,7 @@ RUN apk add --no-cache git
 # and bring in the local `contracts` module used by a replace directive.
 COPY services/billing-service/go.mod services/billing-service/go.sum ./
 COPY services/contracts /contracts
+COPY services/observability /observability
 RUN go mod download
 
 # Copy the billing-service source (cmd and internal packages). Use the whole

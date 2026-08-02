@@ -7,6 +7,7 @@ import (
 	"driver-service/internal/domain"
 
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type ProcessRideCancelled struct {
@@ -19,6 +20,7 @@ type ProcessRideCancelledHandler struct {
 	profileRepo domain.DriverRepository
 	transaction services.TransactionManager
 	logger      *logrus.Entry
+	metrics     decorator.MetricsClient
 }
 
 func NewProcessRideCancelledHandler(
@@ -32,6 +34,7 @@ func NewProcessRideCancelledHandler(
 		profileRepo: profileRepo,
 		transaction: transaction,
 		logger:      logger,
+		metrics:     metricsClient,
 	}
 
 	return decorator.ApplyCommandDecoratorsNoResult[ProcessRideCancelled](
@@ -60,6 +63,9 @@ func (h *ProcessRideCancelledHandler) Handle(ctx context.Context, cmd ProcessRid
 		}
 		if !changed {
 			h.logger.Warnf("ride.cancelled: driver %s not flipped to Online (not currently OnRide) for ride %s", driverID, cmd.RideID)
+		} else if h.metrics != nil {
+			h.metrics.IncCounter(ctx, "myubergo.driver.status_transitions",
+				attribute.String("from", "OnRide"), attribute.String("to", "Online"))
 		}
 		return nil
 	})

@@ -11,6 +11,7 @@ import (
 	"matching-service/internal/domain"
 
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -39,6 +40,7 @@ type BroadcastOffersHandler struct {
 	drivers domain.DriverRepository
 	offers  domain.OfferRepository
 	logger  *logrus.Entry
+	metrics decorator.MetricsClient
 }
 
 func NewBroadcastOffersHandler(
@@ -51,7 +53,7 @@ func NewBroadcastOffersHandler(
 	if rides == nil || drivers == nil || offers == nil {
 		panic("nil repo")
 	}
-	handler := &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers, logger: logger}
+	handler := &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers, logger: logger, metrics: metricsClient}
 	return decorator.ApplyCommandDecoratorsNoResult[BroadcastOffers](handler, logger, metricsClient)
 }
 
@@ -74,6 +76,10 @@ func (h *BroadcastOffersHandler) Handle(ctx context.Context, cmd BroadcastOffers
 			return err
 		}
 		h.log().Warnf("giving up on ride %s after %d attempts", cmd.RideID, MaxAttempts)
+		if h.metrics != nil {
+			h.metrics.IncCounter(ctx, "myubergo.matching.rides_failed")
+			h.metrics.RecordValue(ctx, "myubergo.matching.broadcast_rounds", float64(MaxAttempts))
+		}
 		return h.offers.DeletePending(ctx, cmd.RideID)
 	}
 
@@ -113,6 +119,7 @@ func (h *BroadcastOffersHandler) Handle(ctx context.Context, cmd BroadcastOffers
 	}
 
 	excluded := map[string]bool{}
+	rateLimited := 0
 	for _, id := range toCheck {
 		if busyByDriver[id] {
 			excluded[id] = true
@@ -120,7 +127,11 @@ func (h *BroadcastOffersHandler) Handle(ctx context.Context, cmd BroadcastOffers
 		}
 		if countByDriver[id] >= RateLimitPerMinute {
 			excluded[id] = true
+			rateLimited++
 		}
+	}
+	if rateLimited > 0 && h.metrics != nil {
+		h.metrics.IncCounter(ctx, "myubergo.matching.rate_limited")
 	}
 
 	targets := domain.SelectOfferTargets(candidates, alreadyOffered, excluded, BroadcastSize)
@@ -156,6 +167,12 @@ func (h *BroadcastOffersHandler) Handle(ctx context.Context, cmd BroadcastOffers
 
 	h.log().Infof("ride %s attempt %d: offered to %d driver(s) (pool %d, excluded %d)",
 		cmd.RideID, cmd.Attempt, offered, len(candidates), len(excluded))
+
+	if h.metrics != nil {
+		h.metrics.IncCounter(ctx, "myubergo.matching.offers_broadcast",
+			attribute.Int("attempt", cmd.Attempt),
+		)
+	}
 
 	// Arm (or re-arm) the retry deadline even when nobody was offered —
 	// drivers may come online before the next sweep.

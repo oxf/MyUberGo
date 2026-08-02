@@ -1,0 +1,97 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Consumer-group lag per topic — the key async health signal for this repo's
+  # outbox/Kafka pipeline (ride.requested/accepted/completed/cancelled,
+  # shift.updated, payment.completed/failed). Scrapes Kafka's own broker
+  # metadata, not application code.
+  kafka_metrics:
+    brokers: ["kafka:29092"]
+    protocol_version: "2.8.0"
+    scrapers:
+      - brokers
+      - topics
+      - consumers
+    collection_interval: 30s
+
+processors:
+  # Must be the first processor in every pipeline: protects the collector
+  # itself from OOM if a burst of telemetry arrives faster than it can export.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 100
+
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+connectors:
+  # Derives RED metrics (rate/error/duration) per service and per operation
+  # directly from the spans already flowing through the traces pipeline — no
+  # extra instrumentation needed in any Go service.
+  span_metrics:
+    namespace: traces.span.metrics
+    dimensions:
+      - name: http.method
+      - name: http.route
+      - name: rpc.system
+    histogram:
+      explicit:
+        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s]
+    exemplars:
+      enabled: true
+
+  # Derives the service dependency graph (incl. Kafka producer/consumer
+  # edges) from span parent/child relationships.
+  service_graph:
+    latency_histogram_buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s]
+    store:
+      ttl: 2s
+      max_items: 10000
+
+exporters:
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Prometheus' native OTLP receiver: POST /api/v1/otlp/v1/metrics. otlp_http
+  # appends "/v1/metrics" to the configured endpoint itself.
+  otlp_http/prometheus:
+    endpoint: http://prometheus:9090/api/v1/otlp
+    tls:
+      insecure: true
+
+  # Loki's native OTLP ingest: POST /otlp/v1/logs. otlp_http appends
+  # "/v1/logs" to the configured endpoint itself.
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_grpc/tempo, span_metrics, service_graph]
+
+    metrics:
+      receivers: [otlp, kafka_metrics, span_metrics, service_graph]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/prometheus]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/loki]
+
+  telemetry:
+    logs:
+      level: info

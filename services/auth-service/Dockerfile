@@ -9,6 +9,7 @@ RUN apk add --no-cache git
 # and bring in the local `contracts` module used by a replace directive.
 COPY services/auth-service/go.mod services/auth-service/go.sum ./
 COPY services/contracts /contracts
+COPY services/observability /observability
 RUN go mod download
 
 # Copy the auth-service source (cmd and internal packages)

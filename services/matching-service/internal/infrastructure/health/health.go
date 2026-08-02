@@ -19,6 +19,7 @@ type State struct {
 type Checker struct {
 	rdb           *redis.Client
 	state         State
+	notLiveReason string
 	mu            sync.RWMutex
 	checkInterval time.Duration
 	queryTimeout  time.Duration
@@ -34,6 +35,35 @@ func NewChecker(rdb *redis.Client, checkInterval time.Duration) *Checker {
 		queryTimeout:  2 * time.Second,
 		stopChan:      make(chan struct{}),
 	}
+}
+
+// MarkNotLive permanently flips Live to false. Call it when a background
+// goroutine this service depends on (a Kafka consumer, the match retry
+// worker) exits without having been told to stop — that's a real liveness
+// failure (the process is silently missing work it should be doing),
+// unlike a Redis blip, which only affects readiness. See main.go's goSafe:
+// it calls this when fn() returns while its worker context has not been
+// cancelled. Idempotent — only the first reason is kept, since flapping
+// isn't useful once the state is already "not live".
+func (c *Checker) MarkNotLive(reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.state.Live {
+		return
+	}
+	c.state.Live = false
+	c.notLiveReason = reason
+}
+
+// MarkNotReady immediately flips Ready to false, ahead of the next
+// updateReady tick — called once graceful shutdown begins (the HTTP
+// listener is already closed by then; this just makes the reported state
+// match reality without waiting up to checkInterval for the ticker to
+// catch up).
+func (c *Checker) MarkNotReady() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.state.Ready = false
 }
 
 // Start begins the background health check goroutine

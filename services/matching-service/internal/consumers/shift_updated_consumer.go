@@ -8,7 +8,10 @@ import (
 	"matching-service/internal/application/command"
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
+	"github.com/oxf/MyUber/observability/obskafka"
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type ShiftUpdatedConsumer struct {
@@ -53,9 +56,17 @@ func (c *ShiftUpdatedConsumer) Run(ctx context.Context, topic string) {
 			event.Status,
 		)
 
-		if err := c.handleShiftUpdated(ctx, event); err != nil {
+		msgCtx := obskafka.Extract(ctx, msg.Headers)
+		msgCtx, span := tracer.Start(msgCtx, topic+" process",
+			trace.WithSpanKind(trace.SpanKindConsumer),
+			trace.WithAttributes(consumerSpanAttrs(topic)...),
+		)
+		if err := c.handleShiftUpdated(msgCtx, event); err != nil {
 			log.Println("handle error:", err)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 		}
+		span.End()
 	}
 }
 

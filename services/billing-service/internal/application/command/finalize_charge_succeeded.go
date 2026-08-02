@@ -10,6 +10,7 @@ import (
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // FinalizeChargeSucceeded resolves a payment attempt that the provider
@@ -32,6 +33,7 @@ type FinalizeChargeSucceededHandler struct {
 	transaction   services.TransactionManager
 	commissionBps int64
 	logger        *logrus.Entry
+	metrics       decorator.MetricsClient
 }
 
 func NewFinalizeChargeSucceededHandler(
@@ -53,6 +55,7 @@ func NewFinalizeChargeSucceededHandler(
 		transaction:   transaction,
 		commissionBps: commissionBps,
 		logger:        logger,
+		metrics:       metricsClient,
 	}
 
 	return decorator.ApplyCommandDecoratorsNoResult[FinalizeChargeSucceeded](
@@ -105,6 +108,10 @@ func (h *FinalizeChargeSucceededHandler) Handle(ctx context.Context, cmd Finaliz
 		}
 		if err := h.ledgerRepo.PostTransaction(ctx, domain.LedgerTxPaymentSucceeded, "invoice", inv.ID, inv.Currency, legs); err != nil {
 			return err
+		}
+
+		if h.metrics != nil {
+			h.metrics.IncCounter(ctx, "myubergo.payments.attempted", attribute.String("outcome", "success"))
 		}
 
 		driverID := ""

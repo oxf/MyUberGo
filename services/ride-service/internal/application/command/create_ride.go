@@ -11,6 +11,7 @@ import (
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // ClientID is auth.client(id) (from Kong's X-Client-Id header), not
@@ -41,6 +42,7 @@ type CreateRideHandler struct {
 	tariffRepo  domain.TariffRepository
 	outboxRepo  domain.OutboxRepository
 	transaction services.TransactionManager
+	metrics     decorator.MetricsClient
 }
 
 func NewCreateRideHandler(
@@ -57,6 +59,7 @@ func NewCreateRideHandler(
 		tariffRepo:  tariffRepo,
 		outboxRepo:  outboxRepo,
 		transaction: transaction,
+		metrics:     metricsClient,
 	}
 
 	return decorator.ApplyCommandDecorators[CreateRide, CreateRideResult](
@@ -167,6 +170,12 @@ func (h *CreateRideHandler) Handle(ctx context.Context, cmd CreateRide) (CreateR
 		}
 		return nil
 	})
+
+	if err == nil && h.metrics != nil {
+		currencyAttr := attribute.String("currency", tariff.Currency)
+		h.metrics.IncCounter(ctx, "myubergo.rides.requested", currencyAttr)
+		h.metrics.RecordValue(ctx, "myubergo.ride.estimated_fare_minor", float64(fareMinor), currencyAttr)
+	}
 
 	return result, err
 }

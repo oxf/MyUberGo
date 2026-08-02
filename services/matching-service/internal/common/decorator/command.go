@@ -5,15 +5,16 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/oxf/MyUber/observability/obsdecorator"
 	"github.com/sirupsen/logrus"
 )
 
 // ApplyCommandDecorators wraps a command handler that returns a result of type R
-// with logging and metrics decorators and returns the decorated handler.
+// with logging, metrics and tracing decorators and returns the decorated handler.
 func ApplyCommandDecorators[H any, R any](handler CommandHandler[H, R], logger *logrus.Entry, metricsClient MetricsClient) CommandHandler[H, R] {
 	return commandLoggingDecorator[H, R]{
 		base: commandMetricsDecorator[H, R]{
-			base:   handler,
+			base:   obsdecorator.TraceCommand[H, R](handler),
 			client: metricsClient,
 		},
 		logger: logger,
@@ -21,11 +22,11 @@ func ApplyCommandDecorators[H any, R any](handler CommandHandler[H, R], logger *
 }
 
 // ApplyCommandDecoratorsNoResult wraps a command handler that returns only an error
-// with logging and metrics decorators and returns the decorated handler.
+// with logging, metrics and tracing decorators and returns the decorated handler.
 func ApplyCommandDecoratorsNoResult[C any](handler CommandHandlerNoResult[C], logger *logrus.Entry, metricsClient MetricsClient) CommandHandlerNoResult[C] {
 	return commandLoggingDecoratorNoResult[C]{
 		base: commandMetricsDecoratorNoResult[C]{
-			base:   handler,
+			base:   obsdecorator.TraceCommandNoResult[C](handler),
 			client: metricsClient,
 		},
 		logger: logger,

@@ -1,0 +1,98 @@
+{
+  "uid": "myubergo-kafka-outbox",
+  "title": "MyUberGo / Kafka & Outbox",
+  "tags": ["myubergo"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Scope note",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "Publish/consume rate, error rate and latency below are derived from the `publish <topic>` (producer) and `<topic> process` (consumer) spans via the Collector's spanmetrics connector — every outbox worker and every Kafka consumer emits these automatically. **Not yet instrumented**: an explicit outbox backlog gauge (`pending`/`parked` message counts) — that would need a periodic `SELECT count(*) FROM *.outbox_message WHERE NOT processed` per service, tracked as a known gap rather than faked here. Until then, use the publish rate/error panels below as the proxy signal for outbox health."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Kafka publish rate by topic",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 3 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(traces_span_metrics_calls_total{span_name=~\"publish .+\"}[5m])) by (span_name, service_name)",
+          "legendFormat": "{{service_name}} — {{span_name}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Kafka publish error rate by topic",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 3 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(traces_span_metrics_calls_total{span_name=~\"publish .+\", status_code=\"STATUS_CODE_ERROR\"}[5m])) by (span_name, service_name)",
+          "legendFormat": "{{service_name}} — {{span_name}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Consumer processing rate by topic",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 11 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(traces_span_metrics_calls_total{span_name=~\".+ process\"}[5m])) by (span_name, service_name)",
+          "legendFormat": "{{service_name}} — {{span_name}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Consumer processing p95 duration by topic",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 11 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(traces_span_metrics_duration_milliseconds_bucket{span_name=~\".+ process\"}[5m])) by (le, span_name, service_name))",
+          "legendFormat": "{{service_name}} — {{span_name}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Kafka consumer group lag",
+      "description": "From the Collector's kafka_metrics receiver, scraped directly from the broker — not derived from spans.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "kafka_consumer_group_lag_ratio",
+          "legendFormat": "{{group}} — {{topic}} / partition {{partition}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    }
+  ]
+}

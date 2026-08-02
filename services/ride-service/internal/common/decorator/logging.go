@@ -13,12 +13,15 @@ import (
 
 // loggerFromContext attaches the per-request correlation ID (if any) to the
 // base logger, so a single HTTP request's handler/command/query log lines
-// can be grepped together.
+// can be grepped together. WithContext(ctx) is what lets obslog's
+// traceCorrelationHook and the OTel log bridge stamp trace_id/span_id and
+// ship the line to Loki linked to the active span, if any.
 func loggerFromContext(ctx context.Context, base *logrus.Entry) *logrus.Entry {
+	entry := base.WithContext(ctx)
 	if id, ok := reqctx.RequestID(ctx); ok {
-		return base.WithField("request_id", id)
+		entry = entry.WithField("request_id", id)
 	}
-	return base
+	return entry
 }
 
 func logOutcome(logger *logrus.Entry, err error, successMsg, notFoundMsg, failureMsg string) {

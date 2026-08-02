@@ -123,7 +123,15 @@ CREATE TABLE IF NOT EXISTS ride.outbox_message (
     payload JSONB NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     processed BOOLEAN DEFAULT FALSE,
-    retries INTEGER DEFAULT 0
+    retries INTEGER DEFAULT 0,
+    -- W3C trace context (JSON, e.g. {"traceparent":"00-...-...-01"}) active
+    -- when the row was inserted, captured by the outbox repository's Insert
+    -- inside the same transaction as the domain write — NULL for rows
+    -- inserted with no active trace. Lets the outbox worker's eventual
+    -- Kafka publish (running on its own background ticker context, with no
+    -- other link back to the originating HTTP request) still join that
+    -- request's trace. See services/observability/obsoutbox.
+    trace_context JSONB
 );
 
 CREATE INDEX idx_outbox_processed ON ride.outbox_message(processed);
@@ -167,7 +175,9 @@ CREATE TABLE IF NOT EXISTS driver.outbox_message (
     payload JSONB NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     processed BOOLEAN DEFAULT FALSE,
-    retries INTEGER DEFAULT 0
+    retries INTEGER DEFAULT 0,
+    -- See ride.outbox_message.trace_context for why this exists.
+    trace_context JSONB
     );
 
 CREATE INDEX idx_outbox_processed ON driver.outbox_message(processed);
@@ -349,7 +359,9 @@ CREATE TABLE IF NOT EXISTS billing.outbox_message (
     payload JSONB NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     processed BOOLEAN DEFAULT FALSE,
-    retries INTEGER DEFAULT 0
+    retries INTEGER DEFAULT 0,
+    -- See ride.outbox_message.trace_context for why this exists.
+    trace_context JSONB
 );
 
 CREATE INDEX idx_billing_outbox_processed ON billing.outbox_message(processed);

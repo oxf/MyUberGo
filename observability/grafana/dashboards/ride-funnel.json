@@ -1,0 +1,124 @@
+{
+  "uid": "myubergo-ride-funnel",
+  "title": "MyUberGo / Ride Funnel",
+  "tags": ["myubergo"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Ride lifecycle events / sec",
+      "description": "requested (ride-service) / completed (ride-service) / cancelled (ride-service).",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(myubergo_rides_requested_total[5m]))", "legendFormat": "requested", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "expr": "sum(rate(myubergo_rides_completed_total[5m]))", "legendFormat": "completed", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "expr": "sum(rate(myubergo_rides_cancelled_total[5m]))", "legendFormat": "cancelled", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Time to match (requested → matched)",
+      "description": "The headline product SLI — recorded by ride-service's MarkRideMatchedHandler as matched_at - requested_at.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(myubergo_ride_time_to_match_bucket[5m])) by (le))", "legendFormat": "p50", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "expr": "histogram_quantile(0.95, sum(rate(myubergo_ride_time_to_match_bucket[5m])) by (le))", "legendFormat": "p95", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Match accept result",
+      "description": "won / lost_race / expired / not_offered — from matching-service's AcceptRideHandler outcomes.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(myubergo_matching_accept_result_total[5m])) by (result)",
+          "legendFormat": "{{result}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Offer broadcast rounds per ride",
+      "description": "How many BroadcastOffers retry rounds a ride needed before matching or hitting the 5-attempt cap.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(myubergo_matching_broadcast_rounds_bucket[5m])) by (le))", "legendFormat": "p50", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "expr": "histogram_quantile(0.95, sum(rate(myubergo_matching_broadcast_rounds_bucket[5m])) by (le))", "legendFormat": "p95", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Rides failed to match / rate-limited offers",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(myubergo_matching_rides_failed_total[5m]))", "legendFormat": "rides failed (retry cap hit)", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "expr": "sum(rate(myubergo_matching_rate_limited_total[5m]))", "legendFormat": "offers rate-limited", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Drivers online",
+      "description": "ZCARD drivers:online, sampled on scrape via an observable gauge.",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "myubergo_drivers_online", "legendFormat": "online", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Avg estimated fare",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(myubergo_ride_estimated_fare_minor_sum[15m])) / sum(rate(myubergo_ride_estimated_fare_minor_count[15m]))",
+          "legendFormat": "minor units",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Driver shift starts/ends + status transitions",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(myubergo_shifts_started_total[5m]))", "legendFormat": "shifts started", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "expr": "sum(rate(myubergo_shifts_ended_total[5m]))", "legendFormat": "shifts ended", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        {
+          "expr": "sum(rate(myubergo_driver_status_transitions_total[5m])) by (from, to)",
+          "legendFormat": "{{from}} → {{to}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    }
+  ]
+}

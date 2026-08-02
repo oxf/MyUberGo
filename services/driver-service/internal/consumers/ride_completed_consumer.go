@@ -8,7 +8,11 @@ import (
 	"log"
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
+	"github.com/oxf/MyUber/observability/obskafka"
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type RideCompletedConsumer struct {
@@ -46,14 +50,26 @@ func (c *RideCompletedConsumer) Run(ctx context.Context, topic string) {
 			continue
 		}
 
-		handleCtx, cancel := context.WithTimeout(ctx, handleTimeout)
+		msgCtx := obskafka.Extract(ctx, msg.Headers)
+		msgCtx, span := consumerTracer.Start(msgCtx, topic+" process",
+			trace.WithSpanKind(trace.SpanKindConsumer),
+			trace.WithAttributes(
+				attribute.String("messaging.system", "kafka"),
+				attribute.String("messaging.destination.name", topic),
+			),
+		)
+
+		handleCtx, cancel := context.WithTimeout(msgCtx, handleTimeout)
 		if err := c.app.Commands.ProcessRideCompleted.Handle(handleCtx, command.ProcessRideCompleted{
 			RideID:     event.RideID,
 			DriverID:   event.DriverID,
 			FinishedAt: event.FinishedAt,
 		}); err != nil {
 			log.Println("handle error:", err)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 		}
 		cancel()
+		span.End()
 	}
 }

@@ -3,13 +3,14 @@ package decorator
 import (
 	"context"
 
+	"github.com/oxf/MyUber/observability/obsdecorator"
 	"github.com/sirupsen/logrus"
 )
 
 func ApplyQueryDecorators[H any, R any](handler QueryHandler[H, R], logger *logrus.Entry, metricsClient MetricsClient) QueryHandler[H, R] {
 	return queryLoggingDecorator[H, R]{
 		base: queryMetricsDecorator[H, R]{
-			base:   handler,
+			base:   obsdecorator.TraceQuery[H, R](handler),
 			client: metricsClient,
 		},
 		logger: logger,

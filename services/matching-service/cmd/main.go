@@ -20,17 +20,35 @@ import (
 	"matching-service/internal/interfaces/http/middleware"
 	"matching-service/internal/workers"
 
+	"github.com/oxf/MyUber/observability/obshttp"
+	"github.com/oxf/MyUber/observability/obslog"
+	"github.com/oxf/MyUber/observability/otelinit"
+	"github.com/redis/go-redis/extra/redisotel/v9"
 	"github.com/redis/go-redis/v9"
 	"github.com/sirupsen/logrus"
 )
+
+const serviceName = "matching-service"
 
 func main() {
 	// `app healthcheck` is invoked by Docker's HEALTHCHECK (see
 	// docker-compose.yml) — distroless has no shell/curl for a CMD-SHELL
 	// check, so the binary probes its own /health/ready and exits 0/1.
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		healthcheckSelf("http://localhost:" + getenv("SERVICE_PORT", "8002") + "/health/ready")
+		healthcheckSelf("http://localhost:" + getenv("SERVICE_PORT", "8002") + "/health/live")
 	}
+
+	// otelinit.Setup reads the standard OTEL_* env vars (see
+	// docker-compose.yml) and installs the global tracer/meter/logger
+	// providers. It never fails the boot on a down Collector — OTLP/gRPC
+	// exporters dial lazily and retry in the background.
+	ctx := context.Background()
+	providers, err := otelinit.Setup(ctx, serviceName)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	logger := obslog.NewLogger(serviceName)
 
 	redisUrl := getenv("REDIS_URL", "redis:6379")
 	redisDb := redis.NewClient(&redis.Options{
@@ -38,6 +56,12 @@ func main() {
 		Password: "",
 		DB:       0,
 	})
+	if err := redisotel.InstrumentTracing(redisDb); err != nil {
+		log.Fatal(err)
+	}
+	if err := redisotel.InstrumentMetrics(redisDb); err != nil {
+		log.Fatal(err)
+	}
 
 	kafkaBroker := getenv("KAFKA_BROKER", "kafka:29092")
 	port := getenv("SERVICE_PORT", "8002")
@@ -46,9 +70,20 @@ func main() {
 	rideRepo := cache.NewRideRepository(redisDb)
 	offerRepo := cache.NewOfferRepository(redisDb)
 
-	// create logger and metrics client used by decorators
-	logger := logrus.NewEntry(logrus.New())
-	metricsClient := metrics.NewLoggingMetricsClient(logger)
+	// The concrete *obsmetrics.Client (satisfies decorator.MetricsClient via
+	// Go's structural interface typing) so the drivers-online observable
+	// gauge below can be registered on it directly.
+	metricsClient := metrics.NewOtelMetricsClient(serviceName)
+
+	if err := metricsClient.Gauge(
+		"myubergo.drivers.online",
+		nil,
+		func(ctx context.Context) (int64, error) {
+			return redisDb.ZCard(ctx, "drivers:online").Result()
+		},
+	); err != nil {
+		log.Fatal(err)
+	}
 
 	publisher := kafkainfra.NewPublisher(kafkaBroker)
 	defer publisher.Close()
@@ -86,7 +121,7 @@ func main() {
 	// Create HTTP server
 	server := &http.Server{
 		Addr:         ":" + port,
-		Handler:      middleware.BodyLimit(middleware.RequestID(middleware.Recover(logger)(mux))),
+		Handler:      middleware.BodyLimit(middleware.RequestID(obshttp.Handler(middleware.Recover(logger)(mux), serviceName))),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -94,6 +129,22 @@ func main() {
 
 	// Create shutdown manager with 30s timeout
 	shutdownManager := shutdown.NewManager(server, 30*time.Second)
+
+	// GET /health/ready should stop reporting healthy the moment shutdown
+	// begins, not up to checkInterval later — the ticker-based Redis-ping
+	// check alone wouldn't catch this promptly.
+	shutdownManager.OnStop(healthChecker.MarkNotReady)
+
+	// Flush/close the trace/metric/log providers during graceful shutdown,
+	// after the HTTP server stops accepting new requests but before the
+	// process exits, so in-flight batched telemetry isn't dropped on exit.
+	shutdownManager.OnStop(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := providers.Shutdown(shutdownCtx); err != nil {
+			log.Printf("observability shutdown error: %v\n", err)
+		}
+	})
 
 	// Cancellable context for background goroutines (Kafka consumers + retry worker)
 	bgCtx, cancelBg := context.WithCancel(context.Background())
@@ -104,15 +155,15 @@ func main() {
 	rideCancelledConsumer := consumers.NewRideCancelledConsumer(application, kafkaBroker)
 
 	shutdownManager.Add(3)
-	goSafe(logger, "ride-requested-consumer", func() {
+	goSafe(logger, healthChecker, bgCtx, "ride-requested-consumer", func() {
 		defer shutdownManager.Done()
 		rideConsumer.Run(bgCtx, "ride.requested")
 	})
-	goSafe(logger, "shift-updated-consumer", func() {
+	goSafe(logger, healthChecker, bgCtx, "shift-updated-consumer", func() {
 		defer shutdownManager.Done()
 		driverConsumer.Run(bgCtx, "shift.updated")
 	})
-	goSafe(logger, "ride-cancelled-consumer", func() {
+	goSafe(logger, healthChecker, bgCtx, "ride-cancelled-consumer", func() {
 		defer shutdownManager.Done()
 		rideCancelledConsumer.Run(bgCtx, "ride.cancelled")
 	})
@@ -121,13 +172,13 @@ func main() {
 	// rides whose deadline lapsed without an accept.
 	retryWorker := workers.NewMatchRetryWorker(offerRepo, application.Commands.BroadcastOffers, logger, 5*time.Second)
 	shutdownManager.Add(1)
-	goSafe(logger, "match-retry-worker", func() {
+	goSafe(logger, healthChecker, bgCtx, "match-retry-worker", func() {
 		defer shutdownManager.Done()
 		retryWorker.Run(bgCtx)
 	})
 
 	// Start server in a goroutine
-	goSafe(logger, "http-server", func() {
+	goSafe(logger, healthChecker, nil, "http-server", func() {
 		log.Println("matching-service listening on :" + port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("Server error: %v\n", err)
@@ -161,12 +212,22 @@ func healthcheckSelf(url string) {
 }
 
 // goSafe launches fn in a goroutine, recovering any panic so one bad
-// message/query doesn't take the whole process down silently.
-func goSafe(logger *logrus.Entry, name string, fn func()) {
+// message/query doesn't take the whole process down silently. If workerCtx
+// is non-nil and fn returns while workerCtx.Err() is still nil — i.e. fn
+// exited (crashed or returned early) without being told to stop — that's a
+// genuine liveness failure: a background worker this service depends on
+// (a Kafka consumer, the match retry worker) is gone and won't come back,
+// and GET /health/live should say so. Pass a nil workerCtx for goroutines
+// with no associated cancellation context, like the HTTP server itself,
+// which exits cleanly via http.ErrServerClosed on a normal shutdown.
+func goSafe(logger *logrus.Entry, healthChecker *health.Checker, workerCtx context.Context, name string, fn func()) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				logger.WithField("goroutine", name).WithField("panic", r).Error("recovered from panic")
+			}
+			if workerCtx != nil && workerCtx.Err() == nil {
+				healthChecker.MarkNotLive(name + " exited unexpectedly")
 			}
 		}()
 		fn()

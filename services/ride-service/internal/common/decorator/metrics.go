@@ -3,25 +3,32 @@ package decorator
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strings"
 	"time"
 
 	commonerrors "ride-service/internal/common/errors"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
+// MetricsClient's methods take ctx (so the SDK can attach exemplars linking
+// a measurement to the currently active span) and variadic attributes
+// (so e.g. commands.*.{success,failure,duration_ms} collapses from a
+// cartesian product of key strings into one histogram sliceable by
+// command.name/outcome).
 type MetricsClient interface {
-	Inc(key string, value int)
+	IncCounter(ctx context.Context, name string, attrs ...attribute.KeyValue)
+	RecordDuration(ctx context.Context, name string, d time.Duration, attrs ...attribute.KeyValue)
+	RecordValue(ctx context.Context, name string, value float64, attrs ...attribute.KeyValue)
 }
 
-func recordOutcome(client MetricsClient, prefix string, err error) {
+func outcomeOf(err error) string {
 	switch {
 	case err == nil:
-		client.Inc(prefix+".success", 1)
+		return "success"
 	case errors.Is(err, commonerrors.ErrNotFound):
-		client.Inc(prefix+".notfound", 1)
+		return "notfound"
 	default:
-		client.Inc(prefix+".failure", 1)
+		return "failure"
 	}
 }
 
@@ -33,11 +40,13 @@ type commandMetricsDecorator[C any, R any] struct {
 func (d commandMetricsDecorator[C, R]) Handle(ctx context.Context, cmd C) (result R, err error) {
 	start := time.Now()
 
-	actionName := strings.ToLower(generateActionName(cmd))
+	actionName := generateActionName(cmd)
 
 	defer func() {
-		d.client.Inc(fmt.Sprintf("commands.%s.duration_ms", actionName), int(time.Since(start).Milliseconds()))
-		recordOutcome(d.client, fmt.Sprintf("commands.%s", actionName), err)
+		d.client.RecordDuration(ctx, "myubergo.command.duration", time.Since(start),
+			attribute.String("command.name", actionName),
+			attribute.String("outcome", outcomeOf(err)),
+		)
 	}()
 
 	return d.base.Handle(ctx, cmd)
@@ -51,11 +60,13 @@ type commandMetricsDecoratorNoResult[C any] struct {
 func (d commandMetricsDecoratorNoResult[C]) Handle(ctx context.Context, cmd C) (err error) {
 	start := time.Now()
 
-	actionName := strings.ToLower(generateActionName(cmd))
+	actionName := generateActionName(cmd)
 
 	defer func() {
-		d.client.Inc(fmt.Sprintf("commands.%s.duration_ms", actionName), int(time.Since(start).Milliseconds()))
-		recordOutcome(d.client, fmt.Sprintf("commands.%s", actionName), err)
+		d.client.RecordDuration(ctx, "myubergo.command.duration", time.Since(start),
+			attribute.String("command.name", actionName),
+			attribute.String("outcome", outcomeOf(err)),
+		)
 	}()
 
 	return d.base.Handle(ctx, cmd)
@@ -69,11 +80,13 @@ type queryMetricsDecorator[C any, R any] struct {
 func (d queryMetricsDecorator[C, R]) Handle(ctx context.Context, query C) (result R, err error) {
 	start := time.Now()
 
-	actionName := strings.ToLower(generateActionName(query))
+	actionName := generateActionName(query)
 
 	defer func() {
-		d.client.Inc(fmt.Sprintf("queries.%s.duration_ms", actionName), int(time.Since(start).Milliseconds()))
-		recordOutcome(d.client, fmt.Sprintf("queries.%s", actionName), err)
+		d.client.RecordDuration(ctx, "myubergo.query.duration", time.Since(start),
+			attribute.String("query.name", actionName),
+			attribute.String("outcome", outcomeOf(err)),
+		)
 	}()
 
 	return d.base.Handle(ctx, query)

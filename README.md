@@ -184,9 +184,9 @@ To facilitate learning, the services are designed in progressive architectural c
 *   [ ] **Notification Service**: consume every ride/shift/payment event and fan out push/SMS/email per template, with delivery-status tracking.
 
 ### Phase 4: Production Quality & Observability
-*   [ ] Standardize structured logging using `zap` or `logrus` across all services.
-*   [ ] Implement OpenTelemetry tracing to trace requests end-to-end from the Gateway through PostgreSQL and Kafka.
-*   [ ] Set up Prometheus metric endpoints for HTTP response rates/latencies and Kafka message consumption times.
+*   [x] Standardize structured logging using `logrus` across all services — JSON to stdout, level from `LOG_LEVEL`, trace_id/span_id correlation (`services/observability/obslog`).
+*   [x] Implement OpenTelemetry tracing to trace requests end-to-end from the Gateway through PostgreSQL and Kafka — Kong originates the trace via its `opentelemetry` plugin, all 5 services propagate it (including through the transactional outbox, via a persisted `trace_context` column — see CLAUDE.md's "Observability (OpenTelemetry)" section). Traces land in Tempo, viewable in Grafana at `http://localhost:3000`.
+*   [x] Set up metrics for HTTP response rates/latencies and Kafka message consumption times — via the OTel Collector's `spanmetrics`/`servicegraph` connectors and `kafkametrics` receiver (RED per service/operation, consumer-group lag), exported to Prometheus; see `observability/grafana/dashboards/` for the provisioned Platform Overview, Ride Funnel, Kafka & Outbox, and Billing dashboards. Deliberately not a `/metrics`-per-service Prometheus scrape endpoint — everything pushes to the Collector over OTLP instead, one protocol end-to-end.
 
 ---
 

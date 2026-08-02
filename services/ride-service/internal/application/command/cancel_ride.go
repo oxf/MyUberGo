@@ -30,6 +30,7 @@ type CancelRideHandler struct {
 	outboxRepo    domain.OutboxRepository
 	transaction   services.TransactionManager
 	feeCalculator services.CancellationFeeCalculator
+	metrics       decorator.MetricsClient
 }
 
 func NewCancelRideHandler(
@@ -46,6 +47,7 @@ func NewCancelRideHandler(
 		outboxRepo:    outboxRepo,
 		transaction:   transaction,
 		feeCalculator: feeCalculator,
+		metrics:       metricsClient,
 	}
 
 	return decorator.ApplyCommandDecorators[CancelRide, CancelRideResult](
@@ -108,6 +110,10 @@ func (h *CancelRideHandler) Handle(ctx context.Context, cmd CancelRide) (CancelR
 		result = CancelRideResult{Status: "Cancelled", FeeMinor: feeMinor, Currency: feeCurrency}
 		return nil
 	})
+
+	if err == nil && h.metrics != nil {
+		h.metrics.IncCounter(ctx, "myubergo.rides.cancelled")
+	}
 
 	return result, err
 }

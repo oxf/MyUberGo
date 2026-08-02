@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // CreateInvoiceFromRide is shared by both the ride.completed and
@@ -29,6 +30,7 @@ type CreateInvoiceFromRideHandler struct {
 	transaction   services.TransactionManager
 	commissionBps int64
 	logger        *logrus.Entry
+	metrics       decorator.MetricsClient
 }
 
 func NewCreateInvoiceFromRideHandler(
@@ -46,6 +48,7 @@ func NewCreateInvoiceFromRideHandler(
 		transaction:   transaction,
 		commissionBps: commissionBps,
 		logger:        logger,
+		metrics:       metricsClient,
 	}
 
 	return decorator.ApplyCommandDecoratorsNoResult[CreateInvoiceFromRide](
@@ -107,6 +110,15 @@ func (h *CreateInvoiceFromRideHandler) Handle(ctx context.Context, cmd CreateInv
 		h.logger.WithField("ride_id", cmd.RideID).Info("invoice already exists for this ride/type, treating as no-op")
 		return nil
 	}
+
+	if err == nil && h.metrics != nil {
+		h.metrics.IncCounter(ctx, "myubergo.invoices.created", attribute.String("type", cmd.Type))
+		h.metrics.RecordValue(ctx, "myubergo.payment.amount_minor", float64(cmd.AmountMinor),
+			attribute.String("currency", cmd.Currency),
+			attribute.String("type", cmd.Type),
+		)
+	}
+
 	return err
 }
 

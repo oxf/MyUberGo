@@ -12,6 +12,7 @@ import (
 	contracts "github.com/oxf/MyUber/contracts/http"
 
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type Login struct {
@@ -32,6 +33,7 @@ type LoginHandler struct {
 	hasher      services.PasswordHasher
 	tokenIssuer services.TokenIssuer
 	logger      *logrus.Entry
+	metrics     decorator.MetricsClient
 }
 
 func NewLoginHandler(
@@ -44,7 +46,7 @@ func NewLoginHandler(
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandler[Login, LoginResult] {
 
-	handler := &LoginHandler{repo: repo, clientRepo: clientRepo, refreshRepo: refreshRepo, hasher: hasher, tokenIssuer: tokenIssuer, logger: logger}
+	handler := &LoginHandler{repo: repo, clientRepo: clientRepo, refreshRepo: refreshRepo, hasher: hasher, tokenIssuer: tokenIssuer, logger: logger, metrics: metricsClient}
 
 	return decorator.ApplyCommandDecorators[Login, LoginResult](
 		handler,
@@ -56,27 +58,33 @@ func NewLoginHandler(
 func (h *LoginHandler) Handle(ctx context.Context, cmd Login) (LoginResult, error) {
 	user, err := h.repo.GetByEmail(ctx, cmd.Email)
 	if errors.Is(err, commonerrors.ErrNotFound) {
+		h.incLogins(ctx, "failure")
 		return LoginResult{}, commonerrors.ErrInvalidCredentials
 	}
 	if err != nil {
+		h.incLogins(ctx, "failure")
 		return LoginResult{}, err
 	}
 
 	if err := h.hasher.Compare(user.PasswordHash, cmd.Password); err != nil {
+		h.incLogins(ctx, "failure")
 		return LoginResult{}, commonerrors.ErrInvalidCredentials
 	}
 
 	clientID, err := h.lookupClientID(ctx, user)
 	if err != nil {
+		h.incLogins(ctx, "failure")
 		return LoginResult{}, err
 	}
 
 	accessToken, expiresIn, err := h.tokenIssuer.IssueAccess(user.ID, user.Email, user.Role, clientID)
 	if err != nil {
+		h.incLogins(ctx, "failure")
 		return LoginResult{}, err
 	}
 	refreshToken, expiresAt, err := h.tokenIssuer.IssueRefresh(user.ID)
 	if err != nil {
+		h.incLogins(ctx, "failure")
 		return LoginResult{}, err
 	}
 
@@ -86,7 +94,15 @@ func (h *LoginHandler) Handle(ctx context.Context, cmd Login) (LoginResult, erro
 		h.logger.WithError(err).Warn("failed to store refresh token")
 	}
 
+	h.incLogins(ctx, "success")
 	return LoginResult{AccessToken: accessToken, RefreshToken: refreshToken, ExpiresIn: expiresIn}, nil
+}
+
+func (h *LoginHandler) incLogins(ctx context.Context, outcome string) {
+	if h.metrics == nil {
+		return
+	}
+	h.metrics.IncCounter(ctx, "myubergo.logins", attribute.String("outcome", outcome))
 }
 
 // lookupClientID resolves the client row's id for the client_id JWT claim.

@@ -14,6 +14,19 @@ consumers:
         algorithm: HS256
         secret: secret_change_me # local-dev default; override to match JWT_SECRET in real deployments
 
+# Global plugin (no service/route scoping) — originates a trace for every
+# proxied request and exports it to the Collector, which fans it out to
+# Tempo/Prometheus(spanmetrics)/the service graph. Downstream Go services
+# join this trace by extracting the traceparent header the plugin injects.
+plugins:
+  - name: opentelemetry
+    config:
+      endpoint: http://otel-collector:4318/v1/traces
+      resource_attributes:
+        service.name: kong
+      propagation:
+        default_format: w3c
+
 services:
   # -- auth-service: /signup, /login, /refresh are public (no token yet) --
   - name: auth-service-public

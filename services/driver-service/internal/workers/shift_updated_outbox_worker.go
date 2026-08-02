@@ -6,8 +6,15 @@ import (
 	"driver-service/internal/domain"
 	"time"
 
+	"github.com/oxf/MyUber/observability/obsoutbox"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+var tracer = otel.Tracer("driver-service/outbox")
 
 const (
 	defaultBatchSize      = 10
@@ -85,11 +92,29 @@ func (w *OutboxWorker) processBatch(ctx context.Context) error {
 				continue
 			}
 
-			publishCtx, cancel := context.WithTimeout(txCtx, defaultPublishTimeout)
+			// Rehydrate the trace that was active when this row was inserted
+			// (see obsoutbox), so "publish <topic>" joins the originating
+			// request's trace instead of starting a disconnected one — the
+			// worker's own txCtx has no link back to that request.
+			msgCtx := obsoutbox.UnmarshalTraceContext(txCtx, m.TraceContext)
+			msgCtx, span := tracer.Start(msgCtx, "publish "+m.Topic,
+				trace.WithSpanKind(trace.SpanKindProducer),
+				trace.WithAttributes(
+					attribute.String("messaging.system", "kafka"),
+					attribute.String("messaging.destination.name", m.Topic),
+					attribute.String("outbox.event_type", m.EventType),
+				),
+			)
+
+			publishCtx, cancel := context.WithTimeout(msgCtx, defaultPublishTimeout)
 			err := w.publisher.Publish(publishCtx, m.Topic, m.Payload)
 			cancel()
 
 			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				span.End()
+
 				w.logger.WithError(err).WithField("outbox_id", m.ID).Warn("outbox worker: publish failed, will retry")
 
 				if retryErr := w.repo.IncrementRetries(txCtx, m.ID); retryErr != nil {
@@ -98,6 +123,7 @@ func (w *OutboxWorker) processBatch(ctx context.Context) error {
 
 				continue
 			}
+			span.End()
 
 			if err := w.repo.MarkProcessed(txCtx, m.ID); err != nil {
 				return err

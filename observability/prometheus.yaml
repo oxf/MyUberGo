@@ -1,0 +1,6 @@
+# All metrics arrive via the OTel Collector's OTLP push (see
+# --web.enable-otlp-receiver in docker-compose.yml) — no scrape_configs are
+# needed since no service exposes a /metrics endpoint to pull from.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s

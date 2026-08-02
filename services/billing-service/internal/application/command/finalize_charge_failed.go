@@ -10,6 +10,7 @@ import (
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // FinalizeChargeFailed resolves a payment attempt that the provider (or a
@@ -32,6 +33,7 @@ type FinalizeChargeFailedHandler struct {
 	maxAttempts int
 	backoff     []time.Duration
 	logger      *logrus.Entry
+	metrics     decorator.MetricsClient
 }
 
 func NewFinalizeChargeFailedHandler(
@@ -55,6 +57,7 @@ func NewFinalizeChargeFailedHandler(
 		maxAttempts: maxAttempts,
 		backoff:     backoff,
 		logger:      logger,
+		metrics:     metricsClient,
 	}
 
 	return decorator.ApplyCommandDecoratorsNoResult[FinalizeChargeFailed](
@@ -74,6 +77,10 @@ func (h *FinalizeChargeFailedHandler) Handle(ctx context.Context, cmd FinalizeCh
 			h.logger.WithField("payment_id", cmd.PaymentID).Info(
 				"finalize charge failed: payment already resolved, skipping")
 			return nil
+		}
+
+		if h.metrics != nil {
+			h.metrics.IncCounter(ctx, "myubergo.payments.attempted", attribute.String("outcome", "failed"))
 		}
 
 		inv, err := h.invoiceRepo.GetByID(ctx, cmd.InvoiceID)

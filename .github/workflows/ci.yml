@@ -18,6 +18,8 @@ jobs:
           - driver-service
           - matching-service
           - billing-service
+          - contracts
+          - observability
     defaults:
       run:
         working-directory: services/${{ matrix.service }}

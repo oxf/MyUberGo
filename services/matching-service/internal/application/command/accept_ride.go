@@ -12,6 +12,7 @@ import (
 
 	contracts "github.com/oxf/MyUber/contracts/kafka"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // AcceptRide is a driver's claim on an offered ride. The claim itself is a
@@ -27,6 +28,7 @@ type AcceptRideHandler struct {
 	offers    domain.OfferRepository
 	publisher services.EventPublisher
 	logger    *logrus.Entry
+	metrics   decorator.MetricsClient
 }
 
 func NewAcceptRideHandler(
@@ -40,8 +42,14 @@ func NewAcceptRideHandler(
 	if rides == nil || drivers == nil || offers == nil || publisher == nil {
 		panic("nil dependency")
 	}
-	handler := &AcceptRideHandler{rides: rides, drivers: drivers, offers: offers, publisher: publisher, logger: logger}
+	handler := &AcceptRideHandler{rides: rides, drivers: drivers, offers: offers, publisher: publisher, logger: logger, metrics: metricsClient}
 	return decorator.ApplyCommandDecoratorsNoResult[AcceptRide](handler, logger, metricsClient)
+}
+
+func (h *AcceptRideHandler) recordAcceptResult(ctx context.Context, result string) {
+	if h.metrics != nil {
+		h.metrics.IncCounter(ctx, "myubergo.matching.accept_result", attribute.String("result", result))
+	}
 }
 
 func (h *AcceptRideHandler) Handle(ctx context.Context, cmd AcceptRide) error {
@@ -54,6 +62,7 @@ func (h *AcceptRideHandler) Handle(ctx context.Context, cmd AcceptRide) error {
 		return err
 	}
 	if cancelled {
+		h.recordAcceptResult(ctx, "expired")
 		return cmnerrors.ErrOfferGone
 	}
 
@@ -66,6 +75,7 @@ func (h *AcceptRideHandler) Handle(ctx context.Context, cmd AcceptRide) error {
 		return err
 	}
 	if acceptedBy != "" {
+		h.recordAcceptResult(ctx, "lost_race")
 		return cmnerrors.ErrRideTaken
 	}
 
@@ -75,6 +85,7 @@ func (h *AcceptRideHandler) Handle(ctx context.Context, cmd AcceptRide) error {
 	}
 	if offeredRide != cmd.RideID {
 		// Offer expired (TTL lapsed) or this ride was never offered to them.
+		h.recordAcceptResult(ctx, "not_offered")
 		return cmnerrors.ErrOfferGone
 	}
 
@@ -83,6 +94,7 @@ func (h *AcceptRideHandler) Handle(ctx context.Context, cmd AcceptRide) error {
 		return err
 	}
 	if !won {
+		h.recordAcceptResult(ctx, "lost_race")
 		return cmnerrors.ErrRideTaken
 	}
 
@@ -126,5 +138,6 @@ func (h *AcceptRideHandler) Handle(ctx context.Context, cmd AcceptRide) error {
 			h.logger.WithError(err).Errorf("failed to publish ride.accepted for ride %s", cmd.RideID)
 		}
 	}
+	h.recordAcceptResult(ctx, "won")
 	return nil
 }

@@ -8,8 +8,15 @@ import (
 	"ride-service/internal/application/command"
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
+	"github.com/oxf/MyUber/observability/obskafka"
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+var paymentCompletedTracer = otel.Tracer("ride-service/consumer")
 
 // PaymentCompletedConsumer closes the loop documented in the README: once
 // billing-service collects payment, ride-service flips ride.ride.bill_id so
@@ -51,13 +58,25 @@ func (c *PaymentCompletedConsumer) Run(ctx context.Context, topic string) {
 
 		log.Printf("Payment completed received. RideID=%s InvoiceID=%s", event.RideID, event.InvoiceID)
 
-		handleCtx, cancel := context.WithTimeout(ctx, handleTimeout)
+		msgCtx := obskafka.Extract(ctx, msg.Headers)
+		msgCtx, span := paymentCompletedTracer.Start(msgCtx, topic+" process",
+			trace.WithSpanKind(trace.SpanKindConsumer),
+			trace.WithAttributes(
+				attribute.String("messaging.system", "kafka"),
+				attribute.String("messaging.destination.name", topic),
+			),
+		)
+
+		handleCtx, cancel := context.WithTimeout(msgCtx, handleTimeout)
 		if err := c.app.Commands.MarkRideBilled.Handle(handleCtx, command.MarkRideBilled{
 			RideID:    event.RideID,
 			InvoiceID: event.InvoiceID,
 		}); err != nil {
 			log.Println("handle error:", err)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 		}
 		cancel()
+		span.End()
 	}
 }

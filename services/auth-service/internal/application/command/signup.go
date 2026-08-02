@@ -11,6 +11,7 @@ import (
 	contracts "github.com/oxf/MyUber/contracts/http"
 
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type Signup struct {
@@ -30,6 +31,7 @@ type SignupHandler struct {
 	clientRepo  domain.ClientRepository
 	hasher      services.PasswordHasher
 	transaction services.TransactionManager
+	metrics     decorator.MetricsClient
 }
 
 func NewSignupHandler(
@@ -41,7 +43,7 @@ func NewSignupHandler(
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandler[Signup, SignupResult] {
 
-	handler := &SignupHandler{repo: repo, clientRepo: clientRepo, hasher: hasher, transaction: transaction}
+	handler := &SignupHandler{repo: repo, clientRepo: clientRepo, hasher: hasher, transaction: transaction, metrics: metricsClient}
 
 	return decorator.ApplyCommandDecorators[Signup, SignupResult](
 		handler,
@@ -90,6 +92,10 @@ func (h *SignupHandler) Handle(ctx context.Context, cmd Signup) (SignupResult, e
 		result = SignupResult{UserID: id}
 		return nil
 	})
+
+	if err == nil && h.metrics != nil {
+		h.metrics.IncCounter(ctx, "myubergo.signups", attribute.String("role", string(cmd.Role)))
+	}
 
 	return result, err
 }

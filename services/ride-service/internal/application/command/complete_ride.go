@@ -27,6 +27,7 @@ type CompleteRideHandler struct {
 	repo        domain.RideRepository
 	outboxRepo  domain.OutboxRepository
 	transaction services.TransactionManager
+	metrics     decorator.MetricsClient
 }
 
 func NewCompleteRideHandler(
@@ -41,6 +42,7 @@ func NewCompleteRideHandler(
 		repo:        repo,
 		outboxRepo:  outboxRepo,
 		transaction: transaction,
+		metrics:     metricsClient,
 	}
 
 	return decorator.ApplyCommandDecorators[CompleteRide, CompleteRideResult](
@@ -94,6 +96,10 @@ func (h *CompleteRideHandler) Handle(ctx context.Context, cmd CompleteRide) (Com
 		result = CompleteRideResult{Status: "Completed", FinishedAt: finishedAt.Format(time.RFC3339)}
 		return nil
 	})
+
+	if err == nil && h.metrics != nil {
+		h.metrics.IncCounter(ctx, "myubergo.rides.completed")
+	}
 
 	return result, err
 }
