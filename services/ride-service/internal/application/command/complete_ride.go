@@ -11,6 +11,7 @@ import (
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type CompleteRide struct {
@@ -54,6 +55,7 @@ func NewCompleteRideHandler(
 
 func (h *CompleteRideHandler) Handle(ctx context.Context, cmd CompleteRide) (CompleteRideResult, error) {
 	var result CompleteRideResult
+	var currency string
 	err := h.transaction.WithinTransaction(ctx, func(ctx context.Context) error {
 		ride, err := h.repo.GetRideForUpdate(ctx, cmd.RideID)
 		if err != nil {
@@ -93,12 +95,13 @@ func (h *CompleteRideHandler) Handle(ctx context.Context, cmd CompleteRide) (Com
 			return err
 		}
 
+		currency = ride.Currency
 		result = CompleteRideResult{Status: "Completed", FinishedAt: finishedAt.Format(time.RFC3339)}
 		return nil
 	})
 
 	if err == nil && h.metrics != nil {
-		h.metrics.IncCounter(ctx, "myubergo.rides.completed")
+		h.metrics.IncCounter(ctx, "myubergo.rides.completed", attribute.String("currency", currency))
 	}
 
 	return result, err

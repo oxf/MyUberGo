@@ -4,21 +4,21 @@ import (
 	app "billing-service/internal/application"
 	"billing-service/internal/application/query"
 	"net/http"
+
+	"github.com/sirupsen/logrus"
 )
 
 type LedgerHandler struct {
-	app app.Application
+	app    app.Application
+	logger *logrus.Entry
 }
 
-func NewLedgerHandler(app app.Application) *LedgerHandler {
-	return &LedgerHandler{app: app}
+func NewLedgerHandler(app app.Application, logger *logrus.Entry) *LedgerHandler {
+	return &LedgerHandler{app: app, logger: logger}
 }
 
-// GetBalance is Admin-only at the Kong gateway — the cheapest possible
-// regression check for the double-entry invariants (BILLING_SPEC.md §10):
-// e2e-test asserts client_receivable == fare after T1, psp_clearing ==
-// fare after T2, and that a client with one EUR and one USD ride has two
-// distinct balances.
+// GetBalance is Admin-only at the Kong gateway — the cheapest regression
+// check for the double-entry invariants e2e-test asserts (BILLING_SPEC.md §10).
 func (h *LedgerHandler) GetBalance(w http.ResponseWriter, r *http.Request) {
 	accountType := r.URL.Query().Get("type")
 	currency := r.URL.Query().Get("currency")
@@ -32,7 +32,7 @@ func (h *LedgerHandler) GetBalance(w http.ResponseWriter, r *http.Request) {
 		AccountType: accountType, OwnerID: ownerID, Currency: currency,
 	})
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 

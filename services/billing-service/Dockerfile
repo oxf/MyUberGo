@@ -10,6 +10,7 @@ RUN apk add --no-cache git
 COPY services/billing-service/go.mod services/billing-service/go.sum ./
 COPY services/contracts /contracts
 COPY services/observability /observability
+COPY services/common /common
 RUN go mod download
 
 # Copy the billing-service source (cmd and internal packages). Use the whole

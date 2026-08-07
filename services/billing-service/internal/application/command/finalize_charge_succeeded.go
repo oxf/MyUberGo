@@ -13,16 +13,15 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-// FinalizeChargeSucceeded resolves a payment attempt that the provider
-// reported as succeeded. It is deliberately shared between ChargeWorker
-// (the synchronous answer from a Charge call) and, in a later pass, a
-// Stripe webhook handler (the asynchronous answer) — both resolve the same
-// payment/invoice pair through this one command, so the ledger is only ever
-// posted once no matter which caller wins the race.
+// FinalizeChargeSucceeded resolves a payment attempt the provider reported as succeeded. Deliberately shared
+// between ChargeWorker's synchronous path and a Stripe webhook's async path, so the ledger posts exactly once.
 type FinalizeChargeSucceeded struct {
 	PaymentID        string
 	InvoiceID        string
 	ProviderIntentID string
+	// Provider is the payment.provider value the caller already has in hand — see
+	// FinalizeChargeFailed.Provider's doc comment for why it's threaded through rather than looked up again.
+	Provider string
 }
 
 type FinalizeChargeSucceededHandler struct {
@@ -66,19 +65,22 @@ func NewFinalizeChargeSucceededHandler(
 }
 
 func (h *FinalizeChargeSucceededHandler) Handle(ctx context.Context, cmd FinalizeChargeSucceeded) error {
-	return h.transaction.WithinTransaction(ctx, func(ctx context.Context) error {
+	// See FinalizeChargeFailedHandler.Handle's identical comment: the metric fires only after WithinTransaction
+	// returns successfully, so a later rollback can't leave a phantom "attempted" count for an uncommitted payment.
+	attempted := false
+	err := h.transaction.WithinTransaction(ctx, func(ctx context.Context) error {
 		won, err := h.paymentRepo.MarkSucceeded(ctx, cmd.PaymentID, cmd.ProviderIntentID)
 		if err != nil {
 			return err
 		}
 		if !won {
-			// Already resolved by a concurrent finalize (e.g. the worker and
-			// a webhook racing for the same payment) — a no-op, not a
-			// failure, is exactly the point of the guarded update.
+			// Already resolved by a concurrent finalize (e.g. worker vs. webhook racing the same payment) —
+			// a no-op, not a failure, is exactly the point of the guarded update.
 			h.logger.WithField("payment_id", cmd.PaymentID).Info(
 				"finalize charge succeeded: payment already resolved, skipping")
 			return nil
 		}
+		attempted = true
 
 		inv, err := h.invoiceRepo.GetByID(ctx, cmd.InvoiceID)
 		if err != nil {
@@ -91,10 +93,8 @@ func (h *FinalizeChargeSucceededHandler) Handle(ctx context.Context, cmd Finaliz
 			return err
 		}
 		if !paidWon {
-			// The payment-row guard above already ensures single-finalize
-			// per payment; reaching a non-open invoice here means it moved
-			// through some other path (e.g. voided) — log loudly, this is a
-			// genuine inconsistency, not a normal race.
+			// The payment-row guard above already ensures single-finalize per payment; a non-open invoice
+			// here means it moved through some other path (e.g. voided) — a genuine inconsistency, not a normal race.
 			h.logger.WithField("invoice_id", inv.ID).Warn(
 				"finalize charge succeeded: payment succeeded but invoice was not open")
 			return nil
@@ -108,10 +108,6 @@ func (h *FinalizeChargeSucceededHandler) Handle(ctx context.Context, cmd Finaliz
 		}
 		if err := h.ledgerRepo.PostTransaction(ctx, domain.LedgerTxPaymentSucceeded, "invoice", inv.ID, inv.Currency, legs); err != nil {
 			return err
-		}
-
-		if h.metrics != nil {
-			h.metrics.IncCounter(ctx, "myubergo.payments.attempted", attribute.String("outcome", "success"))
 		}
 
 		driverID := ""
@@ -136,4 +132,14 @@ func (h *FinalizeChargeSucceededHandler) Handle(ctx context.Context, cmd Finaliz
 			Topic: "payment.completed", EventType: "PaymentCompleted", Payload: payload,
 		})
 	})
+	if err != nil {
+		return err
+	}
+	if attempted && h.metrics != nil {
+		h.metrics.IncCounter(ctx, "myubergo.payments.attempted",
+			attribute.String("outcome", "success"),
+			attribute.String("provider", cmd.Provider),
+		)
+	}
+	return nil
 }

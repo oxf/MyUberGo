@@ -1,0 +1,49 @@
+# Local/demo-stack config: routes by the `severity` label the alert rules
+# in prometheus-rules.yaml set (page vs ticket) but has no real receiver
+# wired up (webhook_configs pointing at a null endpoint) — there's no
+# Slack/PagerDuty account to integrate with in this repo. The routing tree
+# and grouping/inhibition behavior are real and demonstrate the intended
+# shape; swap the receivers' webhook_configs for real integrations before
+# relying on this anywhere.
+route:
+  receiver: default
+  group_by: [alertname, service_name]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity="page"
+      receiver: page
+      repeat_interval: 1h
+    - matchers:
+        - severity="ticket"
+      receiver: ticket
+
+receivers:
+  - name: default
+  - name: page
+    webhook_configs:
+      - url: http://localhost:9999/no-receiver-configured
+        send_resolved: true
+  - name: ticket
+    webhook_configs:
+      - url: http://localhost:9999/no-receiver-configured
+        send_resolved: true
+
+# A fast-burn SLO alert firing implies the matching slow-burn alert is also
+# true (14.4% > 6% for the same ratio) — inhibit the slow-burn/ticket
+# duplicate so a real outage doesn't create two tickets for one problem.
+# alertname is deliberately NOT in `equal`: the fast/slow pair for the same
+# SLO have different alertnames by design (SLOAvailabilityFastBurn vs.
+# SLOAvailabilitySlowBurn) — matching on service_name+slo alone is what
+# pairs them. Alerts without an `slo` label (Kafka lag, outbox, payment
+# failure) never match either side, since `equal` requires the label to be
+# present and identical on both alerts — so this rule only ever affects the
+# SLO burn-rate pairs it's meant for.
+inhibit_rules:
+  - source_matchers:
+      - severity="page"
+    target_matchers:
+      - severity="ticket"
+    equal: [service_name, slo]

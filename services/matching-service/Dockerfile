@@ -10,6 +10,7 @@ RUN apk add --no-cache git
 COPY services/matching-service/go.mod services/matching-service/go.sum ./
 COPY services/contracts /contracts
 COPY services/observability /observability
+COPY services/common /common
 RUN go mod download
 
 # Copy the command source and internal packages

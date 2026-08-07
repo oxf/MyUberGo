@@ -9,13 +9,8 @@ type OutboxMessage struct {
 	Payload   []byte
 	Processed bool
 	Retries   int
-	// TraceContext is the W3C trace context (and baggage) active when this
-	// row was inserted, captured by PostgresOutboxRepository.Insert — not
-	// set by callers. The outbox worker runs on its own background ticker
-	// context with no link back to the HTTP request that produced this row,
-	// so this is what lets the eventual Kafka publish still join that
-	// request's trace instead of starting a disconnected one. See
-	// github.com/oxf/MyUber/observability/obsoutbox.
+	// TraceContext is the W3C trace context active at insert (set by PostgresOutboxRepository, not
+	// callers) — lets the worker's later Kafka publish rejoin the originating request's trace.
 	TraceContext []byte
 }
 
@@ -24,6 +19,9 @@ type OutboxRepository interface {
 	GetUnprocessedBatch(ctx context.Context, limit int) ([]*OutboxMessage, error)
 	MarkProcessed(ctx context.Context, id string) error
 	IncrementRetries(ctx context.Context, id string) error
+	// CountByRetries splits the outbox backlog by workers.MaxRetries into pending (still retried) vs.
+	// parked (needs manual triage) — backs the myubergo.outbox.{pending,parked} gauges in cmd/main.go.
+	CountByRetries(ctx context.Context, maxRetries int) (pending int64, parked int64, err error)
 }
 
 // Event interfaces for domain events

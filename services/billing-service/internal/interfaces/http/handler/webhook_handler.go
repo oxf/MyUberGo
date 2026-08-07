@@ -14,10 +14,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// WebhookHandler applies verified Stripe webhook events through the exact
-// same Finalize* commands ChargeWorker's synchronous path uses — this is
-// the reuse the claim/charge/finalize split in Phase 1 was built for.
-// Registered by cmd/main.go only when PAYMENT_PROVIDER=stripe.
+// WebhookHandler applies verified Stripe webhook events through the same
+// Finalize* commands ChargeWorker's synchronous path uses; registered only when PAYMENT_PROVIDER=stripe.
 type WebhookHandler struct {
 	app          app.Application
 	parser       services.ProviderEventParser
@@ -41,11 +39,8 @@ func NewWebhookHandler(
 	}
 }
 
-// StripeWebhook verifies the signature over the RAW body (must be read
-// before any decode — that's the entire point of a signature), then applies
-// the event. Response codes matter: Stripe retries on non-2xx, so a storage
-// failure 500s (retry is correct) while an invalid signature or an event
-// type we don't act on 400s/200s fast (retrying either wouldn't help).
+// StripeWebhook verifies the signature over the RAW body before any decode, then applies the event.
+// Response codes matter: Stripe retries on non-2xx, so only a real storage failure 500s.
 func (h *WebhookHandler) StripeWebhook(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -74,10 +69,8 @@ func (h *WebhookHandler) StripeWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// apply is the psp_event insert-then-dispatch-then-mark-processed flow. A
-// redelivery hits the (id) unique-violation; ProcessedAt distinguishes a
-// true no-op (already fully handled) from a previously-interrupted delivery
-// (safe to retry, since every effect dispatch touches is itself guarded).
+// apply is the psp_event insert-then-dispatch-then-mark-processed flow. A redelivery hits the (id)
+// unique-violation; ProcessedAt distinguishes a true no-op from a safe-to-retry interrupted delivery.
 func (h *WebhookHandler) apply(ctx context.Context, event services.ProviderEvent, rawPayload []byte) error {
 	insertErr := h.pspEventRepo.Insert(ctx, &domain.PspEvent{
 		ID: event.EventID, Type: event.EventType, APIVersion: event.APIVersion, Payload: rawPayload,
@@ -107,10 +100,8 @@ func (h *WebhookHandler) dispatch(ctx context.Context, event services.ProviderEv
 	payment, err := h.paymentRepo.GetByProviderIntentID(ctx, event.Result.ProviderIntentID)
 	if err != nil {
 		if errors.Is(err, commonerrors.ErrNotFound) {
-			// Nothing in our DB matches this PaymentIntent. Not reachable
-			// in normal operation — ChargeWorker always creates and
-			// confirms the payment row before Stripe could ever emit an
-			// event about it — so this is logged rather than retried.
+			// Not reachable normally: ChargeWorker always creates the payment row before
+			// Stripe could emit an event about it, so this is logged rather than retried.
 			h.logger.WithField("provider_intent_id", event.Result.ProviderIntentID).Warn(
 				"webhook: no matching payment row found")
 			return nil
@@ -122,6 +113,7 @@ func (h *WebhookHandler) dispatch(ctx context.Context, event services.ProviderEv
 	case services.ChargeSucceeded:
 		return h.app.Commands.FinalizeChargeSucceeded.Handle(ctx, command.FinalizeChargeSucceeded{
 			PaymentID: payment.ID, InvoiceID: payment.InvoiceID, ProviderIntentID: event.Result.ProviderIntentID,
+			Provider: payment.Provider,
 		})
 	case services.ChargeProcessing:
 		if _, err := h.paymentRepo.MarkProcessing(ctx, payment.ID, event.Result.ProviderIntentID); err != nil {
@@ -132,6 +124,7 @@ func (h *WebhookHandler) dispatch(ctx context.Context, event services.ProviderEv
 		return h.app.Commands.FinalizeChargeFailed.Handle(ctx, command.FinalizeChargeFailed{
 			PaymentID: payment.ID, InvoiceID: payment.InvoiceID,
 			FailureCode: event.Result.FailureCode, FailureMessage: event.Result.FailureMessage,
+			Provider: payment.Provider,
 		})
 	}
 }

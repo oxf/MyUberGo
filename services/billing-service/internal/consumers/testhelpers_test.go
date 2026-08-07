@@ -23,15 +23,8 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
-// Each consumer's GroupID is hardcoded in production code (see
-// ride_completed_consumer.go/ride_cancelled_consumer.go). Re-joining that
-// group per test (fresh Run() call each time) was observed to be flaky in
-// this single-node KRaft test broker — a leaving member isn't always fully
-// reaped before the next one joins, and the next join can then hang for the
-// remainder of the group's session timeout. Instead, each consumer is
-// started exactly once for the whole package's test run, on one fixed
-// topic; individual tests only produce more (uniquely-IDed) events to that
-// same topic and assert on their own ride/invoice ids.
+// GroupID is hardcoded in production code; re-joining per test was flaky on this single-node KRaft broker (a
+// leaving member isn't always reaped before the next joins). Each consumer starts once per package run on a fixed topic; tests produce uniquely-IDed events and assert on their own ids.
 const (
 	rideCompletedTestTopic = "ride.completed.pkgtest"
 	rideCancelledTestTopic = "ride.cancelled.pkgtest"
@@ -60,12 +53,8 @@ func TestMain(m *testing.M) {
 	os.Exit(runTests(m))
 }
 
-// runTests spins up one ephemeral Postgres container (migrated with the real
-// services/shared/migrations/init.sql, same as internal/persistence's
-// harness) and one ephemeral Kafka container for the whole package's test
-// run, so consumer tests exercise a real read-loop against a real broker
-// rather than a faked reader. It then starts both real consumers once,
-// against their fixed test topics, before running any test.
+// runTests spins up one ephemeral Postgres (migrated with the real init.sql) and one ephemeral Kafka container for
+// the whole package's test run, so tests exercise a real read-loop against a real broker rather than a faked reader.
 func runTests(m *testing.M) int {
 	ctx := context.Background()
 
@@ -137,8 +126,8 @@ func runTests(m *testing.M) int {
 	consumerCtx, cancelConsumers := context.WithCancel(context.Background())
 	defer cancelConsumers()
 
-	go NewRideCompletedConsumer(application, kafkaBroker).Run(consumerCtx, rideCompletedTestTopic)
-	go NewRideCancelledConsumer(application, kafkaBroker).Run(consumerCtx, rideCancelledTestTopic)
+	go NewRideCompletedConsumer(application, kafkaBroker, testLogger()).Run(consumerCtx, rideCompletedTestTopic)
+	go NewRideCancelledConsumer(application, kafkaBroker, testLogger()).Run(consumerCtx, rideCancelledTestTopic)
 
 	return m.Run()
 }
@@ -159,10 +148,8 @@ func createTopicNoTest(topic string) error {
 	})
 }
 
-// produce publishes one JSON-encoded event to topic. Both test topics are
-// created once in runTests before any consumer joins, so no per-call
-// topic-creation/propagation race is expected here — a short retry is kept
-// anyway since it's cheap insurance against a transient produce error.
+// produce publishes one JSON-encoded event to topic. Topics are created once in runTests before any consumer
+// joins, so no per-call creation race is expected; the retry loop is just cheap insurance against a transient error.
 func produce(t *testing.T, topic string, event any) {
 	t.Helper()
 
@@ -208,9 +195,8 @@ func waitFor(t *testing.T, timeout time.Duration, check func() bool) {
 	}
 }
 
-// countInvoicesForRide counts billing.invoice rows for a given ride —
-// scoped per-ride since the Postgres container is shared across every test
-// in this package, unlike a hand-picked single global count.
+// countInvoicesForRide counts billing.invoice rows for a given ride, scoped per-ride since the Postgres
+// container is shared across every test in this package.
 func countInvoicesForRide(t *testing.T, rideID string) int {
 	t.Helper()
 
@@ -221,9 +207,8 @@ func countInvoicesForRide(t *testing.T, rideID string) int {
 	return count
 }
 
-// seedClient inserts an auth.user (role=Client) + auth.client row and
-// returns the client id, satisfying billing.customer/payment_method/
-// invoice.client_id's FK.
+// seedClient inserts an auth.user (role=Client) + auth.client row and returns the client id, satisfying
+// billing.customer/payment_method/invoice.client_id's FK.
 func seedClient(t *testing.T, db *sql.DB) string {
 	t.Helper()
 
@@ -247,9 +232,8 @@ func seedClient(t *testing.T, db *sql.DB) string {
 	return clientID
 }
 
-// seedDriver inserts an auth.user (role=Driver) + driver.driver row and
-// returns the driver id, satisfying ride.ride.driver_id/billing.invoice.
-// driver_id's FK.
+// seedDriver inserts an auth.user (role=Driver) + driver.driver row and returns the driver id, satisfying
+// ride.ride.driver_id/billing.invoice.driver_id's FK.
 func seedDriver(t *testing.T, db *sql.DB) string {
 	t.Helper()
 

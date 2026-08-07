@@ -10,14 +10,16 @@ import (
 	"net/http"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
+	"github.com/sirupsen/logrus"
 )
 
 type PaymentMethodHandler struct {
-	app app.Application
+	app    app.Application
+	logger *logrus.Entry
 }
 
-func NewPaymentMethodHandler(app app.Application) *PaymentMethodHandler {
-	return &PaymentMethodHandler{app: app}
+func NewPaymentMethodHandler(app app.Application, logger *logrus.Entry) *PaymentMethodHandler {
+	return &PaymentMethodHandler{app: app, logger: logger}
 }
 
 func (h *PaymentMethodHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +49,7 @@ func (h *PaymentMethodHandler) Create(w http.ResponseWriter, r *http.Request) {
 		SetDefault:              req.SetDefault,
 	})
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -63,7 +65,7 @@ func (h *PaymentMethodHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	methods, err := h.app.Queries.ListPaymentMethods.Handle(r.Context(), query.ListPaymentMethods{ClientID: clientID})
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -96,7 +98,7 @@ func (h *PaymentMethodHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "cannot remove the only active default while invoices are open", http.StatusConflict)
 		return
 	case err != nil:
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 

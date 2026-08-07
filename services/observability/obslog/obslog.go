@@ -1,30 +1,20 @@
-// Package obslog configures logrus consistently across services: JSON to
-// stdout (so `docker-compose logs` stays useful), a level read from
-// LOG_LEVEL (unset today, which is why every decorator's `logger.Debug(...)`
-// call has always been silently dropped), a trace_id/span_id correlation
-// hook, and a bridge that also ships every log line to the OTel Collector
-// (and from there to Loki) via the global LoggerProvider installed by
-// otelinit.Setup.
+// Package obslog configures logrus consistently across services: JSON to stdout, LOG_LEVEL-driven level,
+// trace_id/span_id correlation, and a bridge shipping logs to the OTel Collector via otelinit.Setup's LoggerProvider.
 package obslog
 
 import (
+	"context"
 	"os"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/contrib/bridges/otellogrus"
+	logglobal "go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// NewLogger returns a *logrus.Entry pre-configured for serviceName. Pass it
-// wherever the repo's per-service decorator/health/shutdown/worker code
-// today takes a *logrus.Entry — this is a drop-in replacement for the
-// unconfigured `logrus.NewEntry(logrus.New())` every service's main()
-// currently constructs.
-//
-// otelinit.Setup must run before this for the OTLP log bridge to have a
-// real LoggerProvider to attach to; if it hasn't, otellogrus falls back to
-// the global no-op provider and log lines simply aren't exported (stdout
-// output is unaffected either way).
+// NewLogger returns a *logrus.Entry pre-configured for serviceName, a drop-in replacement for the
+// unconfigured logrus.NewEntry. otelinit.Setup must run first, or the OTLP bridge falls back to a no-op provider.
 func NewLogger(serviceName string) *logrus.Entry {
 	base := logrus.New()
 	base.SetFormatter(&logrus.JSONFormatter{})
@@ -33,7 +23,37 @@ func NewLogger(serviceName string) *logrus.Entry {
 	base.AddHook(traceCorrelationHook{})
 	base.AddHook(otellogrus.NewHook(serviceName, otellogrus.WithLevels(logrus.AllLevels)))
 
+	registerFatalFlush()
+
 	return logrus.NewEntry(base).WithField("service.name", serviceName)
+}
+
+// registerFatalFlushOnce guards logrus.RegisterExitHandler so a process constructing more than one
+// obslog logger (unusual outside tests) doesn't stack up duplicate flush handlers.
+var registerFatalFlushOnce = func() func() {
+	done := false
+	return func() {
+		if done {
+			return
+		}
+		done = true
+		logrus.RegisterExitHandler(flushLoggerProvider)
+	}
+}()
+
+func registerFatalFlush() { registerFatalFlushOnce() }
+
+// flushLoggerProvider force-flushes the global LoggerProvider before logrus.Fatal's os.Exit(1) runs, so the
+// fatal line itself reaches Loki instead of just stdout. 3s budget (matches other shutdown timeouts) bounds a wedged exporter.
+func flushLoggerProvider() {
+	provider := logglobal.GetLoggerProvider()
+	flusher, ok := provider.(interface{ ForceFlush(context.Context) error })
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = flusher.ForceFlush(ctx)
 }
 
 func levelFromEnv() logrus.Level {
@@ -48,12 +68,8 @@ func levelFromEnv() logrus.Level {
 	return level
 }
 
-// traceCorrelationHook stamps trace_id/span_id onto any entry created via
-// (*logrus.Entry).WithContext(ctx) that carries an active OTel span, so
-// stdout JSON lines are grep-able by trace ID even without going through
-// Loki, and Loki's derived-field regex (see
-// observability/grafana/provisioning/datasources/datasources.yaml) has a
-// field to match against.
+// traceCorrelationHook stamps trace_id/span_id onto any entry created via (*logrus.Entry).WithContext(ctx)
+// with an active span, making stdout JSON grep-able by trace ID; in Loki these arrive as structured metadata, not a body regex.
 type traceCorrelationHook struct{}
 
 func (traceCorrelationHook) Levels() []logrus.Level { return logrus.AllLevels }

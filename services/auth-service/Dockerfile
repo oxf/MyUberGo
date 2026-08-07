@@ -10,6 +10,7 @@ RUN apk add --no-cache git
 COPY services/auth-service/go.mod services/auth-service/go.sum ./
 COPY services/contracts /contracts
 COPY services/observability /observability
+COPY services/common /common
 RUN go mod download
 
 # Copy the auth-service source (cmd and internal packages)

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	app "matching-service/internal/application"
@@ -17,9 +18,9 @@ import (
 	"matching-service/internal/infrastructure/metrics"
 	"matching-service/internal/infrastructure/shutdown"
 	"matching-service/internal/interfaces/http/handler"
-	"matching-service/internal/interfaces/http/middleware"
 	"matching-service/internal/workers"
 
+	httpmw "github.com/oxf/MyUber/common/httpmiddleware"
 	"github.com/oxf/MyUber/observability/obshttp"
 	"github.com/oxf/MyUber/observability/obslog"
 	"github.com/oxf/MyUber/observability/otelinit"
@@ -31,17 +32,14 @@ import (
 const serviceName = "matching-service"
 
 func main() {
-	// `app healthcheck` is invoked by Docker's HEALTHCHECK (see
-	// docker-compose.yml) — distroless has no shell/curl for a CMD-SHELL
-	// check, so the binary probes its own /health/ready and exits 0/1.
+	// `app healthcheck` backs Docker's HEALTHCHECK: distroless has no shell/curl,
+	// so the binary probes its own /health/ready and exits 0/1.
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		healthcheckSelf("http://localhost:" + getenv("SERVICE_PORT", "8002") + "/health/live")
 	}
 
-	// otelinit.Setup reads the standard OTEL_* env vars (see
-	// docker-compose.yml) and installs the global tracer/meter/logger
-	// providers. It never fails the boot on a down Collector — OTLP/gRPC
-	// exporters dial lazily and retry in the background.
+	// otelinit.Setup installs the global tracer/meter/logger providers from OTEL_* env vars.
+	// Never fails boot on a down Collector — OTLP/gRPC exporters dial lazily and retry in the background.
 	ctx := context.Background()
 	providers, err := otelinit.Setup(ctx, serviceName)
 	if err != nil {
@@ -56,7 +54,7 @@ func main() {
 		Password: "",
 		DB:       0,
 	})
-	if err := redisotel.InstrumentTracing(redisDb); err != nil {
+	if err := redisotel.InstrumentTracing(redisDb, redisotel.WithCommandFilter(commandFilter)); err != nil {
 		log.Fatal(err)
 	}
 	if err := redisotel.InstrumentMetrics(redisDb); err != nil {
@@ -70,9 +68,8 @@ func main() {
 	rideRepo := cache.NewRideRepository(redisDb)
 	offerRepo := cache.NewOfferRepository(redisDb)
 
-	// The concrete *obsmetrics.Client (satisfies decorator.MetricsClient via
-	// Go's structural interface typing) so the drivers-online observable
-	// gauge below can be registered on it directly.
+	// Concrete *obsmetrics.Client (assignable to decorator.MetricsClient via structural
+	// typing) so the drivers-online observable gauge below can register on it directly.
 	metricsClient := metrics.NewOtelMetricsClient(serviceName)
 
 	if err := metricsClient.Gauge(
@@ -121,7 +118,7 @@ func main() {
 	// Create HTTP server
 	server := &http.Server{
 		Addr:         ":" + port,
-		Handler:      middleware.BodyLimit(middleware.RequestID(obshttp.Handler(middleware.Recover(logger)(mux), serviceName))),
+		Handler:      httpmw.BodyLimit(httpmw.RequestID(obshttp.Handler(httpmw.Recover(logger)(mux), serviceName))),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -130,15 +127,13 @@ func main() {
 	// Create shutdown manager with 30s timeout
 	shutdownManager := shutdown.NewManager(server, 30*time.Second)
 
-	// GET /health/ready should stop reporting healthy the moment shutdown
-	// begins, not up to checkInterval later — the ticker-based Redis-ping
-	// check alone wouldn't catch this promptly.
+	// Flip readiness the moment shutdown begins, not up to checkInterval later —
+	// the ticker-based Redis-ping check alone wouldn't catch this promptly.
 	shutdownManager.OnStop(healthChecker.MarkNotReady)
 
-	// Flush/close the trace/metric/log providers during graceful shutdown,
-	// after the HTTP server stops accepting new requests but before the
-	// process exits, so in-flight batched telemetry isn't dropped on exit.
-	shutdownManager.OnStop(func() {
+	// Flush providers only after every worker below has actually drained (not merely told
+	// to stop) — OnStop would be too early and silently drop the drain period's telemetry.
+	shutdownManager.OnDrained(func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := providers.Shutdown(shutdownCtx); err != nil {
@@ -150,9 +145,9 @@ func main() {
 	bgCtx, cancelBg := context.WithCancel(context.Background())
 	shutdownManager.OnStop(cancelBg)
 
-	rideConsumer := consumers.NewRideRequestedConsumer(application, kafkaBroker)
-	driverConsumer := consumers.NewShiftUpdatedConsumer(application, kafkaBroker)
-	rideCancelledConsumer := consumers.NewRideCancelledConsumer(application, kafkaBroker)
+	rideConsumer := consumers.NewRideRequestedConsumer(application, kafkaBroker, logger)
+	driverConsumer := consumers.NewShiftUpdatedConsumer(application, kafkaBroker, logger)
+	rideCancelledConsumer := consumers.NewRideCancelledConsumer(application, kafkaBroker, logger)
 
 	shutdownManager.Add(3)
 	goSafe(logger, healthChecker, bgCtx, "ride-requested-consumer", func() {
@@ -179,9 +174,9 @@ func main() {
 
 	// Start server in a goroutine
 	goSafe(logger, healthChecker, nil, "http-server", func() {
-		log.Println("matching-service listening on :" + port)
+		logger.Info("matching-service listening on :" + port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Server error: %v\n", err)
+			logger.WithError(err).Error("server error")
 		}
 	})
 
@@ -194,6 +189,15 @@ func getenv(k, d string) string {
 		return v
 	}
 	return d
+}
+
+// commandFilter extends redisotel's DefaultCommandFilter to also exclude PING (from
+// health.Checker's ticker), else every ping emits its own orphan trace in Tempo.
+func commandFilter(cmd redis.Cmder) bool {
+	if strings.EqualFold(cmd.Name(), "ping") {
+		return true
+	}
+	return redisotel.DefaultCommandFilter(cmd)
 }
 
 // healthcheckSelf backs the `app healthcheck` subcommand: a plain HTTP GET
@@ -211,15 +215,8 @@ func healthcheckSelf(url string) {
 	os.Exit(0)
 }
 
-// goSafe launches fn in a goroutine, recovering any panic so one bad
-// message/query doesn't take the whole process down silently. If workerCtx
-// is non-nil and fn returns while workerCtx.Err() is still nil — i.e. fn
-// exited (crashed or returned early) without being told to stop — that's a
-// genuine liveness failure: a background worker this service depends on
-// (a Kafka consumer, the match retry worker) is gone and won't come back,
-// and GET /health/live should say so. Pass a nil workerCtx for goroutines
-// with no associated cancellation context, like the HTTP server itself,
-// which exits cleanly via http.ErrServerClosed on a normal shutdown.
+// goSafe launches fn in a goroutine, recovering panics. If workerCtx is non-nil and fn
+// returns while workerCtx.Err() is nil, a worker exited unexpectedly — mark not-live.
 func goSafe(logger *logrus.Entry, healthChecker *health.Checker, workerCtx context.Context, name string, fn func()) {
 	go func() {
 		defer func() {

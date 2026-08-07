@@ -25,8 +25,16 @@ schema_config:
         period: 24h
 
 limits_config:
-  # Services carry no explicit log labels beyond service.name (see resource
-  # attributes in the OTel logging setup) — keep structured fields out of the
-  # label set, everything else goes into the queryable log line body.
+  # Services carry no explicit log labels beyond service.name — keep structured fields
+  # out of the label set, everything else goes into the queryable log line body.
   allow_structured_metadata: true
   volume_enabled: true
+  # Disabled by default in Loki — without this loki-data grows forever under e2e-test.
+  # 7 days is a reasonable local-dev window; revisit before a real deployment.
+  retention_period: 168h
+
+# Enforced by the compactor, not limits_config alone — retention_period only sets the target.
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem

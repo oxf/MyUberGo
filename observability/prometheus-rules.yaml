@@ -1,0 +1,170 @@
+# Closes the largest gap identified in the 2026-08 observability hardening
+# pass: the stack had four Grafana dashboards but nothing that pages anyone
+# — dashboards are for diagnosis after you already know something's wrong;
+# these rules are what says something's wrong in the first place.
+#
+# Deliberately small. Two SLOs (platform availability, ride-service's
+# request-ride latency), each with a fast-burn (page-now) and slow-burn
+# (ticket) alert — a simplified single-window burn-rate, not the full
+# Google-SRE-workbook 4-window/2-burn-rate pattern (which needs 1h+5m and
+# 6h+30m window pairs per alert to suppress false positives from brief
+# blips). That fuller version is the natural next step once this has real
+# traffic to tune thresholds against; shipping something simple and
+# verified beats something textbook-precise and unverified.
+#
+# Burn-rate math (30-day SLO window): a service exhausts its entire error
+# budget in exactly `30d / burn_rate` if it sustains that burn rate.
+# burn_rate = observed_error_ratio / (1 - target). At a 99% target
+# (1% budget): 14.4x burn exhausts the budget in ~2 days (page); 6x burn
+# exhausts it in ~5 days (ticket).
+groups:
+  - name: myubergo-sli-recording
+    interval: 30s
+    rules:
+      # Platform-wide availability SLI, from the Collector's span_metrics
+      # connector (see otel-collector-config.yaml) — status_code is set by
+      # obsdecorator.finish/ExpectedErrorFunc, so a business-as-usual
+      # outcome (ErrNotFound, a lost accept race, ErrDuplicateInvoice) does
+      # NOT count as an error here; only genuine failures do.
+      - record: myubergo:http_errors:ratio5m
+        expr: |
+          sum(rate(traces_span_metrics_calls_total{status_code="STATUS_CODE_ERROR"}[5m])) by (service_name)
+          /
+          sum(rate(traces_span_metrics_calls_total[5m])) by (service_name)
+      - record: myubergo:http_errors:ratio1h
+        expr: |
+          sum(rate(traces_span_metrics_calls_total{status_code="STATUS_CODE_ERROR"}[1h])) by (service_name)
+          /
+          sum(rate(traces_span_metrics_calls_total[1h])) by (service_name)
+
+      # ride-service's POST /request-ride latency SLI: fraction of requests
+      # that did NOT complete within 500ms, from otelhttp's native server
+      # histogram (not the spanmetrics-derived one, which lacks a
+      # request-ride-specific route breakdown at usable cardinality here).
+      - record: myubergo:request_ride_slow:ratio5m
+        expr: |
+          1 - (
+            sum(rate(http_server_request_duration_seconds_bucket{service_name="ride-service", http_route="/request-ride", le="0.5"}[5m]))
+            /
+            sum(rate(http_server_request_duration_seconds_count{service_name="ride-service", http_route="/request-ride"}[5m]))
+          )
+      - record: myubergo:request_ride_slow:ratio1h
+        expr: |
+          1 - (
+            sum(rate(http_server_request_duration_seconds_bucket{service_name="ride-service", http_route="/request-ride", le="0.5"}[1h]))
+            /
+            sum(rate(http_server_request_duration_seconds_count{service_name="ride-service", http_route="/request-ride"}[1h]))
+          )
+
+  - name: myubergo-slo-burn-rate
+    rules:
+      - alert: SLOAvailabilityFastBurn
+        expr: myubergo:http_errors:ratio5m > 0.144 and myubergo:http_errors:ratio1h > 0.144
+        for: 2m
+        labels:
+          severity: page
+          slo: availability
+        annotations:
+          summary: "{{ $labels.service_name }} is burning its availability error budget fast (~2 days to exhaustion)"
+          description: "5m and 1h error ratio both above 14.4% for {{ $labels.service_name }} — consistent with a genuine outage, not a blip."
+
+      - alert: SLOAvailabilitySlowBurn
+        expr: myubergo:http_errors:ratio1h > 0.06
+        for: 15m
+        labels:
+          severity: ticket
+          slo: availability
+        annotations:
+          summary: "{{ $labels.service_name }} is burning its availability error budget (~5 days to exhaustion)"
+          description: "1h error ratio above 6% for {{ $labels.service_name }}, sustained 15m."
+
+      - alert: SLORideRequestLatencyFastBurn
+        expr: myubergo:request_ride_slow:ratio5m > 0.144 and myubergo:request_ride_slow:ratio1h > 0.144
+        for: 2m
+        labels:
+          severity: page
+          slo: request-ride-latency
+        annotations:
+          summary: "POST /request-ride is burning its 500ms-latency error budget fast"
+          description: "More than 14.4% of requests exceeded 500ms over both the last 5m and 1h."
+
+      - alert: SLORideRequestLatencySlowBurn
+        expr: myubergo:request_ride_slow:ratio1h > 0.06
+        for: 15m
+        labels:
+          severity: ticket
+          slo: request-ride-latency
+        annotations:
+          summary: "POST /request-ride is burning its 500ms-latency error budget"
+          description: "More than 6% of requests exceeded 500ms over the last 1h, sustained 15m."
+
+  - name: myubergo-operational
+    rules:
+      # The key async health signal for this repo's outbox/Kafka pipeline —
+      # from the Collector's kafkametrics receiver (scraped from the broker
+      # directly, not derived from spans). The metric name really is
+      # kafka_consumer_group_lag_ratio, not kafka_consumer_group_lag —
+      # verified against a live stack: Prometheus's OTLP ingestion appends
+      # `_ratio` to any OTel metric whose unit is "1" (dimensionless),
+      # which this is, even though its actual values are an absolute
+      # message-count lag, not a literal 0–1 fraction — a real but
+      # confusing quirk of the OTel→Prometheus naming spec. Threshold is a
+      # starting point, not a tuned production value — this repo has no
+      # real traffic baseline yet.
+      - alert: KafkaConsumerGroupLagHigh
+        expr: kafka_consumer_group_lag_ratio > 1000
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Consumer group {{ $labels.group }} is falling behind on {{ $labels.topic }}"
+          description: "Lag of {{ $value }} messages on partition {{ $labels.partition }}, sustained 10m."
+
+      # myubergo.outbox.parked (see cmd/main.go's Gauge registration) means
+      # an event has exceeded its retry cap and will NEVER publish without
+      # manual intervention — previously this had no signal at all short of
+      # the triage SQL documented in PLAN.md.
+      - alert: OutboxMessagesParked
+        expr: myubergo_outbox_parked > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $labels.service_name }} has outbox messages parked past the retry cap"
+          description: "{{ $value }} message(s) will not publish without manual intervention — see PLAN.md's outbox triage SQL."
+
+      # Direct money impact — the one alert in this file with a business,
+      # not just technical, consequence.
+      - alert: PaymentFailureRateHigh
+        expr: |
+          sum(rate(myubergo_payments_attempted_total{outcome="failed"}[15m]))
+          /
+          sum(rate(myubergo_payments_attempted_total[15m])) > 0.2
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "Payment failure rate above 20% over the last 15m"
+          description: "Sustained 10m — check PAYMENT_PROVIDER's health and recent Stripe/stub error codes."
+
+      # "Who watches the watchman": the Collector itself was previously a
+      # total blind spot (no self-metrics exported, nothing scraping it).
+      # `up` is Prometheus's own synthetic per-target metric — no otelcol_*
+      # instrumentation needed for this one.
+      - alert: OtelCollectorDown
+        expr: up{job="otel-collector"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "otel-collector is not being scraped"
+          description: "Every trace/metric/log pipeline in the stack depends on this — treat as a full observability outage."
+
+      - alert: OtelCollectorExportFailures
+        expr: increase(otelcol_exporter_send_failed_spans[10m]) > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "otel-collector is failing to export spans to {{ $labels.exporter }}"
+          description: "{{ $value }} spans failed to export in the last 10m — Tempo may be unreachable or rejecting data."

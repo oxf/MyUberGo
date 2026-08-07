@@ -18,9 +18,8 @@ storage:
     wal:
       path: /var/tempo/wal
 
-# Lets Tempo answer Prometheus-style metric queries derived from the
-# spanmetrics/servicegraph connectors in the Collector, and lets Grafana's
-# Tempo datasource query span metrics without a separate config.
-metrics_generator:
-  storage:
-    path: /var/tempo/generator/wal
+# Explicit retention, not the image's monolithic-mode default — this block was previously
+# dropped as a side effect of an unrelated fix, so trace data accumulated in tempo-data forever.
+compactor:
+  compaction:
+    block_retention: 48h

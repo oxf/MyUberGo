@@ -3,7 +3,6 @@ package handler
 import (
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	app "ride-service/internal/application"
 	"ride-service/internal/application/command"
@@ -12,14 +11,16 @@ import (
 	"ride-service/internal/domain"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
+	"github.com/sirupsen/logrus"
 )
 
 type RideHandler struct {
-	app app.Application
+	app    app.Application
+	logger *logrus.Entry
 }
 
-func NewRideHandler(app app.Application) *RideHandler {
-	return &RideHandler{app: app}
+func NewRideHandler(app app.Application, logger *logrus.Entry) *RideHandler {
+	return &RideHandler{app: app, logger: logger}
 }
 
 func (h *RideHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -46,7 +47,7 @@ func (h *RideHandler) Create(w http.ResponseWriter, r *http.Request) {
 		TariffName:    req.TariffName,
 	})
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -90,7 +91,7 @@ func (h *RideHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "ride is already in a terminal state", http.StatusConflict)
 		return
 	case err != nil:
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -125,7 +126,7 @@ func (h *RideHandler) Start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "ride is not in a startable state", http.StatusConflict)
 		return
 	case err != nil:
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -160,7 +161,7 @@ func (h *RideHandler) Complete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "ride is not in progress", http.StatusConflict)
 		return
 	case err != nil:
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -178,7 +179,7 @@ func (h *RideHandler) GetList(w http.ResponseWriter, r *http.Request) {
 		Page: params.page, PageSize: params.pageSize, SortBy: params.sortBy, SortDir: params.sortDir,
 	})
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -199,7 +200,7 @@ func (h *RideHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 	writeJSON(w, toRideDto(result))
@@ -209,11 +210,10 @@ func writeError(w http.ResponseWriter, msg string, code int) {
 	http.Error(w, msg, code)
 }
 
-// writeInternalError logs the real error server-side and returns a generic
-// message to the client — the raw error text (which can include SQL/driver
-// internals) must never reach an HTTP response.
-func writeInternalError(w http.ResponseWriter, err error) {
-	log.Println("internal error:", err)
+// writeInternalError logs the real error server-side (raw SQL/driver text must never reach
+// the client) and returns a generic message. Logged via .WithContext for trace correlation.
+func writeInternalError(w http.ResponseWriter, r *http.Request, err error, logger *logrus.Entry) {
+	logger.WithContext(r.Context()).WithError(err).Error("internal error")
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 

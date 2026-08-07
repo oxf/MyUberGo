@@ -23,15 +23,8 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
-// Each consumer's GroupID is hardcoded in production code (see
-// ride_accepted_consumer.go/payment_completed_consumer.go). Re-joining that
-// group per test (fresh Run() call each time) was observed to be flaky in
-// this single-node KRaft test broker — a leaving member isn't always fully
-// reaped before the next one joins, and the next join can then hang for the
-// remainder of the group's session timeout. Instead, each consumer is
-// started exactly once for the whole package's test run, on one fixed
-// topic; individual tests only produce more (uniquely-IDed) events to that
-// same topic and assert on their own ride/driver/invoice ids.
+// Re-joining the hardcoded GroupID per test was flaky on this single-node KRaft broker
+// (slow member reap), so each consumer starts once per package run on one fixed topic.
 const (
 	rideAcceptedTestTopic     = "ride.accepted.pkgtest"
 	paymentCompletedTestTopic = "payment.completed.pkgtest"
@@ -58,12 +51,8 @@ func TestMain(m *testing.M) {
 	os.Exit(runTests(m))
 }
 
-// runTests spins up one ephemeral Postgres container (migrated with the real
-// services/shared/migrations/init.sql, same as internal/persistence's
-// harness) and one ephemeral Kafka container for the whole package's test
-// run, so consumer tests exercise a real read-loop against a real broker
-// rather than a faked reader. It then starts both real consumers once,
-// against their fixed test topics, before running any test.
+// runTests spins up one ephemeral Postgres (via the real init.sql) and one ephemeral Kafka
+// container for the whole run, so tests exercise a real read-loop, not a faked reader.
 func runTests(m *testing.M) int {
 	ctx := context.Background()
 
@@ -132,8 +121,8 @@ func runTests(m *testing.M) int {
 	consumerCtx, cancelConsumers := context.WithCancel(context.Background())
 	defer cancelConsumers()
 
-	go NewRideAcceptedConsumer(application, kafkaBroker).Run(consumerCtx, rideAcceptedTestTopic)
-	go NewPaymentCompletedConsumer(application, kafkaBroker).Run(consumerCtx, paymentCompletedTestTopic)
+	go NewRideAcceptedConsumer(application, kafkaBroker, testLogger()).Run(consumerCtx, rideAcceptedTestTopic)
+	go NewPaymentCompletedConsumer(application, kafkaBroker, testLogger()).Run(consumerCtx, paymentCompletedTestTopic)
 
 	return m.Run()
 }
@@ -154,10 +143,8 @@ func createTopicNoTest(topic string) error {
 	})
 }
 
-// produce publishes one JSON-encoded event to topic. Both test topics are
-// created once in runTests before any consumer joins, so no per-call
-// topic-creation/propagation race is expected here — a short retry is kept
-// anyway since it's cheap insurance against a transient produce error.
+// produce publishes one JSON-encoded event to topic. No topic-creation race is expected
+// (both topics are created upfront in runTests), but a short retry is kept as cheap insurance.
 func produce(t *testing.T, topic string, event any) {
 	t.Helper()
 
@@ -253,9 +240,30 @@ func seedDriver(t *testing.T, db *sql.DB) string {
 	return driverID
 }
 
-// seedRide inserts a ride.ride row directly at the given status, so tests
-// exercising a consumer's transition don't depend on CreateRide's own
-// correctness.
+// seedDriverWithID is seedDriver with an explicit, caller-chosen id — used by the
+// redelivery test to make a previously-FK-violating driver ID valid before retry.
+func seedDriverWithID(t *testing.T, db *sql.DB, id string) {
+	t.Helper()
+
+	var userID string
+	email := fmt.Sprintf("driver-%d@test.myubergo.local", nextSeq())
+	if err := db.QueryRow(
+		`INSERT INTO auth.user (email, password_hash, name, role) VALUES ($1, 'x', 'Test Driver', 'Driver') RETURNING id`,
+		email,
+	).Scan(&userID); err != nil {
+		t.Fatalf("seed auth.user (driver): %v", err)
+	}
+
+	if _, err := db.Exec(
+		`INSERT INTO driver.driver (id, user_id) VALUES ($1, $2)`,
+		id, userID,
+	); err != nil {
+		t.Fatalf("seed driver.driver with explicit id: %v", err)
+	}
+}
+
+// seedRide inserts a ride.ride row directly at the given status, so consumer-transition
+// tests don't depend on CreateRide's own correctness.
 func seedRide(t *testing.T, db *sql.DB, clientID, status string) string {
 	t.Helper()
 

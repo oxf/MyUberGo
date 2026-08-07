@@ -11,14 +11,16 @@ import (
 	"net/http"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
+	"github.com/sirupsen/logrus"
 )
 
 type ShiftHandler struct {
-	app app.Application
+	app    app.Application
+	logger *logrus.Entry
 }
 
-func NewShiftHandler(app app.Application) *ShiftHandler {
-	return &ShiftHandler{app: app}
+func NewShiftHandler(app app.Application, logger *logrus.Entry) *ShiftHandler {
+	return &ShiftHandler{app: app, logger: logger}
 }
 
 func (h *ShiftHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -73,7 +75,7 @@ func (h *ShiftHandler) GetList(w http.ResponseWriter, r *http.Request) {
 		Page: params.page, PageSize: params.pageSize, SortBy: params.sortBy, SortDir: params.sortDir,
 	})
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -94,7 +96,7 @@ func (h *ShiftHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 	writeJSON(w, toShiftDto(result))

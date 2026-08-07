@@ -8,20 +8,19 @@ import (
 	"driver-service/internal/domain"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"log"
 	"net/http"
-	"strconv"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
+	"github.com/sirupsen/logrus"
 )
 
 type DriverHandler struct {
-	app app.Application
+	app    app.Application
+	logger *logrus.Entry
 }
 
-func NewDriverHandler(app app.Application) *DriverHandler {
-	return &DriverHandler{app: app}
+func NewDriverHandler(app app.Application, logger *logrus.Entry) *DriverHandler {
+	return &DriverHandler{app: app, logger: logger}
 }
 
 func (h *DriverHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +75,7 @@ func (h *DriverHandler) GetList(w http.ResponseWriter, r *http.Request) {
 		Page: params.page, PageSize: params.pageSize, SortBy: params.sortBy, SortDir: params.sortDir,
 	})
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -97,7 +96,7 @@ func (h *DriverHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 	writeJSON(w, toDriverDto(result))
@@ -107,34 +106,14 @@ func writeError(w http.ResponseWriter, msg string, code int) {
 	http.Error(w, msg, code)
 }
 
-// writeInternalError logs the real error server-side and returns a generic
-// message to the client — the raw error text (which can include SQL/driver
-// internals) must never reach an HTTP response.
-func writeInternalError(w http.ResponseWriter, err error) {
-	log.Println("internal error:", err)
+// writeInternalError logs the real error server-side and returns a generic message to the client —
+// raw error text must never reach an HTTP response. Shared by driver_handler.go and shift_handler.go.
+func writeInternalError(w http.ResponseWriter, r *http.Request, err error, logger *logrus.Entry) {
+	logger.WithContext(r.Context()).WithError(err).Error("internal error")
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-func parseIntQuery(r *http.Request, key string, defaultValue int) (int, error) {
-	valStr := r.URL.Query().Get(key)
-
-	if valStr == "" {
-		return defaultValue, nil
-	}
-
-	val, err := strconv.Atoi(valStr)
-	if err != nil {
-		return 0, err
-	}
-
-	if val < 0 {
-		return 0, fmt.Errorf("%s cannot be negative", key)
-	}
-
-	return val, nil
 }

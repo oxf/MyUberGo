@@ -3,7 +3,6 @@ package handler
 import (
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 
 	app "auth-service/internal/application"
@@ -11,14 +10,16 @@ import (
 	commonerrors "auth-service/internal/common/errors"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
+	"github.com/sirupsen/logrus"
 )
 
 type AuthHandler struct {
-	app app.Application
+	app    app.Application
+	logger *logrus.Entry
 }
 
-func NewAuthHandler(app app.Application) *AuthHandler {
-	return &AuthHandler{app: app}
+func NewAuthHandler(app app.Application, logger *logrus.Entry) *AuthHandler {
+	return &AuthHandler{app: app, logger: logger}
 }
 
 func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
@@ -32,9 +33,8 @@ func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Role != contracts.RoleClient && req.Role != contracts.RoleDriver {
-		// Admin has no signup path — the one seeded admin account is
-		// inserted directly by services/shared/migrations/init.sql (see
-		// CLAUDE.md's "Data model" section).
+		// Admin has no signup path; the one seeded admin account is inserted
+		// directly by services/shared/migrations/init.sql.
 		writeError(w, "role must be Client or Driver", http.StatusBadRequest)
 		return
 	}
@@ -51,7 +51,7 @@ func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err.Error(), http.StatusConflict)
 		return
 	case err != nil:
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -75,7 +75,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	case err != nil:
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -101,7 +101,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid or expired refresh token", http.StatusUnauthorized)
 		return
 	case err != nil:
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -128,7 +128,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		UserID:       userID,
 		RefreshToken: req.RefreshToken,
 	}); err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -140,10 +140,9 @@ func writeError(w http.ResponseWriter, msg string, code int) {
 }
 
 // writeInternalError logs the real error server-side and returns a generic
-// message to the client — the raw error text (which can include SQL/driver
-// internals) must never reach an HTTP response.
-func writeInternalError(w http.ResponseWriter, err error) {
-	log.Println("internal error:", err)
+// message so SQL/driver internals never reach the HTTP response.
+func writeInternalError(w http.ResponseWriter, r *http.Request, err error, logger *logrus.Entry) {
+	logger.WithContext(r.Context()).WithError(err).Error("internal error")
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 

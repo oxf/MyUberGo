@@ -9,10 +9,9 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-// NewOtelMetricsClient returns an OTel-backed MetricsClient exporting via
-// the OTLP pipeline configured by otelinit.Setup in cmd/main.go. Replaces
-// the old logging-only LoggingMetricsClient stub.
-func NewOtelMetricsClient(serviceName string) decorator.MetricsClient {
+// NewOtelMetricsClient returns the concrete *obsmetrics.Client (not the decorator.MetricsClient
+// interface) so cmd/main.go can also reach Gauge, used here for the outbox backlog gauges.
+func NewOtelMetricsClient(serviceName string) *obsmetrics.Client {
 	return obsmetrics.NewClient(serviceName)
 }
 

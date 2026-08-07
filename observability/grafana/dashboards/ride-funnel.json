@@ -4,6 +4,7 @@
   "tags": ["myubergo"],
   "timezone": "browser",
   "schemaVersion": 39,
+  "editable": false,
   "version": 1,
   "refresh": "30s",
   "time": { "from": "now-1h", "to": "now" },

@@ -7,6 +7,7 @@ datasources:
     url: http://prometheus:9090
     uid: prometheus
     isDefault: true
+    editable: false
     jsonData:
       httpMethod: POST
       exemplarTraceIdDestinations:
@@ -18,10 +19,14 @@ datasources:
     access: proxy
     url: http://loki:3100
     uid: loki
+    editable: false
     jsonData:
       derivedFields:
+        # matcherType: label reads trace_id from OTLP structured metadata (how obslog's otellogrus
+        # bridge ships it) — a body regex never matched, since it's not embedded in the JSON line.
         - datasourceUid: tempo
-          matcherRegex: '"trace_id":"(\w+)"'
+          matcherType: label
+          matcherRegex: trace_id
           name: TraceID
           url: '$${__value.raw}'
 
@@ -30,6 +35,7 @@ datasources:
     access: proxy
     url: http://tempo:3200
     uid: tempo
+    editable: false
     jsonData:
       tracesToLogsV2:
         datasourceUid: loki

@@ -14,7 +14,6 @@ import (
 	"billing-service/internal/infrastructure/payment/stub"
 	"billing-service/internal/infrastructure/shutdown"
 	"billing-service/internal/interfaces/http/handler"
-	"billing-service/internal/interfaces/http/middleware"
 	"billing-service/internal/persistence"
 	"billing-service/internal/workers"
 	"context"
@@ -25,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	httpmw "github.com/oxf/MyUber/common/httpmiddleware"
 	"github.com/oxf/MyUber/observability/obsdb"
 	"github.com/oxf/MyUber/observability/obshttp"
 	"github.com/oxf/MyUber/observability/obslog"
@@ -39,13 +39,14 @@ const serviceName = "billing-service"
 const defaultPgDsn = "postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable"
 
 func main() {
-	// `app healthcheck` is invoked by Docker's HEALTHCHECK (see
-	// docker-compose.yml) — distroless has no shell/curl for a CMD-SHELL
-	// check, so the binary probes its own /health/ready and exits 0/1.
+	// `app healthcheck` backs Docker's HEALTHCHECK (see docker-compose.yml): distroless has no shell/curl for
+	// CMD-SHELL, so the binary probes its own /health/ready and exits 0/1.
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		healthcheckSelf("http://localhost:8005/health/live")
 	}
 
+	// otelinit.Setup reads standard OTEL_* env vars (see docker-compose.yml) and installs the global providers.
+	// It never fails boot on a down Collector — OTLP/gRPC exporters dial lazily and retry in the background.
 	ctx := context.Background()
 	providers, err := otelinit.Setup(ctx, serviceName)
 	if err != nil {
@@ -58,7 +59,7 @@ func main() {
 	if os.Getenv("APP_ENV") == "production" && dsn == defaultPgDsn {
 		log.Fatal("refusing to start in production with the default PG_DSN — set a real PG_DSN")
 	}
-	db, err := obsdb.Open("postgres", dsn, serviceName, "postgresql")
+	db, err := obsdb.Open("postgres", dsn, "postgresql")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -81,13 +82,8 @@ func main() {
 	pspEventRepo := persistence.NewPostgresPspEventRepository(db)
 	transactionManager := persistence.NewPostgresTransactionManager(db)
 
-	// PAYMENT_PROVIDER selects which adapter implements PaymentProvider,
-	// CustomerVault, and (stripe only) ProviderEventParser — stub keeps the
-	// stack and the continuously-running e2e simulator offline and
-	// deterministic; stripe is sandbox/test-mode only, enforced by
-	// NewStripeProvider refusing any key that isn't sk_test_*. eventParser
-	// stays nil for stub: there is no real webhook source to verify, so the
-	// webhook route itself is never registered below.
+	// PAYMENT_PROVIDER selects the adapter: stub keeps the stack and e2e simulator offline and deterministic;
+	// stripe is sandbox-only (NewStripeProvider rejects non-sk_test_* keys). eventParser stays nil for stub, so the webhook route is never registered below.
 	providerName := getenv("PAYMENT_PROVIDER", domain.ProviderStub)
 	var paymentProvider services.PaymentProvider
 	var customerVault services.CustomerVault
@@ -112,6 +108,21 @@ func main() {
 
 	metricsClient := metrics.NewOtelMetricsClient(serviceName)
 
+	// Outbox backlog gauges: "pending" will still be retried; "parked" exceeded workers.MaxRetries and needs manual
+	// triage (see PLAN.md's SQL) — previously this backlog had no signal at all short of running that query by hand.
+	if err := metricsClient.Gauge("myubergo.outbox.pending", nil, func(ctx context.Context) (int64, error) {
+		pending, _, err := outboxRepo.CountByRetries(ctx, workers.MaxRetries)
+		return pending, err
+	}); err != nil {
+		log.Fatal(err)
+	}
+	if err := metricsClient.Gauge("myubergo.outbox.parked", nil, func(ctx context.Context) (int64, error) {
+		_, parked, err := outboxRepo.CountByRetries(ctx, workers.MaxRetries)
+		return parked, err
+	}); err != nil {
+		log.Fatal(err)
+	}
+
 	application := app.Application{
 		Commands: app.Commands{
 			AddPaymentMethod:      command.NewAddPaymentMethodHandler(customerRepo, paymentMethodRepo, customerVault, transactionManager, providerName, logger, metricsClient),
@@ -133,9 +144,9 @@ func main() {
 		},
 	}
 
-	paymentMethodHandler := handler.NewPaymentMethodHandler(application)
-	invoiceHandler := handler.NewInvoiceHandler(application)
-	ledgerHandler := handler.NewLedgerHandler(application)
+	paymentMethodHandler := handler.NewPaymentMethodHandler(application, logger)
+	invoiceHandler := handler.NewInvoiceHandler(application, logger)
+	ledgerHandler := handler.NewLedgerHandler(application, logger)
 	var webhookHandler *handler.WebhookHandler
 	if eventParser != nil {
 		webhookHandler = handler.NewWebhookHandler(application, eventParser, pspEventRepo, paymentRepo, invoiceRepo, logger)
@@ -165,7 +176,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:         ":8005",
-		Handler:      middleware.BodyLimit(middleware.RequestID(obshttp.Handler(middleware.Recover(logger)(mux), serviceName))),
+		Handler:      httpmw.BodyLimit(httpmw.RequestID(obshttp.Handler(httpmw.Recover(logger)(mux), serviceName))),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -173,15 +184,13 @@ func main() {
 
 	shutdownManager := shutdown.NewManager(server, 30*time.Second)
 
-	// GET /health/ready should stop reporting healthy the moment shutdown
-	// begins, not up to checkInterval later — the ticker-based DB-ping check
-	// alone wouldn't catch this promptly.
+	// GET /health/ready must stop reporting healthy the moment shutdown begins, not up to checkInterval later —
+	// the ticker-based DB-ping check alone wouldn't catch this promptly.
 	shutdownManager.OnStop(healthChecker.MarkNotReady)
 
-	// Flush/close the trace/metric/log providers during graceful shutdown,
-	// after the HTTP server stops accepting new requests but before the
-	// process exits, so in-flight batched telemetry isn't dropped on exit.
-	shutdownManager.OnStop(func() {
+	// Flush providers only after every worker below has actually drained, not merely told to stop — see
+	// shutdown.Manager.OnDrained's doc comment for why OnStop would be too early and drop the drain period's telemetry.
+	shutdownManager.OnDrained(func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := providers.Shutdown(shutdownCtx); err != nil {
@@ -204,9 +213,8 @@ func main() {
 		outboxWorker.Run(workerCtx)
 	})
 
-	// ChargeWorker: sweeps open invoices due for a collection attempt. Its
-	// own transactions never hold the provider call — see
-	// internal/workers/charge_worker.go for why.
+	// ChargeWorker: sweeps open invoices due for a collection attempt. Its own transactions never hold the
+	// provider call — see internal/workers/charge_worker.go for why.
 	chargeWorker := workers.NewChargeWorker(
 		invoiceRepo, paymentRepo, paymentMethodRepo, customerRepo,
 		paymentProvider, transactionManager, application, providerName, logger,
@@ -220,7 +228,7 @@ func main() {
 	})
 
 	// ride.completed consumer: creates a ride_fare invoice + posts T1.
-	rideCompletedConsumer := consumers.NewRideCompletedConsumer(application, kafkaBroker)
+	rideCompletedConsumer := consumers.NewRideCompletedConsumer(application, kafkaBroker, logger)
 	shutdownManager.Add(1)
 	goSafe(logger, healthChecker, workerCtx, "ride-completed-consumer", func() {
 		defer shutdownManager.Done()
@@ -229,7 +237,7 @@ func main() {
 
 	// ride.cancelled consumer: creates a cancellation_fee invoice + posts T1
 	// only when a nonzero fee was charged.
-	rideCancelledConsumer := consumers.NewRideCancelledConsumer(application, kafkaBroker)
+	rideCancelledConsumer := consumers.NewRideCancelledConsumer(application, kafkaBroker, logger)
 	shutdownManager.Add(1)
 	goSafe(logger, healthChecker, workerCtx, "ride-cancelled-consumer", func() {
 		defer shutdownManager.Done()
@@ -237,9 +245,9 @@ func main() {
 	})
 
 	goSafe(logger, healthChecker, nil, "http-server", func() {
-		log.Println("billing-service listening on :8005")
+		logger.Info("billing-service listening on :8005")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Server error: %v\n", err)
+			logger.WithError(err).Error("server error")
 		}
 	})
 
@@ -270,15 +278,8 @@ func healthcheckSelf(url string) {
 	os.Exit(0)
 }
 
-// goSafe launches fn in a goroutine, recovering any panic so one bad
-// message/query doesn't take the whole process down silently. If workerCtx
-// is non-nil and fn returns while workerCtx.Err() is still nil — i.e. fn
-// exited (crashed or returned early) without being told to stop — that's a
-// genuine liveness failure: a background worker this service depends on
-// (an outbox/charge worker, a Kafka consumer) is gone and won't come back,
-// and GET /health/live should say so. Pass a nil workerCtx for goroutines
-// with no associated cancellation context, like the HTTP server itself,
-// which exits cleanly via http.ErrServerClosed on a normal shutdown.
+// goSafe launches fn in a goroutine, recovering panics so one bad message/query can't take the process down silently.
+// If workerCtx is non-nil and fn returns while workerCtx.Err() is nil, that's a genuine liveness failure (MarkNotLive); pass nil for goroutines with no cancellation context (e.g. the HTTP server).
 func goSafe(logger *logrus.Entry, healthChecker *health.Checker, workerCtx context.Context, name string, fn func()) {
 	go func() {
 		defer func() {

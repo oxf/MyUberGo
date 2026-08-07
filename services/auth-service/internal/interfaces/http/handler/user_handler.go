@@ -10,14 +10,16 @@ import (
 	"auth-service/internal/domain"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
+	"github.com/sirupsen/logrus"
 )
 
 type UserHandler struct {
-	app app.Application
+	app    app.Application
+	logger *logrus.Entry
 }
 
-func NewUserHandler(app app.Application) *UserHandler {
-	return &UserHandler{app: app}
+func NewUserHandler(app app.Application, logger *logrus.Entry) *UserHandler {
+	return &UserHandler{app: app, logger: logger}
 }
 
 func (h *UserHandler) GetList(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +33,7 @@ func (h *UserHandler) GetList(w http.ResponseWriter, r *http.Request) {
 		Page: params.page, PageSize: params.pageSize, SortBy: params.sortBy, SortDir: params.sortDir,
 	})
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -45,8 +47,7 @@ func (h *UserHandler) GetList(w http.ResponseWriter, r *http.Request) {
 }
 
 // Me backs GET /me: the caller's own profile, identified by the gateway's
-// X-User-Id header (derived from the bearer token's own claims — see
-// gateway/kong.yml), never from a client-supplied id.
+// X-User-Id header, never a client-supplied id.
 func (h *UserHandler) Me(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-Id")
 	if userID == "" {
@@ -60,7 +61,7 @@ func (h *UserHandler) Me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 

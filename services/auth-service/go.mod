@@ -5,11 +5,11 @@ go 1.26.2
 require (
 	github.com/golang-jwt/jwt/v5 v5.0.0
 	github.com/lib/pq v1.10.7
+	github.com/oxf/MyUber/common v0.0.0
 	github.com/oxf/MyUber/contracts v0.0.0
-	github.com/oxf/MyUber/observability v0.0.0-00010101000000-000000000000
+	github.com/oxf/MyUber/observability v0.0.0
 	github.com/sirupsen/logrus v1.9.4
 	go.opentelemetry.io/otel v1.44.0
-	go.opentelemetry.io/otel/trace v1.44.0
 	golang.org/x/crypto v0.51.0
 )
 
@@ -35,6 +35,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.44.0 // indirect
 	go.opentelemetry.io/otel/sdk/log v0.20.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.44.0 // indirect
+	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
@@ -48,3 +49,5 @@ require (
 replace github.com/oxf/MyUber/contracts => ../contracts
 
 replace github.com/oxf/MyUber/observability => ../observability
+
+replace github.com/oxf/MyUber/common => ../common

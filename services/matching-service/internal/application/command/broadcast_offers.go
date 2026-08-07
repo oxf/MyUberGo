@@ -15,9 +15,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Simplified matching parameters (see README "Matching Algorithm" for the
-// target design; geo radius is replaced by a widening rating-ranked pool
-// until the Location service exists).
+// Simplified matching parameters: geo radius is replaced by a widening rating-ranked
+// pool until the Location service exists (see README "Matching Algorithm").
 const (
 	BroadcastSize       = 5
 	PoolWidthPerAttempt = 5
@@ -27,9 +26,8 @@ const (
 	AcceptClaimTTL      = time.Hour
 )
 
-// BroadcastOffers runs one BROADCAST round for a searching ride: pick the
-// top-BroadcastSize eligible drivers from a pool that widens with each
-// attempt, record offers in Redis, and (re)arm the retry deadline.
+// BroadcastOffers runs one BROADCAST round: pick top-BroadcastSize eligible drivers from
+// a widening pool, record offers in Redis, and (re)arm the retry deadline.
 type BroadcastOffers struct {
 	RideID  string
 	Attempt int
@@ -92,10 +90,8 @@ func (h *BroadcastOffersHandler) Handle(ctx context.Context, cmd BroadcastOffers
 		return err
 	}
 
-	// Candidates not already offered to are the only ones worth a busy/rate
-	// check — fetched in two pipelined round-trips (one EXISTS per driver,
-	// then one GET per still-eligible driver) instead of up to 2 sequential
-	// Redis calls per candidate.
+	// Only not-yet-offered candidates need a busy/rate check — fetched in two pipelined
+	// round-trips (EXISTS then GET per driver) instead of sequential per-candidate calls.
 	var toCheck []string
 	for _, c := range candidates {
 		if !alreadyOffered[c.DriverID] {
@@ -130,15 +126,18 @@ func (h *BroadcastOffersHandler) Handle(ctx context.Context, cmd BroadcastOffers
 			rateLimited++
 		}
 	}
-	if rateLimited > 0 && h.metrics != nil {
-		h.metrics.IncCounter(ctx, "myubergo.matching.rate_limited")
+	// IncCounter once per rate-limited driver, not once per round — a round-level
+	// increment used to understate this by up to PoolWidthPerAttempt×.
+	if h.metrics != nil {
+		for i := 0; i < rateLimited; i++ {
+			h.metrics.IncCounter(ctx, "myubergo.matching.rate_limited")
+		}
 	}
 
 	targets := domain.SelectOfferTargets(candidates, alreadyOffered, excluded, BroadcastSize)
 
-	// Each target's try-offer-then-maybe-increment sequence is independent
-	// of every other target's, so fan them out instead of running up to 5
-	// targets' worth of sequential Redis round-trips one at a time.
+	// Each target's try-offer-then-increment sequence is independent of the others',
+	// so fan them out instead of running up to 5 sequential Redis round-trips.
 	var offeredMu sync.Mutex
 	offered := 0
 	g, gCtx := errgroup.WithContext(ctx)

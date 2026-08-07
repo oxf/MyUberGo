@@ -5,8 +5,9 @@ go 1.26.2
 require (
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.10.9
+	github.com/oxf/MyUber/common v0.0.0-00010101000000-000000000000
 	github.com/oxf/MyUber/contracts v0.0.0-00010101000000-000000000000
-	github.com/oxf/MyUber/observability v0.0.0-00010101000000-000000000000
+	github.com/oxf/MyUber/observability v0.0.0
 	github.com/segmentio/kafka-go v0.4.28
 	github.com/sirupsen/logrus v1.9.4
 	github.com/testcontainers/testcontainers-go/modules/kafka v0.43.0
@@ -91,3 +92,5 @@ require (
 replace github.com/oxf/MyUber/contracts => ../contracts
 
 replace github.com/oxf/MyUber/observability => ../observability
+
+replace github.com/oxf/MyUber/common => ../common

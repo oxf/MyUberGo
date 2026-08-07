@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	github.com/XSAM/otelsql v0.43.0
+	github.com/google/uuid v1.6.0
 	github.com/segmentio/kafka-go v0.4.28
 	github.com/sirupsen/logrus v1.9.4
 	go.opentelemetry.io/contrib/bridges/otellogrus v0.19.0
@@ -28,7 +29,6 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang/snappy v0.0.1 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/klauspost/compress v1.9.8 // indirect
 	github.com/pierrec/lz4 v2.6.0+incompatible // indirect

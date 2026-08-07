@@ -10,6 +10,7 @@ RUN apk add --no-cache git
 COPY services/ride-service/go.mod services/ride-service/go.sum ./
 COPY services/contracts /contracts
 COPY services/observability /observability
+COPY services/common /common
 RUN go mod download
 
 # Copy the ride-service source (cmd and internal packages)

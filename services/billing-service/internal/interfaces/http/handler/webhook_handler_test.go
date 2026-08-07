@@ -178,6 +178,9 @@ func (r *whOutboxRepo) GetUnprocessedBatch(ctx context.Context, limit int) ([]*d
 }
 func (r *whOutboxRepo) MarkProcessed(ctx context.Context, id string) error    { panic("not used") }
 func (r *whOutboxRepo) IncrementRetries(ctx context.Context, id string) error { panic("not used") }
+func (r *whOutboxRepo) CountByRetries(ctx context.Context, maxRetries int) (int64, int64, error) {
+	panic("not used")
+}
 func (r *whOutboxRepo) messages() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -236,10 +239,8 @@ func testHandlerLogger() *logrus.Entry {
 	return logrus.NewEntry(l)
 }
 
-// TestWebhookHandler_Apply_DuplicateEvent_PostsLedgerOnce is the core
-// idempotency guarantee of the psp_event inbox: two deliveries of the exact
-// same Stripe event id must resolve the payment/ledger exactly once, no
-// matter how many times Stripe redelivers it.
+// TestWebhookHandler_Apply_DuplicateEvent_PostsLedgerOnce is the core idempotency guarantee of the
+// psp_event inbox: two deliveries of the same Stripe event id resolve the payment/ledger exactly once.
 func TestWebhookHandler_Apply_DuplicateEvent_PostsLedgerOnce(t *testing.T) {
 	inv := &domain.Invoice{ID: "inv-1", RideID: "ride-1", ClientID: "client-1", Type: domain.InvoiceTypeRideFare,
 		Status: domain.InvoiceStatusOpen, AmountMinor: 1500, Currency: "EUR"}
@@ -302,10 +303,8 @@ func TestWebhookHandler_Apply_DuplicateEvent_PostsLedgerOnce(t *testing.T) {
 	}
 }
 
-// TestWebhookHandler_Apply_InterruptedDelivery_RetriesDispatch covers the
-// other half of the inbox: an event recorded (Insert succeeded) but never
-// marked processed (a crash between insert and dispatch) must have its
-// effect retried on redelivery, not silently swallowed as "already seen."
+// TestWebhookHandler_Apply_InterruptedDelivery_RetriesDispatch covers an event recorded but never
+// marked processed (a crash between insert and dispatch): its effect must be retried on redelivery.
 func TestWebhookHandler_Apply_InterruptedDelivery_RetriesDispatch(t *testing.T) {
 	inv := &domain.Invoice{ID: "inv-2", RideID: "ride-2", ClientID: "client-2", Type: domain.InvoiceTypeRideFare,
 		Status: domain.InvoiceStatusOpen, AmountMinor: 1000, Currency: "EUR"}

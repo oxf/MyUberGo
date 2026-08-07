@@ -3,8 +3,9 @@ module matching-service
 go 1.26.2
 
 require (
+	github.com/oxf/MyUber/common v0.0.0
 	github.com/oxf/MyUber/contracts v0.0.0
-	github.com/oxf/MyUber/observability v0.0.0-00010101000000-000000000000
+	github.com/oxf/MyUber/observability v0.0.0
 	github.com/redis/go-redis/extra/redisotel/v9 v9.21.0
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/segmentio/kafka-go v0.4.28
@@ -53,3 +54,5 @@ require (
 replace github.com/oxf/MyUber/contracts => ../contracts
 
 replace github.com/oxf/MyUber/observability => ../observability
+
+replace github.com/oxf/MyUber/common => ../common

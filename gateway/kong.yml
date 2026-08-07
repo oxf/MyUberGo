@@ -1,12 +1,8 @@
 _format_version: "3.0"
 _transform: true
 
-# Single consumer representing "any authenticated MyUberGo user" — every
-# access token shares the same iss/HS256 secret, so they all resolve to this
-# one consumer. Per-user identity comes from the token's user_id/email/role
-# claims, injected as X-User-* headers by the post-function plugin below, not
-# from Kong's consumer model. Per-user *rate limiting* therefore keys off the
-# injected X-User-Id header (limit_by: header), not off the consumer.
+# Single consumer for "any authenticated MyUberGo user" — every token shares one iss/secret.
+# Per-user identity/rate-limiting instead keys off the injected X-User-* headers, not the consumer.
 consumers:
   - username: myubergo-app
     jwt_secrets:
@@ -14,17 +10,26 @@ consumers:
         algorithm: HS256
         secret: secret_change_me # local-dev default; override to match JWT_SECRET in real deployments
 
-# Global plugin (no service/route scoping) — originates a trace for every
-# proxied request and exports it to the Collector, which fans it out to
-# Tempo/Prometheus(spanmetrics)/the service graph. Downstream Go services
-# join this trace by extracting the traceparent header the plugin injects.
+# Global plugin — originates a trace for every proxied request, exported to the Collector.
+# Downstream Go services join it by extracting the traceparent header this plugin injects.
 plugins:
   - name: opentelemetry
     config:
       endpoint: http://otel-collector:4318/v1/traces
       resource_attributes:
         service.name: kong
+        # Mirrors the 5 Go services' OTEL_RESOURCE_ATTRIBUTES so Kong's spans land in the same
+        # Tempo/Grafana facets. Static file, no env substitution — keep "local" in sync by hand if APP_ENV changes.
+        service.namespace: myubergo
+        deployment.environment: local
       propagation:
+        # Pin to w3c on both ends: without this allowlist an external caller could inject an
+        # arbitrary trace ID via b3/jaeger/aws headers. `preserve` on inject just forwards format, never rewrites.
+        extract:
+          - w3c
+        inject:
+          - preserve
+          - w3c
         default_format: w3c
 
 services:
@@ -92,20 +97,8 @@ services:
                 return kong.response.exit(403, { message = "admin role required" })
               end
       - name: rate-limiting
-        # NOTE: post-function's own Kong-defined priority is extremely low
-        # (it runs last, right before proxying), so rate-limiting actually
-        # evaluates limit_by: header BEFORE inject_user_headers sets
-        # X-User-Id — the header is empty at that point, and Kong's
-        # rate-limiting plugin falls back to the caller's IP. For real
-        # traffic (distinct client IPs) that's still a reasonable per-caller
-        # limit, just coarser than "per user" in the case of shared
-        # IPs/NAT. For e2e-test specifically, every virtual actor shares the
-        # simulator process's one IP, so they all share one bucket — hence
-        # the generous ceiling below. A precise per-user fix would need
-        # Kong's plugin-ordering feature, which is Enterprise-only (tried
-        # and confirmed: the OSS `kong:3.7` image rejects the `ordering`
-        # field on `rate-limiting` with "unknown field") — not worth the
-        # complexity for a local/dev learning-project gateway.
+        # NOTE: rate-limiting's low priority means it runs before inject_user_headers sets X-User-Id,
+        # so it falls back to caller IP (hence the generous ceiling) — per-user ordering needs Kong Enterprise.
         config:
           policy: redis
           redis_host: redis
@@ -222,13 +215,8 @@ services:
           header_name: X-User-Id
           minute: 600
 
-  # -- Admin-only list routes --
-  # These match on paths AND methods, which Kong's router ranks above the
-  # paths-only ride-service/driver-service routes above, so a GET to these
-  # exact paths is caught here (and gated to Admin) instead of falling
-  # through to the broader protected routes. Every other method/path under
-  # /api/ride and /api/driver (POST /request-ride, PUT .../driver-shift/{id},
-  # etc.) is untouched and still resolves to the ordinary routes.
+  # -- Admin-only list routes: match on paths AND methods, which Kong ranks above the paths-only
+  # routes above, so a GET here is gated to Admin; every other method/path is untouched. --
   - name: ride-service-admin-list
     url: http://ride-service:8001/ride
     routes:
@@ -316,9 +304,8 @@ services:
           header_name: X-User-Id
           minute: 300
 
-  # -- billing-service: caller-scoped routes require a valid token; ownership
-  # of a payment method/invoice is checked in-service against X-Client-Id,
-  # not at the gateway (Kong has no concept of invoice ownership) --
+  # -- billing-service: caller-scoped routes require a valid token; ownership of a payment
+  # method/invoice is checked in-service against X-Client-Id, not at the gateway --
   - name: billing-service
     url: http://billing-service:8005
     routes:
@@ -345,9 +332,8 @@ services:
           header_name: X-User-Id
           minute: 300
 
-  # -- billing-service: GET /invoices is an admin listing, requires Admin
-  # role — same paths+methods ranking trick as the other three admin-list
-  # routes above (matches ahead of the broader billing-protected route). --
+  # -- billing-service: GET /invoices is Admin-only, same paths+methods ranking
+  # trick as the other admin-list routes (matches ahead of billing-protected). --
   - name: billing-service-admin-list
     url: http://billing-service:8005/invoices
     routes:
@@ -377,9 +363,8 @@ services:
           header_name: X-User-Id
           minute: 300
 
-  # -- billing-service: GET /ledger/balance is a debug/regression-test
-  # endpoint (e2e-test asserts ledger invariants against it) — Admin-only,
-  # same paths+methods ranking trick as the other admin-list routes. --
+  # -- billing-service: GET /ledger/balance is a debug/regression endpoint (e2e-test asserts
+  # ledger invariants against it) — Admin-only, same ranking trick as the other admin routes. --
   - name: billing-service-ledger-balance
     url: http://billing-service:8005/ledger/balance
     routes:
@@ -409,15 +394,8 @@ services:
           header_name: X-User-Id
           minute: 300
 
-  # -- billing-service: Stripe webhook delivery — no jwt, no
-  # inject_user_headers. Stripe never has a MyUberGo token; the signature
-  # verification inside WebhookHandler (over the RAW body, against
-  # STRIPE_WEBHOOK_SECRET) is the actual auth boundary here, not Kong. Only
-  # registered by cmd/main.go when PAYMENT_PROVIDER=stripe — with the stub
-  # provider this route 404s at billing-service, which is fine since nothing
-  # is configured to deliver to it in that mode. Same paths+methods ranking
-  # trick as the admin routes above, so this wins over the broader
-  # billing-protected route despite being declared after it. --
+  # -- billing-service: Stripe webhook — no jwt/inject_user_headers; WebhookHandler's own signature
+  # check over the raw body is the real auth boundary. Only registered under PAYMENT_PROVIDER=stripe. --
   - name: billing-service-webhook
     url: http://billing-service:8005/webhooks/stripe
     routes:
@@ -436,6 +414,5 @@ services:
           limit_by: ip
           minute: 300 # Stripe test-mode delivery + retries; no user identity to key off
 
-  # matching-service (8002) is Kafka/Redis-driven internally and has no
-  # gateway-facing consumer today (see CLAUDE.md "Matching algorithm
-  # status") — intentionally not routed here.
+  # matching-service (8002) is Kafka/Redis-driven internally with no gateway-facing
+  # consumer today (see CLAUDE.md "Matching algorithm status") — intentionally not routed here.

@@ -11,6 +11,7 @@ import (
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type CancelRide struct {
@@ -112,7 +113,7 @@ func (h *CancelRideHandler) Handle(ctx context.Context, cmd CancelRide) (CancelR
 	})
 
 	if err == nil && h.metrics != nil {
-		h.metrics.IncCounter(ctx, "myubergo.rides.cancelled")
+		h.metrics.IncCounter(ctx, "myubergo.rides.cancelled", attribute.String("currency", result.Currency))
 	}
 
 	return result, err

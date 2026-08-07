@@ -5,25 +5,27 @@ import (
 	app "driver-service/internal/application"
 	"driver-service/internal/application/command"
 	"encoding/json"
-	"log"
+	"time"
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
 	"github.com/oxf/MyUber/observability/obskafka"
 	"github.com/segmentio/kafka-go"
+	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 type RideCompletedConsumer struct {
 	app    app.Application
 	broker string
+	logger *logrus.Entry
 }
 
-func NewRideCompletedConsumer(app app.Application, broker string) *RideCompletedConsumer {
-	return &RideCompletedConsumer{app: app, broker: broker}
+func NewRideCompletedConsumer(app app.Application, broker string, logger *logrus.Entry) *RideCompletedConsumer {
+	return &RideCompletedConsumer{app: app, broker: broker, logger: logger}
 }
 
+// Run retries a failed message in place rather than auto-committing — see RideAcceptedConsumer.Run.
+// ProcessRideCompleted's guarded transition (skipping the increment on redelivery) makes that safe.
 func (c *RideCompletedConsumer) Run(ctx context.Context, topic string) {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers: []string{c.broker},
@@ -32,44 +34,64 @@ func (c *RideCompletedConsumer) Run(ctx context.Context, topic string) {
 	})
 	defer reader.Close()
 
-	log.Printf("%s consumer started", topic)
+	c.logger.WithField("topic", topic).Info("consumer started")
 
 	for {
-		msg, err := reader.ReadMessage(ctx)
+		msg, err := reader.FetchMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			log.Println("consumer error:", err)
+			c.logger.WithError(err).Error("consumer error")
 			continue
 		}
 
-		var event contractsKafka.RideCompletedEvent
-		if err := json.Unmarshal(msg.Value, &event); err != nil {
-			log.Println("failed to deserialize event:", err)
-			continue
+		for {
+			commit, _ := c.handleOne(ctx, topic, msg)
+			if commit {
+				if err := reader.CommitMessages(ctx, msg); err != nil {
+					c.logger.WithError(err).Error("commit offset failed")
+				}
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(retryBackoff):
+			}
 		}
-
-		msgCtx := obskafka.Extract(ctx, msg.Headers)
-		msgCtx, span := consumerTracer.Start(msgCtx, topic+" process",
-			trace.WithSpanKind(trace.SpanKindConsumer),
-			trace.WithAttributes(
-				attribute.String("messaging.system", "kafka"),
-				attribute.String("messaging.destination.name", topic),
-			),
-		)
-
-		handleCtx, cancel := context.WithTimeout(msgCtx, handleTimeout)
-		if err := c.app.Commands.ProcessRideCompleted.Handle(handleCtx, command.ProcessRideCompleted{
-			RideID:     event.RideID,
-			DriverID:   event.DriverID,
-			FinishedAt: event.FinishedAt,
-		}); err != nil {
-			log.Println("handle error:", err)
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-		}
-		cancel()
-		span.End()
 	}
+}
+
+// handleOne is scoped to a single message so its span/timeout-cancel run via defer even on panic —
+// see RideAcceptedConsumer.handleOne for why the span starts before deserialization.
+func (c *RideCompletedConsumer) handleOne(ctx context.Context, topic string, msg kafka.Message) (commit bool, err error) {
+	msgCtx := obskafka.Extract(ctx, msg.Headers)
+	msgCtx, span := obskafka.StartConsumerSpan(msgCtx, consumerTracer, topic, "driver-service", msg)
+	defer func() { obskafka.FinishSpan(span, err) }()
+	defer obskafka.RecoverSpan(span)
+
+	var event contractsKafka.RideCompletedEvent
+	if err = json.Unmarshal(msg.Value, &event); err != nil {
+		span.SetAttributes(attribute.Bool("messaging.kafka.poison_message", true))
+		c.logger.WithContext(msgCtx).WithError(err).
+			WithField("raw_payload", obskafka.TruncateForLog(msg.Value, maxPoisonPayloadLogBytes)).
+			Error("failed to deserialize event; committing to skip poison message")
+		return true, err
+	}
+
+	logEntry := c.logger.WithContext(msgCtx).WithField("ride_id", event.RideID)
+
+	handleCtx, cancel := context.WithTimeout(msgCtx, handleTimeout)
+	defer cancel()
+	err = c.app.Commands.ProcessRideCompleted.Handle(handleCtx, command.ProcessRideCompleted{
+		RideID:     event.RideID,
+		DriverID:   event.DriverID,
+		FinishedAt: event.FinishedAt,
+	})
+	if err != nil {
+		logEntry.WithError(err).Error("handle error; leaving offset uncommitted for redelivery")
+		return false, err
+	}
+	return true, nil
 }

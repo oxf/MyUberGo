@@ -7,23 +7,23 @@ import (
 	"billing-service/internal/domain"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
+	"github.com/sirupsen/logrus"
 )
 
 type InvoiceHandler struct {
-	app app.Application
+	app    app.Application
+	logger *logrus.Entry
 }
 
-func NewInvoiceHandler(app app.Application) *InvoiceHandler {
-	return &InvoiceHandler{app: app}
+func NewInvoiceHandler(app app.Application, logger *logrus.Entry) *InvoiceHandler {
+	return &InvoiceHandler{app: app, logger: logger}
 }
 
-// GetByID is caller-scoped: authorized in-service against X-Client-Id
-// (Kong has no concept of invoice ownership) — the same pattern
-// ride-service's cancel_ride.go uses for ride ownership.
+// GetByID is caller-scoped: authorized in-service against X-Client-Id, since
+// Kong has no concept of invoice ownership (same pattern as cancel_ride.go).
 func (h *InvoiceHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	clientID := r.Header.Get("X-Client-Id")
 	id := r.PathValue("id")
@@ -34,7 +34,7 @@ func (h *InvoiceHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 	if clientID == "" || inv.ClientID != clientID {
@@ -45,9 +45,8 @@ func (h *InvoiceHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toInvoiceDto(inv))
 }
 
-// GetByRideID backs GET /rides/{rideId}/invoice — the endpoint e2e-test
-// polls after completing a ride, since delivery is async over Kafka plus a
-// ChargeWorker tick.
+// GetByRideID backs GET /rides/{rideId}/invoice, which e2e-test polls after
+// completing a ride since delivery is async over Kafka plus a ChargeWorker tick.
 func (h *InvoiceHandler) GetByRideID(w http.ResponseWriter, r *http.Request) {
 	clientID := r.Header.Get("X-Client-Id")
 	rideID := r.PathValue("rideId")
@@ -60,7 +59,7 @@ func (h *InvoiceHandler) GetByRideID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 	if clientID == "" || inv.ClientID != clientID {
@@ -71,9 +70,8 @@ func (h *InvoiceHandler) GetByRideID(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toInvoiceDto(inv))
 }
 
-// GetList is Admin-only at the Kong gateway (see gateway/kong.yml) — no
-// additional role check here, matching every other admin-list endpoint in
-// this repo (Kong is the sole enforcement point).
+// GetList is Admin-only at the Kong gateway (see gateway/kong.yml); no
+// additional role check here, since Kong is the sole enforcement point.
 func (h *InvoiceHandler) GetList(w http.ResponseWriter, r *http.Request) {
 	params, err := parseListParams(r, domain.InvoiceSortColumns, "createdAt")
 	if err != nil {
@@ -85,7 +83,7 @@ func (h *InvoiceHandler) GetList(w http.ResponseWriter, r *http.Request) {
 		Page: params.page, PageSize: params.pageSize, SortBy: params.sortBy, SortDir: params.sortDir,
 	})
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -103,10 +101,9 @@ func writeError(w http.ResponseWriter, msg string, code int) {
 }
 
 // writeInternalError logs the real error server-side and returns a generic
-// message to the client — the raw error text (which can include SQL/driver
-// internals) must never reach an HTTP response.
-func writeInternalError(w http.ResponseWriter, err error) {
-	log.Println("internal error:", err)
+// message, since raw error text (SQL/driver internals) must never reach an HTTP response.
+func writeInternalError(w http.ResponseWriter, r *http.Request, err error, logger *logrus.Entry) {
+	logger.WithContext(r.Context()).WithError(err).Error("internal error")
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 

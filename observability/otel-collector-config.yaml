@@ -6,11 +6,9 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
-  # Consumer-group lag per topic — the key async health signal for this repo's
-  # outbox/Kafka pipeline (ride.requested/accepted/completed/cancelled,
-  # shift.updated, payment.completed/failed). Scrapes Kafka's own broker
-  # metadata, not application code.
-  kafka_metrics:
+  # Consumer-group lag per topic — the key async health signal for this repo's outbox/Kafka
+  # pipeline. Scrapes Kafka's own broker metadata, not application code.
+  kafkametrics:
     brokers: ["kafka:29092"]
     protocol_version: "2.8.0"
     scrapers:
@@ -18,6 +16,18 @@ receivers:
       - topics
       - consumers
     collection_interval: 30s
+
+extensions:
+  # Exposes GET /health(z) on :13133 for the collector's own container healthcheck —
+  # otherwise depends_on: service_started elsewhere couldn't tell "up" from "actually accepting data".
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  # Backs sending_queue.storage on every exporter below — without this the queue is
+  # in-memory only, so a restart or OOM silently drops everything still buffered.
+  file_storage:
+    directory: /var/lib/otelcol/file_storage
+    create_directory: true
 
 processors:
   # Must be the first processor in every pipeline: protects the collector
@@ -32,15 +42,18 @@ processors:
     send_batch_size: 1024
 
 connectors:
-  # Derives RED metrics (rate/error/duration) per service and per operation
-  # directly from the spans already flowing through the traces pipeline — no
-  # extra instrumentation needed in any Go service.
-  span_metrics:
+  # Derives RED metrics (rate/error/duration) per service/operation directly from the
+  # traces pipeline's spans — no extra instrumentation needed in any Go service.
+  spanmetrics:
     namespace: traces.span.metrics
     dimensions:
-      - name: http.method
+      # otelhttp v0.69 emits STABLE semconv (http.request.method, not http.method) — the old name
+      # matched nothing. rpc.system dropped (no gRPC here); messaging dims matter for this Kafka-driven system.
+      - name: http.request.method
       - name: http.route
-      - name: rpc.system
+      - name: messaging.system
+      - name: messaging.destination.name
+      - name: messaging.operation.name
     histogram:
       explicit:
         buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s]
@@ -49,49 +62,78 @@ connectors:
 
   # Derives the service dependency graph (incl. Kafka producer/consumer
   # edges) from span parent/child relationships.
-  service_graph:
+  servicegraph:
     latency_histogram_buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s]
     store:
-      ttl: 2s
-      max_items: 10000
+      # The outbox worker's 2s poll ticker puts producer/consumer spans routinely several
+      # seconds apart — past the previous 2s TTL, which dropped exactly the async Kafka edges worth seeing.
+      ttl: 30s
+      max_items: 20000
 
 exporters:
-  otlp_grpc/tempo:
+  otlp/tempo:
     endpoint: tempo:4317
     tls:
       insecure: true
+    sending_queue:
+      enabled: true
+      storage: file_storage
+    retry_on_failure:
+      enabled: true
 
-  # Prometheus' native OTLP receiver: POST /api/v1/otlp/v1/metrics. otlp_http
+  # Prometheus' native OTLP receiver: POST /api/v1/otlp/v1/metrics. otlphttp
   # appends "/v1/metrics" to the configured endpoint itself.
-  otlp_http/prometheus:
+  otlphttp/prometheus:
     endpoint: http://prometheus:9090/api/v1/otlp
     tls:
       insecure: true
+    sending_queue:
+      enabled: true
+      storage: file_storage
+    retry_on_failure:
+      enabled: true
 
-  # Loki's native OTLP ingest: POST /otlp/v1/logs. otlp_http appends
+  # Loki's native OTLP ingest: POST /otlp/v1/logs. otlphttp appends
   # "/v1/logs" to the configured endpoint itself.
-  otlp_http/loki:
+  otlphttp/loki:
     endpoint: http://loki:3100/otlp
     tls:
       insecure: true
+    sending_queue:
+      enabled: true
+      storage: file_storage
+    retry_on_failure:
+      enabled: true
 
 service:
+  extensions: [health_check, file_storage]
+
   pipelines:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [otlp_grpc/tempo, span_metrics, service_graph]
+      exporters: [otlp/tempo, spanmetrics, servicegraph]
 
     metrics:
-      receivers: [otlp, kafka_metrics, span_metrics, service_graph]
+      receivers: [otlp, kafkametrics, spanmetrics, servicegraph]
       processors: [memory_limiter, batch]
-      exporters: [otlp_http/prometheus]
+      exporters: [otlphttp/prometheus]
 
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [otlp_http/loki]
+      exporters: [otlphttp/loki]
 
   telemetry:
     logs:
       level: info
+    # The collector's own health (export failures, dropped spans, queue size) was previously
+    # invisible; exposed here as a Prometheus endpoint (see prometheus.yaml's otel-collector job).
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888

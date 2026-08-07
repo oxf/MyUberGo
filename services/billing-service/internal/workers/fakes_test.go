@@ -27,9 +27,8 @@ func newFakeInvoiceRepo(paymentRepo *fakePaymentRepo, invoices ...*domain.Invoic
 	return &fakeInvoiceRepo{invoices: m, paymentRepo: paymentRepo}
 }
 
-// withDerivedAttemptCount returns a copy with AttemptCount populated by
-// counting payment rows — exactly what the real invoiceSelectCols subquery
-// does, so a fake attempt_count can never silently drift from reality.
+// withDerivedAttemptCount returns a copy with AttemptCount populated by counting payment rows,
+// matching the real invoiceSelectCols subquery so the fake can't silently drift from reality.
 func (r *fakeInvoiceRepo) withDerivedAttemptCount(inv *domain.Invoice) *domain.Invoice {
 	cp := *inv
 	cp.AttemptCount = r.paymentRepo.countByInvoiceID(inv.ID)
@@ -461,6 +460,22 @@ func (r *fakeOutboxRepo) IncrementRetries(ctx context.Context, id string) error 
 	return commonerrors.ErrNotFound
 }
 
+func (r *fakeOutboxRepo) CountByRetries(ctx context.Context, maxRetries int) (pending int64, parked int64, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range r.messages {
+		if m.Processed {
+			continue
+		}
+		if m.Retries < maxRetries {
+			pending++
+		} else {
+			parked++
+		}
+	}
+	return pending, parked, nil
+}
+
 func (r *fakeOutboxRepo) get(id string) *domain.OutboxMessage {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -486,9 +501,8 @@ func (r *fakeOutboxRepo) countByTopic(topic string) int {
 
 // --- fakeTransactionManager ----------------------------------------------
 
-// fakeTransactionManager has no real transactional semantics — the fakes
-// above aren't SQL-backed, so there's nothing to roll back. It exists only
-// to satisfy services.TransactionManager.
+// fakeTransactionManager has no real transactional semantics — the fakes above aren't SQL-backed,
+// so there's nothing to roll back; it exists only to satisfy services.TransactionManager.
 type fakeTransactionManager struct{}
 
 func (fakeTransactionManager) WithinTransaction(ctx context.Context, fn func(context.Context) error) error {
@@ -497,9 +511,8 @@ func (fakeTransactionManager) WithinTransaction(ctx context.Context, fn func(con
 
 // --- fakeProvider ----------------------------------------------------
 
-// fakeProvider mimics StubProvider's idempotency-key caching (sticky first
-// result per key) so tests can assert a resumed attempt reuses the same
-// key instead of charging twice.
+// fakeProvider mimics StubProvider's idempotency-key caching (sticky first result per key) so
+// tests can assert a resumed attempt reuses the same key instead of charging twice.
 type fakeProvider struct {
 	mu      sync.Mutex
 	calls   []services.ChargeRequest

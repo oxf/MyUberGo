@@ -1,14 +1,11 @@
 package domain
 
+import "github.com/oxf/MyUber/common/paging"
+
 // PageRequest carries validated list-query paging/sorting. Page is 1-based.
 // SortBy is a key of the entity's sort-column map and SortDir is "ASC" or
 // "DESC" — the HTTP layer validates both before building a PageRequest.
-type PageRequest struct {
-	Page     int
-	PageSize int
-	SortBy   string
-	SortDir  string
-}
+type PageRequest = paging.PageRequest
 
 // Sort whitelists: API sort key -> SQL column. ORDER BY cannot be
 // parameterized, so persistence interpolates only values from these maps.

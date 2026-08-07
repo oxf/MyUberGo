@@ -23,17 +23,8 @@ func (r *PostgresOutboxRepository) Insert(
 
 	executor := Executor(ctx, r.db)
 
-	// Captured here, not by callers: every outbox insert automatically
-	// carries forward whatever trace is active on ctx (the command
-	// handler's span), so no command handler needs to know this exists.
-	//
-	// traceContext is declared `any`, not []byte: a nil []byte boxed into
-	// an interface{} arg is NOT the same as a nil interface, so
-	// database/sql's NULL-detection would miss it and lib/pq would send an
-	// empty (not NULL) value — which then fails the jsonb column's
-	// implicit text->json cast with "invalid input syntax for type json"
-	// instead of storing NULL. Leaving this `any` at its zero value (a true
-	// nil interface) when there's no trace context avoids that.
+	// traceContext must be declared `any`, not []byte: a nil []byte boxed into an interface{}
+	// arg isn't detected as SQL NULL, so lib/pq would send an empty value and fail the jsonb cast.
 	var traceContext any
 	if tc := obsoutbox.MarshalTraceContext(ctx); tc != nil {
 		traceContext = tc
@@ -126,4 +117,26 @@ func (r *PostgresOutboxRepository) IncrementRetries(
 	)
 
 	return err
+}
+
+func (r *PostgresOutboxRepository) CountByRetries(
+	ctx context.Context,
+	maxRetries int,
+) (pending int64, parked int64, err error) {
+
+	executor := Executor(ctx, r.db)
+
+	err = executor.QueryRowContext(
+		ctx,
+		`
+		SELECT
+			count(*) FILTER (WHERE retries < $1),
+			count(*) FILTER (WHERE retries >= $1)
+		FROM ride.outbox_message
+		WHERE processed = false
+		`,
+		maxRetries,
+	).Scan(&pending, &parked)
+
+	return pending, parked, err
 }

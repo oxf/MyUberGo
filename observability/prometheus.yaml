@@ -1,6 +1,22 @@
-# All metrics arrive via the OTel Collector's OTLP push (see
-# --web.enable-otlp-receiver in docker-compose.yml) — no scrape_configs are
-# needed since no service exposes a /metrics endpoint to pull from.
+# Application metrics arrive via the OTel Collector's OTLP push — no scrape_configs needed there.
+# The jobs below are the exception: Prometheus's own health and the Collector's self-telemetry are pull-only.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/prometheus-rules.yaml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8888"]

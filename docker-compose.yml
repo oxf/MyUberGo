@@ -4,15 +4,16 @@ services:
     image: postgres:15
     restart: unless-stopped
     mem_limit: 512m
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_PASSWORD: '${POSTGRES_PASSWORD:-postgres}'
       POSTGRES_USER: '${POSTGRES_USER:-postgres}'
       POSTGRES_DB: '${POSTGRES_DB:-postgres}'
     volumes:
       - ./services/shared/migrations/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    # No published host port: only services on the compose network should
-    # reach Postgres directly. Use `docker compose exec postgres psql ...`
-    # for local inspection instead of a host port.
+    # No published host port — only services on the compose network reach Postgres.
+    # Use `docker compose exec postgres psql ...` for local inspection.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -23,9 +24,8 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     mem_limit: 256m
-    # No published host port: only services on the compose network should
-    # reach Redis directly. Use `docker compose exec redis redis-cli` for
-    # local inspection instead of a host port.
+    # No published host port — only services on the compose network reach Redis.
+    # Use `docker compose exec redis redis-cli` for local inspection.
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -71,21 +71,29 @@ services:
         condition: service_healthy
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    # Pinned, not :latest — PLAN.md documents a `latest` pull once silently
+    # renaming/deprecating component type names this config depended on.
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    # Runs as root: the image's non-root UID (10001) can't mkdir under /var/lib/otelcol
+    # for file_storage's persistent queue. Fine for local/demo; use a chowned image before real deploys.
+    user: "0:0"
     restart: unless-stopped
     mem_limit: 512m
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
       - ./observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+      - otelcol-storage:/var/lib/otelcol/file_storage
     ports:
       - "4317:4317"
       - "4318:4318"
+    # No Docker healthcheck: the image ships no shell/wget/curl/busybox and has no healthcheck subcommand.
+    # The health_check extension (:13133) plus Prometheus's otel-collector scrape job (see prometheus.yaml) cover liveness instead.
     depends_on:
       kafka:
         condition: service_healthy
 
   tempo:
-    image: grafana/tempo:latest
+    image: grafana/tempo:2.6.1
     restart: unless-stopped
     mem_limit: 512m
     command: ["-config.file=/etc/tempo.yaml"]
@@ -94,7 +102,7 @@ services:
       - tempo-data:/var/tempo
 
   loki:
-    image: grafana/loki:latest
+    image: grafana/loki:3.2.1
     restart: unless-stopped
     mem_limit: 512m
     command: ["-config.file=/etc/loki.yaml"]
@@ -103,15 +111,22 @@ services:
       - loki-data:/loki
 
   prometheus:
-    image: prom/prometheus:latest
+    # v3.x, not v2.x: --web.enable-otlp-receiver doesn't exist before v3.0 —
+    # verified empirically, v2.55.1 refuses to start with "unknown long flag".
+    image: prom/prometheus:v3.1.0
     restart: unless-stopped
     mem_limit: 512m
     command:
       - "--config.file=/etc/prometheus/prometheus.yaml"
       - "--web.enable-otlp-receiver"
       - "--enable-feature=exemplar-storage"
+      # Explicit rather than the identical 15d built-in default, plus a size guard
+      # the default lacks — stops an unbounded cardinality bug from filling the disk.
+      - "--storage.tsdb.retention.time=15d"
+      - "--storage.tsdb.retention.size=5GB"
     volumes:
       - ./observability/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - ./observability/prometheus-rules.yaml:/etc/prometheus/prometheus-rules.yaml:ro
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
@@ -122,8 +137,19 @@ services:
       retries: 5
       start_period: 10s
 
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    mem_limit: 128m
+    command: ["--config.file=/etc/alertmanager/alertmanager.yaml"]
+    volumes:
+      - ./observability/alertmanager.yaml:/etc/alertmanager/alertmanager.yaml:ro
+      - alertmanager-data:/alertmanager
+    ports:
+      - "9093:9093"
+
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.3.1
     restart: unless-stopped
     mem_limit: 256m
     environment:
@@ -138,9 +164,12 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      - prometheus
-      - tempo
-      - loki
+      prometheus:
+        condition: service_healthy
+      tempo:
+        condition: service_started
+      loki:
+        condition: service_started
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -179,12 +208,11 @@ services:
       OTEL_SERVICE_NAME: auth-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
-      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=local'
+      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=${APP_ENV:-local},service.version=${GIT_SHA:-dev}'
       OTEL_TRACES_SAMPLER: parentbased_always_on
       LOG_LEVEL: '${LOG_LEVEL:-info}'
-    # No published host port: Kong is the only ingress (see gateway/kong.yml).
-    # Publishing this would let callers bypass jwt verification/rate limiting
-    # entirely by hitting the service directly.
+    # No published host port: Kong is the only ingress (see gateway/kong.yml) —
+    # publishing this would let callers bypass jwt verification/rate limiting.
     depends_on:
       postgres:
         condition: service_healthy
@@ -213,7 +241,7 @@ services:
       OTEL_SERVICE_NAME: ride-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
-      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=local'
+      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=${APP_ENV:-local},service.version=${GIT_SHA:-dev}'
       OTEL_TRACES_SAMPLER: parentbased_always_on
       LOG_LEVEL: '${LOG_LEVEL:-info}'
     # No published host port — see the note on auth-service above.
@@ -245,7 +273,7 @@ services:
       OTEL_SERVICE_NAME: matching-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
-      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=local'
+      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=${APP_ENV:-local},service.version=${GIT_SHA:-dev}'
       OTEL_TRACES_SAMPLER: parentbased_always_on
       LOG_LEVEL: '${LOG_LEVEL:-info}'
     ports:
@@ -280,7 +308,7 @@ services:
       OTEL_SERVICE_NAME: driver-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
-      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=local'
+      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=${APP_ENV:-local},service.version=${GIT_SHA:-dev}'
       OTEL_TRACES_SAMPLER: parentbased_always_on
       LOG_LEVEL: '${LOG_LEVEL:-info}'
     # No published host port — see the note on auth-service above.
@@ -315,23 +343,18 @@ services:
       PAYMENT_BACKOFF: '1m,5m,30m'
       CHARGE_WORKER_INTERVAL_SEC: '5'
       CHARGE_LEASE: '2m'
-      # PAYMENT_PROVIDER stays 'stub' by default so the stack and the
-      # continuously-running e2e-test simulator stay offline, deterministic
-      # and free. Set PAYMENT_PROVIDER=stripe and STRIPE_SECRET_KEY (a
-      # sandbox/test-mode sk_test_... key — real payments are never in
-      # scope) via a root .env file to exercise the real adapter; see
-      # .env.example.
+      # Stays 'stub' by default so the stack and e2e-test simulator remain offline/deterministic/free.
+      # Set PAYMENT_PROVIDER=stripe + STRIPE_SECRET_KEY (sk_test_... only) via a root .env for the real adapter; see .env.example.
       PAYMENT_PROVIDER: '${PAYMENT_PROVIDER:-stub}'
       STRIPE_SECRET_KEY: '${STRIPE_SECRET_KEY:-}'
-      # The Stripe CLI (`stripe listen`) prints its own whsec_... on
-      # startup, distinct from any Dashboard-registered endpoint secret —
-      # that printed value is what goes here for local webhook delivery.
+      # The Stripe CLI (`stripe listen`) prints its own whsec_..., distinct from any
+      # Dashboard-registered endpoint secret — that printed value goes here for local webhook delivery.
       STRIPE_WEBHOOK_SECRET: '${STRIPE_WEBHOOK_SECRET:-}'
       STRIPE_TIMEOUT_SEC: '20'
       OTEL_SERVICE_NAME: billing-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
-      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=local'
+      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=${APP_ENV:-local},service.version=${GIT_SHA:-dev}'
       OTEL_TRACES_SAMPLER: parentbased_always_on
       LOG_LEVEL: '${LOG_LEVEL:-info}'
     # No published host port — see the note on auth-service above.
@@ -346,15 +369,8 @@ services:
   kong:
     image: kong:3.7
     restart: unless-stopped
-    # 512m was observed pinning Kong at ~100% memory under e2e-test load,
-    # triggering an OOM-kill crash loop on its nginx worker processes
-    # (SIGKILL, restart, repeat) — every in-flight request against a killed
-    # worker sees its connection reset (EOF client-side). Root cause:
-    # KONG_NGINX_WORKER_PROCESSES defaults to 'auto' (one Lua-VM worker per
-    # host CPU core) — on a 16-core dev machine that's 16 workers and
-    # ~1GB baseline memory before any traffic at all. Pinned to a small
-    # fixed count below, which is what dropped baseline usage low enough
-    # for this limit to actually have headroom.
+    # 512m: unpinned 'auto' worker count (one Lua-VM per CPU core) was observed OOM-killing
+    # Kong's nginx workers under e2e-test load; pinning KONG_NGINX_WORKER_PROCESSES below fixed it.
     mem_limit: 512m
     environment:
       KONG_DATABASE: 'off'
@@ -363,13 +379,11 @@ services:
       KONG_ADMIN_LISTEN: '127.0.0.1:8001'
       KONG_NGINX_WORKER_PROCESSES: '2'
       KONG_LOG_LEVEL: notice
-      # pre/post-function plugins run in a Lua sandbox that blocks require()
-      # by default; explicitly allowlist the one module our header-injection
-      # script needs (see gateway/kong.yml) rather than disabling the sandbox.
+      # pre/post-function plugins sandbox require() by default; explicitly allowlist
+      # the one module the header-injection script needs (see gateway/kong.yml).
       KONG_UNTRUSTED_LUA_SANDBOX_REQUIRES: 'cjson.safe'
-      # Kong's own internal spans (router, DNS, balancer, plugin phases) —
-      # exported via the opentelemetry plugin in gateway/kong.yml, which also
-      # emits a root span per proxied request even with this left at 'off'.
+      # Kong's own internal spans (router/DNS/balancer/plugin phases), exported via
+      # the opentelemetry plugin — still emits a root span per request even at 'off'.
       KONG_TRACING_INSTRUMENTATIONS: all
       KONG_TRACING_SAMPLING_RATE: '1.0'
     volumes:
@@ -415,3 +429,5 @@ volumes:
   loki-data:
   prometheus-data:
   grafana-data:
+  otelcol-storage:
+  alertmanager-data:
