@@ -27,3 +27,7 @@ func (p postgresPinger) Ping(ctx context.Context) error {
 func NewChecker(db *sql.DB, checkInterval time.Duration) *Checker {
 	return commonhealth.NewChecker(postgresPinger{db: db}, checkInterval)
 }
+
+var GoSafe = commonhealth.GoSafe
+
+var HealthcheckSelf = commonhealth.HealthcheckSelf

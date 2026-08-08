@@ -178,6 +178,9 @@ func (r *whOutboxRepo) GetUnprocessedBatch(ctx context.Context, limit int) ([]*d
 }
 func (r *whOutboxRepo) MarkProcessed(ctx context.Context, id string) error    { panic("not used") }
 func (r *whOutboxRepo) IncrementRetries(ctx context.Context, id string) error { panic("not used") }
+func (r *whOutboxRepo) SetClaimedUntil(ctx context.Context, id string, claimedUntil string) error {
+	panic("not used")
+}
 func (r *whOutboxRepo) CountByRetries(ctx context.Context, maxRetries int) (int64, int64, error) {
 	panic("not used")
 }

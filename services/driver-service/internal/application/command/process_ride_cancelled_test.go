@@ -2,12 +2,13 @@ package command
 
 import (
 	"context"
+	"driver-service/internal/infrastructure/metrics"
 	"testing"
 )
 
 func TestProcessRideCancelled_FlipsOnRideToOnline(t *testing.T) {
 	repo := &fakeDriverStatusRepo{changed: true}
-	h := &ProcessRideCancelledHandler{profileRepo: repo, transaction: fakeTx{}, logger: testLogger()}
+	h := &ProcessRideCancelledHandler{profileRepo: repo, transaction: fakeTx{}, logger: testLogger(), metrics: metrics.NewNoopMetricsClient()}
 
 	driverID := "driver-1"
 	err := h.Handle(context.Background(), ProcessRideCancelled{

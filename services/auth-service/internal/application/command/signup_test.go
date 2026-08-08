@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"auth-service/internal/domain"
+	"auth-service/internal/infrastructure/metrics"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
 )
@@ -43,7 +44,7 @@ func (fakeTransactionManager) WithinTransaction(ctx context.Context, fn func(con
 func TestSignup_HashesPasswordAndCreatesUser(t *testing.T) {
 	repo := &fakeUserRepo{}
 	clientRepo := &fakeClientRepo{}
-	h := &SignupHandler{repo: repo, clientRepo: clientRepo, hasher: fakeHasher{}, transaction: fakeTransactionManager{}}
+	h := &SignupHandler{repo: repo, clientRepo: clientRepo, hasher: fakeHasher{}, transaction: fakeTransactionManager{}, metrics: metrics.NewNoopMetricsClient()}
 
 	result, err := h.Handle(context.Background(), Signup{
 		Email: "a@b.com", Password: "plain-pw", Name: "Alice", Phone: "+123", Role: contracts.RoleClient,
@@ -65,7 +66,7 @@ func TestSignup_HashesPasswordAndCreatesUser(t *testing.T) {
 func TestSignup_DriverGetsNoClientRow(t *testing.T) {
 	repo := &fakeUserRepo{}
 	clientRepo := &fakeClientRepo{}
-	h := &SignupHandler{repo: repo, clientRepo: clientRepo, hasher: fakeHasher{}, transaction: fakeTransactionManager{}}
+	h := &SignupHandler{repo: repo, clientRepo: clientRepo, hasher: fakeHasher{}, transaction: fakeTransactionManager{}, metrics: metrics.NewNoopMetricsClient()}
 
 	if _, err := h.Handle(context.Background(), Signup{
 		Email: "d@b.com", Password: "plain-pw", Name: "Dave", Phone: "+123", Role: contracts.RoleDriver,

@@ -9,11 +9,21 @@ import (
 	"sync/atomic"
 	"testing"
 
-	_ "github.com/lib/pq"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
+	"github.com/oxf/MyUber/common/pgtest"
 )
 
 var testDB *sql.DB
+
+// migrationFiles lists the split migration files in apply order — WithInitScripts alone
+// would apply them in sorted-name order, which is wrong once numbering exceeds one digit.
+var migrationFiles = []string{
+	"../../../shared/migrations/sql/0001_extensions.up.sql",
+	"../../../shared/migrations/sql/0002_auth.up.sql",
+	"../../../shared/migrations/sql/0003_ride.up.sql",
+	"../../../shared/migrations/sql/0004_driver.up.sql",
+	"../../../shared/migrations/sql/0005_ride_driver_fk.up.sql",
+	"../../../shared/migrations/sql/0006_billing.up.sql",
+}
 
 var seedSeq atomic.Int64
 
@@ -31,36 +41,17 @@ func TestMain(m *testing.M) {
 func runTests(m *testing.M) int {
 	ctx := context.Background()
 
-	ctr, err := postgres.Run(ctx, "postgres:15",
-		postgres.WithDatabase("postgres"),
-		postgres.WithUsername("postgres"),
-		postgres.WithPassword("postgres"),
-		postgres.WithInitScripts("../../../shared/migrations/init.sql"),
-		postgres.BasicWaitStrategies(),
-	)
+	c, err := pgtest.StartContainer(ctx, migrationFiles)
 	if err != nil {
-		log.Fatalf("start postgres container: %v", err)
+		log.Fatal(err)
 	}
 	defer func() {
-		if err := ctr.Terminate(ctx); err != nil {
-			log.Printf("terminate postgres container: %v", err)
+		if err := c.Close(ctx); err != nil {
+			log.Printf("close postgres container: %v", err)
 		}
 	}()
 
-	dsn, err := ctr.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		log.Fatalf("connection string: %v", err)
-	}
-
-	testDB, err = sql.Open("postgres", dsn)
-	if err != nil {
-		log.Fatalf("open db: %v", err)
-	}
-	defer func() {
-		if err := testDB.Close(); err != nil {
-			log.Printf("close test db: %v", err)
-		}
-	}()
+	testDB = c.DB
 
 	return m.Run()
 }

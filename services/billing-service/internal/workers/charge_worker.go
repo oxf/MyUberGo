@@ -12,13 +12,17 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Reuses the package-level tracer from outbox_worker.go so w.provider.Charge — the riskiest
-// network call in the platform — and the commands it triggers join one trace instead of being disconnected roots.
+// tracer names ChargeWorker's own spans (w.provider.Charge is the riskiest network call in the
+// platform) — same instrumentation-scope name the outbox worker used before it moved to common/outbox.
+var tracer = otel.Tracer("billing-service/outbox")
+
+const defaultBatchSize = 10
 
 // ChargeWorker sweeps open invoices whose retry deadline has elapsed and collects via PaymentProvider.
 // Each tick: claim (lock+lease due invoices), charge (provider call, no txn/locks held), finalize (post the ledger).

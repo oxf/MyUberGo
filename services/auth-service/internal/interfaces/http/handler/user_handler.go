@@ -9,6 +9,9 @@ import (
 	commonerrors "auth-service/internal/common/errors"
 	"auth-service/internal/domain"
 
+	"github.com/oxf/MyUber/common/httpresponse"
+	"github.com/oxf/MyUber/common/kongheaders"
+	"github.com/oxf/MyUber/common/paging"
 	contracts "github.com/oxf/MyUber/contracts/http"
 	"github.com/sirupsen/logrus"
 )
@@ -23,17 +26,17 @@ func NewUserHandler(app app.Application, logger *logrus.Entry) *UserHandler {
 }
 
 func (h *UserHandler) GetList(w http.ResponseWriter, r *http.Request) {
-	params, err := parseListParams(r, domain.UserSortColumns, "createdAt")
+	params, err := paging.ParseListParams(r, domain.UserSortColumns, "createdAt")
 	if err != nil {
-		writeError(w, err.Error(), http.StatusBadRequest)
+		httpresponse.WriteError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	result, err := h.app.Queries.GetUserList.Handle(r.Context(), query.GetUserList{
-		Page: params.page, PageSize: params.pageSize, SortBy: params.sortBy, SortDir: params.sortDir,
+		Page: params.Page, PageSize: params.PageSize, SortBy: params.SortBy, SortDir: params.SortDir,
 	})
 	if err != nil {
-		writeInternalError(w, r, err, h.logger)
+		httpresponse.WriteInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -41,29 +44,28 @@ func (h *UserHandler) GetList(w http.ResponseWriter, r *http.Request) {
 	for _, user := range result.Items {
 		items = append(items, toUserDto(user))
 	}
-	writeJSON(w, contracts.PagedResponse[contracts.UserDto]{
-		Items: items, Page: params.page, PageSize: params.pageSize, TotalCount: result.TotalCount,
+	httpresponse.WriteJSON(w, http.StatusOK, contracts.PagedResponse[contracts.UserDto]{
+		Items: items, Page: params.Page, PageSize: params.PageSize, TotalCount: result.TotalCount,
 	})
 }
 
 // Me backs GET /me: the caller's own profile, identified by the gateway's
 // X-User-Id header, never a client-supplied id.
 func (h *UserHandler) Me(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-Id")
-	if userID == "" {
-		writeError(w, "X-User-Id header is required", http.StatusBadRequest)
+	userID, ok := kongheaders.RequireUserID(w, r)
+	if !ok {
 		return
 	}
 
 	result, err := h.app.Queries.GetUserByID.Handle(r.Context(), query.GetUserByID{ID: userID})
 	if errors.Is(err, commonerrors.ErrNotFound) {
-		writeError(w, "not found", http.StatusNotFound)
+		httpresponse.WriteError(w, "not found", http.StatusNotFound)
 		return
 	}
 	if err != nil {
-		writeInternalError(w, r, err, h.logger)
+		httpresponse.WriteInternalError(w, r, err, h.logger)
 		return
 	}
 
-	writeJSON(w, toUserDto(result))
+	httpresponse.WriteJSON(w, http.StatusOK, toUserDto(result))
 }

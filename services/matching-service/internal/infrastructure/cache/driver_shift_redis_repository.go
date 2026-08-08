@@ -27,6 +27,7 @@ func (r *DriverRepository) UpsertDriver(ctx context.Context, event contracts.Shi
 		"shiftID":   event.ShiftID,
 		"status":    event.Status,
 		"rating":    event.Rating,
+		"userId":    event.UserID,
 		"updatedAt": event.UpdatedAt,
 	}).Err(); err != nil {
 		return err
@@ -66,4 +67,12 @@ func (r *DriverRepository) Rating(ctx context.Context, driverID string) (float64
 
 func (r *DriverRepository) AddOnline(ctx context.Context, driverID string, rating float64) error {
 	return r.rdb.ZAdd(ctx, onlineDriversKey, redis.Z{Score: rating, Member: driverID}).Err()
+}
+
+func (r *DriverRepository) GetUserID(ctx context.Context, driverID string) (string, error) {
+	userID, err := r.rdb.HGet(ctx, fmt.Sprintf("driver:%s", driverID), "userId").Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	return userID, err
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"ride-service/internal/domain"
+	"ride-service/internal/infrastructure/metrics"
 	"testing"
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
@@ -50,7 +51,7 @@ func TestCreateRide_InsertsRideAndOutboxRowAtomically(t *testing.T) {
 		Name: "Standard", BaseFareMinor: 300, PricePerKmMinor: 100, PricePerMinMinor: 20, Currency: "EUR",
 	}}
 	outbox := &fakeOutboxRepo{}
-	h := &CreateRideHandler{repo: rideRepo, tariffRepo: tariffRepo, outboxRepo: outbox, transaction: fakeTx{}}
+	h := &CreateRideHandler{repo: rideRepo, tariffRepo: tariffRepo, outboxRepo: outbox, transaction: fakeTx{}, metrics: metrics.NewNoopMetricsClient()}
 
 	result, err := h.Handle(context.Background(), CreateRide{
 		ClientID: "u1", PickupLat: 1, PickupLng: 2, PickupAddress: "A",

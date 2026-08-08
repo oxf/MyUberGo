@@ -4,6 +4,7 @@ import (
 	"billing-service/internal/application/services"
 	"billing-service/internal/common/decorator"
 	"billing-service/internal/domain"
+	"billing-service/internal/infrastructure/metrics"
 	"context"
 	"errors"
 	"time"
@@ -41,6 +42,9 @@ func NewCreateInvoiceFromRideHandler(
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandlerNoResult[CreateInvoiceFromRide] {
+	if metricsClient == nil {
+		metricsClient = metrics.NewNoopMetricsClient()
+	}
 
 	handler := &CreateInvoiceFromRideHandler{
 		invoiceRepo:   invoiceRepo,
@@ -111,7 +115,7 @@ func (h *CreateInvoiceFromRideHandler) Handle(ctx context.Context, cmd CreateInv
 		return nil
 	}
 
-	if err == nil && h.metrics != nil {
+	if err == nil {
 		h.metrics.IncCounter(ctx, "myubergo.invoices.created", attribute.String("type", cmd.Type))
 		h.metrics.RecordValue(ctx, "myubergo.payment.amount_minor", float64(cmd.AmountMinor),
 			attribute.String("currency", cmd.Currency),

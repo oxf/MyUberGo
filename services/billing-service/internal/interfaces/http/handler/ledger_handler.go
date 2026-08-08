@@ -5,6 +5,7 @@ import (
 	"billing-service/internal/application/query"
 	"net/http"
 
+	"github.com/oxf/MyUber/common/httpresponse"
 	"github.com/sirupsen/logrus"
 )
 
@@ -24,7 +25,7 @@ func (h *LedgerHandler) GetBalance(w http.ResponseWriter, r *http.Request) {
 	currency := r.URL.Query().Get("currency")
 	ownerID := r.URL.Query().Get("ownerId")
 	if accountType == "" || currency == "" {
-		writeError(w, "type and currency query params are required", http.StatusBadRequest)
+		httpresponse.WriteError(w, "type and currency query params are required", http.StatusBadRequest)
 		return
 	}
 
@@ -32,11 +33,11 @@ func (h *LedgerHandler) GetBalance(w http.ResponseWriter, r *http.Request) {
 		AccountType: accountType, OwnerID: ownerID, Currency: currency,
 	})
 	if err != nil {
-		writeInternalError(w, r, err, h.logger)
+		httpresponse.WriteInternalError(w, r, err, h.logger)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpresponse.WriteJSON(w, http.StatusOK, map[string]any{
 		"type": accountType, "ownerId": ownerID, "currency": currency, "balanceMinor": balance,
 	})
 }

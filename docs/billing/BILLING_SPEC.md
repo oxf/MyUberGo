@@ -361,9 +361,11 @@ and the client has open invoices.
 
 ## 10. Risks and failure modes
 
-- **Fresh-volume requirement.** Both §3 and §4 change `init.sql`, and there is still no migration
+- ~~**Fresh-volume requirement.** Both §3 and §4 change `init.sql`, and there is still no migration
   tool. Every developer needs `docker-compose down -v`. This is now the third schema change with
-  this caveat — worth considering `golang-migrate` as a separate task.
+  this caveat — worth considering `golang-migrate` as a separate task.~~ Resolved 2026-08-08: golang-migrate
+  adopted, `init.sql` split into `services/shared/migrations/sql/*.up.sql`/`*.down.sql`, applied by a
+  one-shot `migrate` compose service — see PLAN.md's 2026-08-08 Migration tooling entry.
 - **Float→int conversion is silent.** A missed conversion compiles fine and produces a 100× error.
   Rename columns and fields (`price` → `priceMinor`) rather than changing types in place, so the
   compiler finds every call site.

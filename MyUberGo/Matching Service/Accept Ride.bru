@@ -5,9 +5,13 @@ meta {
 }
 
 post {
-  url: http://localhost:8002/rides/00000000-0000-0000-0000-000000000000/accept
+  url: http://localhost:8090/api/matching/rides/00000000-0000-0000-0000-000000000000/accept
   body: json
   auth: inherit
+}
+
+headers {
+  Authorization: Bearer {{auth_token}}
 }
 
 body:json {

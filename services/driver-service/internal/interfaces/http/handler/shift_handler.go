@@ -10,6 +10,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/oxf/MyUber/common/httpresponse"
+	"github.com/oxf/MyUber/common/paging"
 	contracts "github.com/oxf/MyUber/contracts/http"
 	"github.com/sirupsen/logrus"
 )
@@ -26,7 +28,7 @@ func NewShiftHandler(app app.Application, logger *logrus.Entry) *ShiftHandler {
 func (h *ShiftHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req contracts.CreateShiftRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, err.Error(), http.StatusBadRequest)
+		httpresponse.WriteError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -34,18 +36,18 @@ func (h *ShiftHandler) Create(w http.ResponseWriter, r *http.Request) {
 		DriverID: req.DriverId,
 	})
 	if err != nil {
-		writeError(w, err.Error(), http.StatusBadRequest)
+		httpresponse.WriteError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	writeJSON(w, contracts.CreateShiftResponse{Id: result.ID})
+	httpresponse.WriteJSON(w, http.StatusOK, contracts.CreateShiftResponse{Id: result.ID})
 }
 
 func (h *ShiftHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req contracts.UpdateShiftRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, err.Error(), http.StatusBadRequest)
+		httpresponse.WriteError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -53,29 +55,29 @@ func (h *ShiftHandler) Update(w http.ResponseWriter, r *http.Request) {
 		ID: id, Status: req.Status,
 	})
 	if errors.Is(err, commonerrors.ErrNotFound) {
-		writeError(w, "not found", http.StatusNotFound)
+		httpresponse.WriteError(w, "not found", http.StatusNotFound)
 		return
 	}
 	if err != nil {
-		writeError(w, err.Error(), http.StatusBadRequest)
+		httpresponse.WriteError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	writeJSON(w, map[string]string{"id": id})
+	httpresponse.WriteJSON(w, http.StatusOK, map[string]string{"id": id})
 }
 
 func (h *ShiftHandler) GetList(w http.ResponseWriter, r *http.Request) {
-	params, err := parseListParams(r, domain.ShiftSortColumns, "startedAt")
+	params, err := paging.ParseListParams(r, domain.ShiftSortColumns, "startedAt")
 	if err != nil {
-		writeError(w, err.Error(), http.StatusBadRequest)
+		httpresponse.WriteError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	result, err := h.app.Queries.GetShiftList.Handle(r.Context(), query.GetShiftList{
-		Page: params.page, PageSize: params.pageSize, SortBy: params.sortBy, SortDir: params.sortDir,
+		Page: params.Page, PageSize: params.PageSize, SortBy: params.SortBy, SortDir: params.SortDir,
 	})
 	if err != nil {
-		writeInternalError(w, r, err, h.logger)
+		httpresponse.WriteInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -83,8 +85,8 @@ func (h *ShiftHandler) GetList(w http.ResponseWriter, r *http.Request) {
 	for _, s := range result.Items {
 		items = append(items, toShiftDto(s))
 	}
-	writeJSON(w, contracts.PagedResponse[contracts.ShiftDto]{
-		Items: items, Page: params.page, PageSize: params.pageSize, TotalCount: result.TotalCount,
+	httpresponse.WriteJSON(w, http.StatusOK, contracts.PagedResponse[contracts.ShiftDto]{
+		Items: items, Page: params.Page, PageSize: params.PageSize, TotalCount: result.TotalCount,
 	})
 }
 
@@ -92,12 +94,12 @@ func (h *ShiftHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	result, err := h.app.Queries.GetShiftByID.Handle(r.Context(), query.GetShiftByID{ID: id})
 	if errors.Is(err, commonerrors.ErrNotFound) {
-		writeError(w, "not found", http.StatusNotFound)
+		httpresponse.WriteError(w, "not found", http.StatusNotFound)
 		return
 	}
 	if err != nil {
-		writeInternalError(w, r, err, h.logger)
+		httpresponse.WriteInternalError(w, r, err, h.logger)
 		return
 	}
-	writeJSON(w, toShiftDto(result))
+	httpresponse.WriteJSON(w, http.StatusOK, toShiftDto(result))
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"matching-service/internal/domain"
+	"matching-service/internal/infrastructure/metrics"
 
 	contracts "github.com/oxf/MyUber/contracts/kafka"
 )
@@ -39,6 +40,13 @@ type fakeDrivers struct {
 	pool      []domain.Candidate
 	removed   []string
 	addedBack map[string]float64
+	// userIDs maps driverID -> owning auth.user(id); GetUserID returns "" for
+	// an unlisted driver (the default deny for AcceptRideHandler's ownership check).
+	userIDs map[string]string
+}
+
+func (f *fakeDrivers) GetUserID(ctx context.Context, driverID string) (string, error) {
+	return f.userIDs[driverID], nil
 }
 
 func (f *fakeDrivers) TopOnlineDrivers(ctx context.Context, limit int) ([]domain.Candidate, error) {
@@ -155,7 +163,7 @@ func pool(n int) []domain.Candidate {
 }
 
 func newTestBroadcastHandler(rides *fakeRides, drivers *fakeDrivers, offers *fakeOffers) *BroadcastOffersHandler {
-	return &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers}
+	return &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers, metrics: metrics.NewNoopMetricsClient()}
 }
 
 func TestBroadcastOffers_TopFiveFirstAttempt(t *testing.T) {

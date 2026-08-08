@@ -7,6 +7,7 @@ import (
 	"ride-service/internal/application/services"
 	"ride-service/internal/common/decorator"
 	"ride-service/internal/domain"
+	"ride-service/internal/infrastructure/metrics"
 	"time"
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
@@ -53,6 +54,9 @@ func NewCreateRideHandler(
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandler[CreateRide, CreateRideResult] {
+	if metricsClient == nil {
+		metricsClient = metrics.NewNoopMetricsClient()
+	}
 
 	handler := &CreateRideHandler{
 		repo:        repo,
@@ -171,7 +175,7 @@ func (h *CreateRideHandler) Handle(ctx context.Context, cmd CreateRide) (CreateR
 		return nil
 	})
 
-	if err == nil && h.metrics != nil {
+	if err == nil {
 		currencyAttr := attribute.String("currency", tariff.Currency)
 		h.metrics.IncCounter(ctx, "myubergo.rides.requested", currencyAttr)
 		h.metrics.RecordValue(ctx, "myubergo.ride.estimated_fare_minor", float64(fareMinor), currencyAttr)

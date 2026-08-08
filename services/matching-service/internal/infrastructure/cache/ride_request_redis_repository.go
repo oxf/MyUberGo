@@ -66,6 +66,7 @@ func (r *RideRepository) GetRide(ctx context.Context, rideID string) (*domain.Ri
 		Status:             m["status"],
 		PickupAddress:      m["pickupAddress"],
 		DestinationAddress: m["destinationAddress"],
+		CreatedAt:          m["createdAt"],
 	}
 	ride.PickupLat, _ = strconv.ParseFloat(m["pickupLat"], 64)
 	ride.PickupLng, _ = strconv.ParseFloat(m["pickupLng"], 64)

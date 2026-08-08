@@ -7,6 +7,7 @@ import (
 	"ride-service/internal/common/decorator"
 	commonerrors "ride-service/internal/common/errors"
 	"ride-service/internal/domain"
+	"ride-service/internal/infrastructure/metrics"
 	"time"
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
@@ -42,6 +43,9 @@ func NewCancelRideHandler(
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandler[CancelRide, CancelRideResult] {
+	if metricsClient == nil {
+		metricsClient = metrics.NewNoopMetricsClient()
+	}
 
 	handler := &CancelRideHandler{
 		repo:          repo,
@@ -112,7 +116,7 @@ func (h *CancelRideHandler) Handle(ctx context.Context, cmd CancelRide) (CancelR
 		return nil
 	})
 
-	if err == nil && h.metrics != nil {
+	if err == nil {
 		h.metrics.IncCounter(ctx, "myubergo.rides.cancelled", attribute.String("currency", result.Currency))
 	}
 

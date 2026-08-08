@@ -65,7 +65,7 @@ func main() {
 	// Kong gateway now (see gateway/kong.yml) — every actor's list-endpoint
 	// verifies need this token, so it's fetched once, up front, rather than
 	// per actor.
-	log.Println("logging in as seeded admin (services/shared/migrations/init.sql)...")
+	log.Println("logging in as seeded admin (services/shared/migrations/sql/0002_auth.up.sql)...")
 	deps.AdminAccessToken = actors.LoginAsAdmin(ctx, deps.Auth)
 	if deps.AdminAccessToken == "" {
 		log.Println("warning: could not log in as admin before shutdown; list-endpoint verifies will fail")
@@ -137,16 +137,14 @@ func main() {
 func loadConfig() config {
 	cfg := config{}
 
-	// auth/ride/driver now go through Kong (the API gateway) — see
+	// auth/ride/driver/matching now go through Kong (the API gateway) — see
 	// gateway/kong.yml and CLAUDE.md's "API Gateway" section. Each base URL
 	// includes the /api/<service> prefix Kong routes on and strips before
-	// forwarding, so apiclient paths below (e.g. "/login", "/ride") don't
-	// change. matching-service has no gateway route (internal/Kafka-driven
-	// today), so it's still reached directly.
+	// forwarding, so apiclient paths below (e.g. "/login", "/ride") don't change.
 	flag.StringVar(&cfg.authURL, "auth-url", getenv("E2E_AUTH_URL", "http://localhost:8090/api/auth"), "auth-service base URL (via gateway)")
 	flag.StringVar(&cfg.rideURL, "ride-url", getenv("E2E_RIDE_URL", "http://localhost:8090/api/ride"), "ride-service base URL (via gateway)")
 	flag.StringVar(&cfg.driverURL, "driver-url", getenv("E2E_DRIVER_URL", "http://localhost:8090/api/driver"), "driver-service base URL (via gateway)")
-	flag.StringVar(&cfg.matchingURL, "matching-url", getenv("E2E_MATCHING_URL", "http://localhost:8002"), "matching-service base URL (direct, no gateway route)")
+	flag.StringVar(&cfg.matchingURL, "matching-url", getenv("E2E_MATCHING_URL", "http://localhost:8090/api/matching"), "matching-service base URL (via gateway)")
 	flag.StringVar(&cfg.billingURL, "billing-url", getenv("E2E_BILLING_URL", "http://localhost:8090/api/billing"), "billing-service base URL (via gateway)")
 	flag.IntVar(&cfg.clients, "clients", getenvInt("E2E_CLIENTS", 5), "number of virtual clients")
 	flag.IntVar(&cfg.drivers, "drivers", getenvInt("E2E_DRIVERS", 3), "number of virtual drivers")

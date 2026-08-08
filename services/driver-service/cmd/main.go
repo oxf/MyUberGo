@@ -7,26 +7,25 @@ import (
 	"driver-service/internal/application/query"
 	"driver-service/internal/consumers"
 	"driver-service/internal/infrastructure/health"
-	kafkainfra "driver-service/internal/infrastructure/kafka"
 	"driver-service/internal/infrastructure/metrics"
 	"driver-service/internal/infrastructure/shutdown"
 	"driver-service/internal/interfaces/http/handler"
 	"driver-service/internal/persistence"
-	"driver-service/internal/workers"
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"time"
 
+	"github.com/oxf/MyUber/common/dbconn"
+	"github.com/oxf/MyUber/common/envconfig"
 	httpmw "github.com/oxf/MyUber/common/httpmiddleware"
-	"github.com/oxf/MyUber/observability/obsdb"
+	"github.com/oxf/MyUber/common/kafkapublisher"
+	"github.com/oxf/MyUber/common/outbox"
 	"github.com/oxf/MyUber/observability/obshttp"
 	"github.com/oxf/MyUber/observability/obslog"
 	"github.com/oxf/MyUber/observability/otelinit"
 
 	_ "github.com/lib/pq"
-	"github.com/sirupsen/logrus"
 )
 
 const serviceName = "driver-service"
@@ -37,7 +36,7 @@ func main() {
 	// `app healthcheck` backs Docker's HEALTHCHECK: distroless has no shell/curl,
 	// so the binary probes its own /health/ready itself and exits 0/1.
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		healthcheckSelf("http://localhost:8003/health/live")
+		health.HealthcheckSelf("http://localhost:8003/health/live")
 	}
 
 	// otelinit.Setup installs the global tracer/meter/logger providers from OTEL_* env vars.
@@ -50,37 +49,35 @@ func main() {
 
 	logger := obslog.NewLogger(serviceName)
 
-	dsn := getenv("PG_DSN", defaultPgDsn)
-	if os.Getenv("APP_ENV") == "production" && dsn == defaultPgDsn {
-		log.Fatal("refusing to start in production with the default PG_DSN — set a real PG_DSN")
-	}
-	db, err := obsdb.Open("postgres", dsn, "postgresql")
+	db, err := dbconn.Open(defaultPgDsn)
 	if err != nil {
 		log.Fatal(err)
 	}
-	db.SetMaxOpenConns(atoi(getenv("DB_MAX_OPEN_CONNS", "20")))
-	db.SetMaxIdleConns(atoi(getenv("DB_MAX_IDLE_CONNS", "10")))
-	db.SetConnMaxLifetime(time.Duration(atoi(getenv("DB_CONN_MAX_LIFETIME_MIN", "5"))) * time.Minute)
 
-	kafkaBroker := getenv("KAFKA_BROKER", "kafka:29092")
+	kafkaBroker := envconfig.String("KAFKA_BROKER", "kafka:29092")
 
 	profileRepo := persistence.NewPostgresDriverRepository(db)
 	shiftRepo := persistence.NewPostgresShiftRepository(db)
 	outboxRepo := persistence.NewPostgresOutboxRepository(db)
 	transactionManager := persistence.NewPostgresTransactionManager(db)
 
+	// Outbox worker: publishes driver.outbox_message rows (e.g. shift.updated) to Kafka
+	publisher := kafkapublisher.New(kafkaBroker)
+	defer publisher.Close()
+	outboxWorker := outbox.New(serviceName, outboxRepo, publisher, transactionManager, logger, 2*time.Second)
+
 	metricsClient := metrics.NewOtelMetricsClient(serviceName)
 
-	// Outbox backlog gauges: "pending" will still retry, "parked" exceeded workers.MaxRetries
+	// Outbox backlog gauges: "pending" will still retry, "parked" exceeded outboxWorker.MaxRetries()
 	// and needs manual triage (see PLAN.md) — previously this backlog had no signal at all.
 	if err := metricsClient.Gauge("myubergo.outbox.pending", nil, func(ctx context.Context) (int64, error) {
-		pending, _, err := outboxRepo.CountByRetries(ctx, workers.MaxRetries)
+		pending, _, err := outboxRepo.CountByRetries(ctx, outboxWorker.MaxRetries())
 		return pending, err
 	}); err != nil {
 		log.Fatal(err)
 	}
 	if err := metricsClient.Gauge("myubergo.outbox.parked", nil, func(ctx context.Context) (int64, error) {
-		_, parked, err := outboxRepo.CountByRetries(ctx, workers.MaxRetries)
+		_, parked, err := outboxRepo.CountByRetries(ctx, outboxWorker.MaxRetries())
 		return parked, err
 	}); err != nil {
 		log.Fatal(err)
@@ -154,16 +151,11 @@ func main() {
 		}
 	})
 
-	// Outbox worker: publishes driver.outbox_message rows (e.g. shift.updated) to Kafka
-	publisher := kafkainfra.NewPublisher(kafkaBroker)
-	defer publisher.Close()
-
-	outboxWorker := workers.NewOutboxWorker(outboxRepo, publisher, transactionManager, logger, 2*time.Second)
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	shutdownManager.OnStop(cancelWorker)
 
 	shutdownManager.Add(1)
-	goSafe(logger, healthChecker, workerCtx, "outbox-worker", func() {
+	health.GoSafe(logger, healthChecker, workerCtx, "outbox-worker", func() {
 		defer shutdownManager.Done()
 		outboxWorker.Run(workerCtx)
 	})
@@ -172,7 +164,7 @@ func main() {
 	// Online -> OnRide via ProcessRideAcceptedHandler.
 	rideAcceptedConsumer := consumers.NewRideAcceptedConsumer(application, kafkaBroker, logger)
 	shutdownManager.Add(1)
-	goSafe(logger, healthChecker, workerCtx, "ride-accepted-consumer", func() {
+	health.GoSafe(logger, healthChecker, workerCtx, "ride-accepted-consumer", func() {
 		defer shutdownManager.Done()
 		rideAcceptedConsumer.Run(workerCtx, "ride.accepted")
 	})
@@ -181,7 +173,7 @@ func main() {
 	// (no-op if the ride was cancelled before a match existed).
 	rideCancelledConsumer := consumers.NewRideCancelledConsumer(application, kafkaBroker, logger)
 	shutdownManager.Add(1)
-	goSafe(logger, healthChecker, workerCtx, "ride-cancelled-consumer", func() {
+	health.GoSafe(logger, healthChecker, workerCtx, "ride-cancelled-consumer", func() {
 		defer shutdownManager.Done()
 		rideCancelledConsumer.Run(workerCtx, "ride.cancelled")
 	})
@@ -190,13 +182,13 @@ func main() {
 	// total_rides_completed via ProcessRideCompletedHandler.
 	rideCompletedConsumer := consumers.NewRideCompletedConsumer(application, kafkaBroker, logger)
 	shutdownManager.Add(1)
-	goSafe(logger, healthChecker, workerCtx, "ride-completed-consumer", func() {
+	health.GoSafe(logger, healthChecker, workerCtx, "ride-completed-consumer", func() {
 		defer shutdownManager.Done()
 		rideCompletedConsumer.Run(workerCtx, "ride.completed")
 	})
 
 	// Start server in a goroutine
-	goSafe(logger, healthChecker, nil, "http-server", func() {
+	health.GoSafe(logger, healthChecker, nil, "http-server", func() {
 		logger.Info("driver-service listening on :8003")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.WithError(err).Error("server error")
@@ -205,44 +197,4 @@ func main() {
 
 	// Wait for shutdown signal and perform graceful shutdown
 	shutdownManager.WaitForShutdown()
-}
-
-func getenv(k, d string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return d
-}
-
-func atoi(s string) int { v, _ := strconv.Atoi(s); return v }
-
-// healthcheckSelf backs the `app healthcheck` subcommand: a plain HTTP GET
-// against the service's own readiness endpoint, exiting 0/1 for Docker.
-func healthcheckSelf(url string) {
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil {
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		os.Exit(1)
-	}
-	os.Exit(0)
-}
-
-// goSafe launches fn in a goroutine, recovering any panic. If workerCtx is non-nil and fn
-// returns while it's not cancelled, that's a real liveness failure — mark /health/live not-live.
-func goSafe(logger *logrus.Entry, healthChecker *health.Checker, workerCtx context.Context, name string, fn func()) {
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				logger.WithField("goroutine", name).WithField("panic", r).Error("recovered from panic")
-			}
-			if workerCtx != nil && workerCtx.Err() == nil {
-				healthChecker.MarkNotLive(name + " exited unexpectedly")
-			}
-		}()
-		fn()
-	}()
 }

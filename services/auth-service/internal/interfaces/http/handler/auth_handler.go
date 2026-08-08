@@ -9,6 +9,8 @@ import (
 	"auth-service/internal/application/command"
 	commonerrors "auth-service/internal/common/errors"
 
+	"github.com/oxf/MyUber/common/httpresponse"
+	"github.com/oxf/MyUber/common/kongheaders"
 	contracts "github.com/oxf/MyUber/contracts/http"
 	"github.com/sirupsen/logrus"
 )
@@ -25,17 +27,17 @@ func NewAuthHandler(app app.Application, logger *logrus.Entry) *AuthHandler {
 func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 	var req contracts.SignupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, err.Error(), http.StatusBadRequest)
+		httpresponse.WriteError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if req.Email == "" || req.Password == "" {
-		writeError(w, "invalid credentials", http.StatusBadRequest)
+		httpresponse.WriteError(w, "invalid credentials", http.StatusBadRequest)
 		return
 	}
 	if req.Role != contracts.RoleClient && req.Role != contracts.RoleDriver {
 		// Admin has no signup path; the one seeded admin account is inserted
-		// directly by services/shared/migrations/init.sql.
-		writeError(w, "role must be Client or Driver", http.StatusBadRequest)
+		// directly by services/shared/migrations/sql/0002_auth.up.sql.
+		httpresponse.WriteError(w, "role must be Client or Driver", http.StatusBadRequest)
 		return
 	}
 
@@ -48,21 +50,20 @@ func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 	})
 	switch {
 	case errors.Is(err, commonerrors.ErrConflict):
-		writeError(w, err.Error(), http.StatusConflict)
+		httpresponse.WriteError(w, err.Error(), http.StatusConflict)
 		return
 	case err != nil:
-		writeInternalError(w, r, err, h.logger)
+		httpresponse.WriteInternalError(w, r, err, h.logger)
 		return
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, contracts.SignupResponse{UserID: result.UserID})
+	httpresponse.WriteJSON(w, http.StatusCreated, contracts.SignupResponse{UserID: result.UserID})
 }
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req contracts.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, err.Error(), http.StatusBadRequest)
+		httpresponse.WriteError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -72,14 +73,14 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	})
 	switch {
 	case errors.Is(err, commonerrors.ErrInvalidCredentials):
-		writeError(w, "invalid credentials", http.StatusUnauthorized)
+		httpresponse.WriteError(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	case err != nil:
-		writeInternalError(w, r, err, h.logger)
+		httpresponse.WriteInternalError(w, r, err, h.logger)
 		return
 	}
 
-	writeJSON(w, contracts.LoginResponse{
+	httpresponse.WriteJSON(w, http.StatusOK, contracts.LoginResponse{
 		AccessToken:  result.AccessToken,
 		RefreshToken: result.RefreshToken,
 		ExpiresIn:    result.ExpiresIn,
@@ -89,7 +90,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	var req contracts.RefreshRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, err.Error(), http.StatusBadRequest)
+		httpresponse.WriteError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -98,29 +99,28 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	})
 	switch {
 	case errors.Is(err, commonerrors.ErrInvalidToken):
-		writeError(w, "invalid or expired refresh token", http.StatusUnauthorized)
+		httpresponse.WriteError(w, "invalid or expired refresh token", http.StatusUnauthorized)
 		return
 	case err != nil:
-		writeInternalError(w, r, err, h.logger)
+		httpresponse.WriteInternalError(w, r, err, h.logger)
 		return
 	}
 
-	writeJSON(w, contracts.RefreshResponse{
+	httpresponse.WriteJSON(w, http.StatusOK, contracts.RefreshResponse{
 		AccessToken: result.AccessToken,
 		ExpiresIn:   result.ExpiresIn,
 	})
 }
 
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-Id")
-	if userID == "" {
-		writeError(w, "X-User-Id header is required", http.StatusBadRequest)
+	userID, ok := kongheaders.RequireUserID(w, r)
+	if !ok {
 		return
 	}
 
 	var req contracts.LogoutRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, err.Error(), http.StatusBadRequest)
+		httpresponse.WriteError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -128,25 +128,9 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		UserID:       userID,
 		RefreshToken: req.RefreshToken,
 	}); err != nil {
-		writeInternalError(w, r, err, h.logger)
+		httpresponse.WriteInternalError(w, r, err, h.logger)
 		return
 	}
 
-	writeJSON(w, map[string]bool{"ok": true})
-}
-
-func writeError(w http.ResponseWriter, msg string, code int) {
-	http.Error(w, msg, code)
-}
-
-// writeInternalError logs the real error server-side and returns a generic
-// message so SQL/driver internals never reach the HTTP response.
-func writeInternalError(w http.ResponseWriter, r *http.Request, err error, logger *logrus.Entry) {
-	logger.WithContext(r.Context()).WithError(err).Error("internal error")
-	http.Error(w, "internal server error", http.StatusInternalServerError)
-}
-
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+	httpresponse.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

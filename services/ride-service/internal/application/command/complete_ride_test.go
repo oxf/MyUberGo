@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	commonerrors "ride-service/internal/common/errors"
 	"ride-service/internal/domain"
+	"ride-service/internal/infrastructure/metrics"
 	"testing"
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
@@ -18,7 +19,7 @@ func newInProgressRide() *domain.Ride {
 func TestCompleteRide_HappyPath(t *testing.T) {
 	repo := &fakeLifecycleRideRepo{ride: newInProgressRide()}
 	outbox := &fakeOutboxRepo{}
-	h := &CompleteRideHandler{repo: repo, outboxRepo: outbox, transaction: fakeTx{}}
+	h := &CompleteRideHandler{repo: repo, outboxRepo: outbox, transaction: fakeTx{}, metrics: metrics.NewNoopMetricsClient()}
 
 	result, err := h.Handle(context.Background(), CompleteRide{RideID: "ride-1", DriverID: "driver-1"})
 	if err != nil {

@@ -15,7 +15,7 @@ import (
 
 const password = "e2e-password-123"
 
-// Seeded admin account (services/shared/migrations/init.sql) — the only way
+// Seeded admin account (services/shared/migrations/sql/0002_auth.up.sql) — the only way
 // to reach GET /users, GET /driver, and GET /driver-shift now that those
 // list endpoints are Admin-only at the Kong gateway (see gateway/kong.yml).
 const adminEmail = "admin@myubergo.local"

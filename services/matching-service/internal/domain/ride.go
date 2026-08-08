@@ -26,6 +26,9 @@ type Ride struct {
 	// so a later cancellation can restore them to drivers:online without a
 	// cross-service lookup. Zero until matched.
 	DriverRating float64
+	// CreatedAt is the ride's original requested_at (RFC3339), carried from
+	// RideRequestedEvent so AcceptRideHandler can thread it into RideAcceptedEvent.
+	CreatedAt string
 }
 
 // Candidate is one entry of the drivers:online pool, best-rated first.

@@ -4,6 +4,7 @@ import (
 	"context"
 	commonerrors "ride-service/internal/common/errors"
 	"ride-service/internal/domain"
+	"ride-service/internal/infrastructure/metrics"
 	"testing"
 )
 
@@ -41,6 +42,7 @@ func TestCancelRide_MatchedIsStillCancellable(t *testing.T) {
 		outboxRepo:    &fakeOutboxRepo{},
 		transaction:   fakeTx{},
 		feeCalculator: fakeFeeCalculator{},
+		metrics:       metrics.NewNoopMetricsClient(),
 	}
 
 	result, err := h.Handle(context.Background(), CancelRide{RideID: "ride-1", ClientID: "client-1"})

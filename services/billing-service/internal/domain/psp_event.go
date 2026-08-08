@@ -6,7 +6,7 @@ import (
 )
 
 // PspEvent is the webhook inbox row — one per Stripe event id, ever. See
-// billing.psp_event in init.sql for the full rationale.
+// billing.psp_event in 0006_billing.up.sql for the full rationale.
 type PspEvent struct {
 	ID           string
 	Type         string

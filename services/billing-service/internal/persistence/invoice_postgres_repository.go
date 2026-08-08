@@ -55,7 +55,7 @@ func (r *PostgresInvoiceRepository) Create(ctx context.Context, inv *domain.Invo
 }
 
 // attempt_count is a correlated subquery, not a stored column (dropped from
-// billing.invoice — see init.sql) — every invoice-read method shares this
+// billing.invoice) — every invoice-read method shares this
 // one SQL expression for it, including GetDueForCharge, so ChargeWorker's
 // claim step gets the current count for free on the same row it already
 // locked, with no separate repository call needed.

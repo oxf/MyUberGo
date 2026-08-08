@@ -9,6 +9,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/oxf/MyUber/common/httpresponse"
+	"github.com/oxf/MyUber/common/kongheaders"
 	contracts "github.com/oxf/MyUber/contracts/http"
 	"github.com/sirupsen/logrus"
 )
@@ -23,19 +25,18 @@ func NewPaymentMethodHandler(app app.Application, logger *logrus.Entry) *Payment
 }
 
 func (h *PaymentMethodHandler) Create(w http.ResponseWriter, r *http.Request) {
-	clientID := r.Header.Get("X-Client-Id")
-	if clientID == "" {
-		writeError(w, "X-Client-Id header is required", http.StatusBadRequest)
+	clientID, ok := kongheaders.RequireClientID(w, r)
+	if !ok {
 		return
 	}
 
 	var req contracts.AddPaymentMethodRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, err.Error(), http.StatusBadRequest)
+		httpresponse.WriteError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if req.ProviderPaymentMethodId == "" {
-		writeError(w, "providerPaymentMethodId is required", http.StatusBadRequest)
+		httpresponse.WriteError(w, "providerPaymentMethodId is required", http.StatusBadRequest)
 		return
 	}
 
@@ -49,23 +50,22 @@ func (h *PaymentMethodHandler) Create(w http.ResponseWriter, r *http.Request) {
 		SetDefault:              req.SetDefault,
 	})
 	if err != nil {
-		writeInternalError(w, r, err, h.logger)
+		httpresponse.WriteInternalError(w, r, err, h.logger)
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, contracts.AddPaymentMethodResponse{Id: result.ID})
+	httpresponse.WriteJSON(w, http.StatusCreated, contracts.AddPaymentMethodResponse{Id: result.ID})
 }
 
 func (h *PaymentMethodHandler) List(w http.ResponseWriter, r *http.Request) {
-	clientID := r.Header.Get("X-Client-Id")
-	if clientID == "" {
-		writeError(w, "X-Client-Id header is required", http.StatusBadRequest)
+	clientID, ok := kongheaders.RequireClientID(w, r)
+	if !ok {
 		return
 	}
 
 	methods, err := h.app.Queries.ListPaymentMethods.Handle(r.Context(), query.ListPaymentMethods{ClientID: clientID})
 	if err != nil {
-		writeInternalError(w, r, err, h.logger)
+		httpresponse.WriteInternalError(w, r, err, h.logger)
 		return
 	}
 
@@ -73,13 +73,12 @@ func (h *PaymentMethodHandler) List(w http.ResponseWriter, r *http.Request) {
 	for _, m := range methods {
 		items = append(items, toPaymentMethodDto(m))
 	}
-	writeJSON(w, http.StatusOK, items)
+	httpresponse.WriteJSON(w, http.StatusOK, items)
 }
 
 func (h *PaymentMethodHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	clientID := r.Header.Get("X-Client-Id")
-	if clientID == "" {
-		writeError(w, "X-Client-Id header is required", http.StatusBadRequest)
+	clientID, ok := kongheaders.RequireClientID(w, r)
+	if !ok {
 		return
 	}
 	id := r.PathValue("id")
@@ -89,16 +88,16 @@ func (h *PaymentMethodHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	})
 	switch {
 	case errors.Is(err, commonerrors.ErrNotFound):
-		writeError(w, "not found", http.StatusNotFound)
+		httpresponse.WriteError(w, "not found", http.StatusNotFound)
 		return
 	case errors.Is(err, commonerrors.ErrForbidden):
-		writeError(w, "forbidden", http.StatusForbidden)
+		httpresponse.WriteError(w, "forbidden", http.StatusForbidden)
 		return
 	case errors.Is(err, commonerrors.ErrConflict):
-		writeError(w, "cannot remove the only active default while invoices are open", http.StatusConflict)
+		httpresponse.WriteError(w, "cannot remove the only active default while invoices are open", http.StatusConflict)
 		return
 	case err != nil:
-		writeInternalError(w, r, err, h.logger)
+		httpresponse.WriteInternalError(w, r, err, h.logger)
 		return
 	}
 

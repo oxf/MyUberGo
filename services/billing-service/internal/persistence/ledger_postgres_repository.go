@@ -16,7 +16,7 @@ func NewPostgresLedgerRepository(db *sql.DB) *PostgresLedgerRepository {
 
 // sentinelOwnerID collapses NULL owner_id (platform-level accounts) to a
 // fixed value for uniqueness lookups — see the idx_ledger_account_unique
-// comment in init.sql for why a plain UNIQUE(type, owner_id, currency)
+// comment in 0006_billing.up.sql for why a plain UNIQUE(type, owner_id, currency)
 // wouldn't actually prevent duplicate platform accounts.
 const sentinelOwnerID = "00000000-0000-0000-0000-000000000000"
 

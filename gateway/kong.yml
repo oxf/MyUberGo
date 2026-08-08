@@ -215,6 +215,35 @@ services:
           header_name: X-User-Id
           minute: 600
 
+  # -- matching-service: everything requires a valid token. Ownership of a driverId is checked
+  # in-service against X-User-Id (see matching-service's AcceptRideHandler/GetDriverOfferHandler) —
+  # Kong just guarantees the caller is authenticated, same pattern as billing-service above. --
+  - name: matching-service
+    url: http://matching-service:8002
+    routes:
+      - name: matching-protected
+        paths:
+          - /api/matching
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 600
+
   # -- Admin-only list routes: match on paths AND methods, which Kong ranks above the paths-only
   # routes above, so a GET here is gated to Admin; every other method/path is untouched. --
   - name: ride-service-admin-list
@@ -413,6 +442,3 @@ services:
           redis_port: 6379
           limit_by: ip
           minute: 300 # Stripe test-mode delivery + retries; no user identity to key off
-
-  # matching-service (8002) is Kafka/Redis-driven internally with no gateway-facing
-  # consumer today (see CLAUDE.md "Matching algorithm status") — intentionally not routed here.

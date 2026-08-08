@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"time"
 
 	app "auth-service/internal/application"
@@ -18,14 +17,14 @@ import (
 	"auth-service/internal/interfaces/http/handler"
 	"auth-service/internal/persistence"
 
+	"github.com/oxf/MyUber/common/dbconn"
+	"github.com/oxf/MyUber/common/envconfig"
 	httpmw "github.com/oxf/MyUber/common/httpmiddleware"
-	"github.com/oxf/MyUber/observability/obsdb"
 	"github.com/oxf/MyUber/observability/obshttp"
 	"github.com/oxf/MyUber/observability/obslog"
 	"github.com/oxf/MyUber/observability/otelinit"
 
 	_ "github.com/lib/pq"
-	"github.com/sirupsen/logrus"
 )
 
 const serviceName = "auth-service"
@@ -39,7 +38,7 @@ func main() {
 	// `app healthcheck` backs Docker's HEALTHCHECK: distroless has no
 	// shell/curl, so the binary probes its own /health/ready instead.
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		healthcheckSelf("http://localhost:8000/health/live")
+		health.HealthcheckSelf("http://localhost:8000/health/live")
 	}
 
 	// otelinit.Setup installs the global tracer/meter/logger from standard
@@ -52,27 +51,18 @@ func main() {
 
 	logger := obslog.NewLogger(serviceName)
 
-	dsn := getenv("PG_DSN", defaultPgDsn)
-	jwtSecretStr := getenv("JWT_SECRET", defaultJwtSecret)
-	if os.Getenv("APP_ENV") == "production" {
-		if dsn == defaultPgDsn {
-			log.Fatal("refusing to start in production with the default PG_DSN — set a real PG_DSN")
-		}
-		if jwtSecretStr == defaultJwtSecret {
-			log.Fatal("refusing to start in production with the default JWT_SECRET — set a real JWT_SECRET")
-		}
+	jwtSecretStr := envconfig.String("JWT_SECRET", defaultJwtSecret)
+	if os.Getenv("APP_ENV") == "production" && jwtSecretStr == defaultJwtSecret {
+		log.Fatal("refusing to start in production with the default JWT_SECRET — set a real JWT_SECRET")
 	}
-	db, err := obsdb.Open("postgres", dsn, "postgresql")
+	db, err := dbconn.Open(defaultPgDsn)
 	if err != nil {
 		log.Fatal(err)
 	}
-	db.SetMaxOpenConns(atoi(getenv("DB_MAX_OPEN_CONNS", "20")))
-	db.SetMaxIdleConns(atoi(getenv("DB_MAX_IDLE_CONNS", "10")))
-	db.SetConnMaxLifetime(time.Duration(atoi(getenv("DB_CONN_MAX_LIFETIME_MIN", "5"))) * time.Minute)
 
 	jwtSecret := []byte(jwtSecretStr)
-	accessTTL := time.Duration(atoi(getenv("AUTH_TOKEN_EXP_MIN", "15"))) * time.Minute
-	refreshTTL := time.Duration(atoi(getenv("REFRESH_TOKEN_EXP_HOUR", "24"))) * time.Hour
+	accessTTL := time.Duration(envconfig.Int("AUTH_TOKEN_EXP_MIN", 15)) * time.Minute
+	refreshTTL := time.Duration(envconfig.Int("REFRESH_TOKEN_EXP_HOUR", 24)) * time.Hour
 
 	userRepo := persistence.NewPostgresUserRepository(db)
 	clientRepo := persistence.NewPostgresClientRepository(db)
@@ -145,7 +135,7 @@ func main() {
 	})
 
 	// Start server in a goroutine
-	goSafe(logger, healthChecker, nil, "http-server", func() {
+	health.GoSafe(logger, healthChecker, nil, "http-server", func() {
 		logger.Info("auth-service listening on :8000")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.WithError(err).Error("server error")
@@ -154,44 +144,4 @@ func main() {
 
 	// Wait for shutdown signal and perform graceful shutdown
 	shutdownManager.WaitForShutdown()
-}
-
-func getenv(k, d string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return d
-}
-
-func atoi(s string) int { v, _ := strconv.Atoi(s); return v }
-
-// healthcheckSelf backs the `app healthcheck` subcommand: a plain HTTP GET
-// against the service's own readiness endpoint, exiting 0/1 for Docker.
-func healthcheckSelf(url string) {
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil {
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		os.Exit(1)
-	}
-	os.Exit(0)
-}
-
-// goSafe runs fn in a goroutine, recovering panics. If workerCtx is non-nil
-// and fn returns before it's cancelled, that's a genuine liveness failure.
-func goSafe(logger *logrus.Entry, healthChecker *health.Checker, workerCtx context.Context, name string, fn func()) {
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				logger.WithField("goroutine", name).WithField("panic", r).Error("recovered from panic")
-			}
-			if workerCtx != nil && workerCtx.Err() == nil {
-				healthChecker.MarkNotLive(name + " exited unexpectedly")
-			}
-		}()
-		fn()
-	}()
 }

@@ -10,7 +10,7 @@ import (
 )
 
 // fakeRefID produces a syntactically valid UUID for ledger_transaction's
-// ref_id column (UUID NOT NULL in init.sql) — these tests don't need a real
+// ref_id column (UUID NOT NULL) — these tests don't need a real
 // referenced entity, just a unique value.
 func fakeRefID(n int64) string {
 	return fmt.Sprintf("00000000-0000-0000-0000-%012d", n)

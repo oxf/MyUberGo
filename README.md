@@ -16,7 +16,7 @@ The system is designed as 8 services communicating asynchronously via **Apache K
 
 ## 📁 Repository Structure & Services
 
-Each service below lists its **target** responsibilities, schema, and contracts. Where a service is already implemented, its *current* code is a simpler subset of what's described — check `services/shared/migrations/init.sql` and `services/contracts` for what actually exists today; this README describes where each service is headed.
+Each service below lists its **target** responsibilities, schema, and contracts. Where a service is already implemented, its *current* code is a simpler subset of what's described — check `services/shared/migrations/sql/` and `services/contracts` for what actually exists today; this README describes where each service is headed.
 
 ### 1. Auth Service — ✅ Implemented (Port `:8000`)
 
@@ -28,7 +28,7 @@ Manages user registration/login, JWT issuance (access + refresh), token refresh,
 
 **Kafka**: none published or consumed.
 
-> Current code implements `POST /signup`, `POST /login`, `POST /refresh`, `GET /me`, `POST /logout` (no `/api` prefix, different route names than the target above) against `auth.user`/`auth.refresh_token`, with soft delete. It also goes beyond this target schema: `auth.user` is now the shared login identity for a third role, `Admin` (gated to no signup path — seeded directly in `init.sql`), and each role's own data lives in a separate table keyed by `user_id` — `auth.client`/`auth.admin` here, `driver.driver` in the Driver Service. A `Client`'s access token carries a `client_id` claim (that role table's id, not the user's), which Kong injects as `X-Client-Id` for `ride.ride.client_id` — see `CLAUDE.md`'s "Data model" and "Auth" sections for the current shape.
+> Current code implements `POST /signup`, `POST /login`, `POST /refresh`, `GET /me`, `POST /logout` (no `/api` prefix, different route names than the target above) against `auth.user`/`auth.refresh_token`, with soft delete. It also goes beyond this target schema: `auth.user` is now the shared login identity for a third role, `Admin` (gated to no signup path — seeded directly in `0002_auth.up.sql`), and each role's own data lives in a separate table keyed by `user_id` — `auth.client`/`auth.admin` here, `driver.driver` in the Driver Service. A `Client`'s access token carries a `client_id` claim (that role table's id, not the user's), which Kong injects as `X-Client-Id` for `ride.ride.client_id` — see `CLAUDE.md`'s "Data model" and "Auth" sections for the current shape.
 
 ### 2. Ride Service — ✅ Implemented (Port `:8001`)
 
@@ -85,7 +85,7 @@ Receives real-time GPS pings over WebSocket, keeps live location in Redis, archi
 
 Turns completed/fee-bearing rides into invoices, collects them through a pluggable payment provider, and records every money movement in a double-entry ledger. A real Stripe adapter (test-mode only) now exists alongside the original in-process stub, selected by the `PAYMENT_PROVIDER` env var — see `docs/billing/BILLING_SPEC.md` for the full design and what's still deliberately deferred (§9 there).
 
-**Schema** (`billing` schema in `services/shared/migrations/init.sql`): `customer` (one row per client per provider), `payment_method` (brand/last4 display metadata only — never a PAN/CVC; a partial unique index enforces at most one active default per client), `invoice` (`ride_fare`/`cancellation_fee`, `open`/`paid`/`uncollectible`/`void`; **`UNIQUE (ride_id, type)`** is the idempotency guard against redelivered Kafka events), `invoice_line`, `payment` (one row per collection attempt, deterministic `idempotency_key`), `ledger_account`/`ledger_transaction`/`ledger_entry` (append-only double-entry bookkeeping — account types `client_receivable`/`driver_payable`/`platform_revenue`/`psp_clearing`/`psp_fees`/`bad_debt`, one account per `(type, owner, currency)`), `outbox_message`.
+**Schema** (`billing` schema in `services/shared/migrations/sql/0006_billing.up.sql`): `customer` (one row per client per provider), `payment_method` (brand/last4 display metadata only — never a PAN/CVC; a partial unique index enforces at most one active default per client), `invoice` (`ride_fare`/`cancellation_fee`, `open`/`paid`/`uncollectible`/`void`; **`UNIQUE (ride_id, type)`** is the idempotency guard against redelivered Kafka events), `invoice_line`, `payment` (one row per collection attempt, deterministic `idempotency_key`), `ledger_account`/`ledger_transaction`/`ledger_entry` (append-only double-entry bookkeeping — account types `client_receivable`/`driver_payable`/`platform_revenue`/`psp_clearing`/`psp_fees`/`bad_debt`, one account per `(type, owner, currency)`), `outbox_message`.
 
 **HTTP**: `POST /payment-methods`, `GET /payment-methods`, `DELETE /payment-methods/{id}` (caller-scoped via Kong's `X-Client-Id`); `GET /invoices/{id}`, `GET /rides/{rideId}/invoice` (caller-scoped, authorized in-service against the invoice's own `client_id`); `GET /invoices` (Admin-only at Kong, paged); `GET /ledger/balance?type&currency&ownerId` (Admin-only — the cheapest possible regression check for the ledger invariants).
 
@@ -197,6 +197,6 @@ To facilitate learning, the services are designed in progressive architectural c
     docker-compose up --build
     ```
 2.  **Inspect database migrations**:
-    Schemas are defined in *init.sql* and loaded automatically when the Postgres container starts.
+    Schemas are defined in `services/shared/migrations/sql/` (golang-migrate) and applied automatically by the `migrate` compose service before the app services start.
 3.  **Inspect events**:
     Navigate to the Kafka UI at `http://localhost:8080` to view active topics and consumer groups.

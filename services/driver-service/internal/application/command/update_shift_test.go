@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"driver-service/internal/domain"
+	"driver-service/internal/infrastructure/metrics"
 
 	contracts "github.com/oxf/MyUber/contracts/kafka"
 )
@@ -63,10 +64,11 @@ func TestUpdateShift_EndedEmitsEventWithRating(t *testing.T) {
 	outbox := &fakeOutboxRepo{}
 	h := &UpdateShiftHandler{
 		repo:        shiftRepo,
-		profileRepo: &fakeProfileRepo{profile: &domain.Driver{Rating: 4.7}, statusChanged: true},
+		profileRepo: &fakeProfileRepo{profile: &domain.Driver{UserID: "u1", Rating: 4.7}, statusChanged: true},
 		outboxRepo:  outbox,
 		transaction: fakeTx{},
 		logger:      testLogger(),
+		metrics:     metrics.NewNoopMetricsClient(),
 	}
 
 	if err := h.Handle(context.Background(), UpdateShift{ID: "s1", Status: "Ended"}); err != nil {
@@ -83,7 +85,7 @@ func TestUpdateShift_EndedEmitsEventWithRating(t *testing.T) {
 	if err := json.Unmarshal(outbox.inserted[0].Payload, &ev); err != nil {
 		t.Fatal(err)
 	}
-	if ev.Status != "Ended" || ev.DriverID != "d1" || ev.Rating != 4.7 {
+	if ev.Status != "Ended" || ev.DriverID != "d1" || ev.Rating != 4.7 || ev.UserID != "u1" {
 		t.Fatalf("bad event: %+v", ev)
 	}
 }
@@ -97,6 +99,7 @@ func TestUpdateShift_OnlineFlipsOfflineToOnline(t *testing.T) {
 		outboxRepo:  &fakeOutboxRepo{},
 		transaction: fakeTx{},
 		logger:      testLogger(),
+		metrics:     metrics.NewNoopMetricsClient(),
 	}
 
 	if err := h.Handle(context.Background(), UpdateShift{ID: "s1", Status: "Online"}); err != nil {
@@ -116,6 +119,7 @@ func TestUpdateShift_EndedFlipsOnlineToOffline(t *testing.T) {
 		outboxRepo:  &fakeOutboxRepo{},
 		transaction: fakeTx{},
 		logger:      testLogger(),
+		metrics:     metrics.NewNoopMetricsClient(),
 	}
 
 	if err := h.Handle(context.Background(), UpdateShift{ID: "s1", Status: "Ended"}); err != nil {
@@ -135,6 +139,7 @@ func TestUpdateShift_GuardMissIsNotAnError(t *testing.T) {
 		outboxRepo:  &fakeOutboxRepo{},
 		transaction: fakeTx{},
 		logger:      testLogger(),
+		metrics:     metrics.NewNoopMetricsClient(),
 	}
 
 	// Driver is already OnRide (not Online) - the Ended guard should miss

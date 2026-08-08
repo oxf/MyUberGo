@@ -10,8 +10,6 @@ services:
       POSTGRES_PASSWORD: '${POSTGRES_PASSWORD:-postgres}'
       POSTGRES_USER: '${POSTGRES_USER:-postgres}'
       POSTGRES_DB: '${POSTGRES_DB:-postgres}'
-    volumes:
-      - ./services/shared/migrations/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     # No published host port — only services on the compose network reach Postgres.
     # Use `docker compose exec postgres psql ...` for local inspection.
     healthcheck:
@@ -19,6 +17,23 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # One-shot: applies services/shared/migrations/sql/*.up.sql via golang-migrate, then
+  # exits 0. Replaces postgres's own docker-entrypoint-initdb.d mount (which only ever
+  # ran once against a fresh volume) so `docker-compose up` alone now picks up new
+  # migration files without a `down -v` volume wipe.
+  migrate:
+    image: migrate/migrate:v4.18.1
+    volumes:
+      - ./services/shared/migrations/sql:/migrations:ro
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-postgres}?sslmode=disable"
+      - "up"
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   redis:
     image: redis:7-alpine
@@ -216,6 +231,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       otel-collector:
         condition: service_started
 
@@ -248,6 +265,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
       otel-collector:
@@ -276,8 +295,8 @@ services:
       OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=${APP_ENV:-local},service.version=${GIT_SHA:-dev}'
       OTEL_TRACES_SAMPLER: parentbased_always_on
       LOG_LEVEL: '${LOG_LEVEL:-info}'
-    ports:
-      - "8002:8002"
+    # No published host port: Kong is the only ingress (see gateway/kong.yml) —
+    # publishing this would let callers bypass jwt verification/rate limiting.
     depends_on:
       redis:
         condition: service_healthy
@@ -315,6 +334,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
       otel-collector:
@@ -361,6 +382,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
       otel-collector:
@@ -405,6 +428,8 @@ services:
       driver-service:
         condition: service_healthy
       billing-service:
+        condition: service_healthy
+      matching-service:
         condition: service_healthy
       otel-collector:
         condition: service_started

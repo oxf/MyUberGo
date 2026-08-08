@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"driver-service/internal/domain"
+	"driver-service/internal/infrastructure/metrics"
 
 	"github.com/sirupsen/logrus"
 )
@@ -34,7 +35,7 @@ func testLogger() *logrus.Entry {
 
 func TestProcessRideAccepted_FlipsOnlineToOnRide(t *testing.T) {
 	repo := &fakeDriverStatusRepo{changed: true}
-	h := &ProcessRideAcceptedHandler{profileRepo: repo, transaction: fakeTx{}, logger: testLogger()}
+	h := &ProcessRideAcceptedHandler{profileRepo: repo, transaction: fakeTx{}, logger: testLogger(), metrics: metrics.NewNoopMetricsClient()}
 
 	err := h.Handle(context.Background(), ProcessRideAccepted{
 		RideID:     "ride-1",

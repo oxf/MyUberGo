@@ -5,9 +5,13 @@ meta {
 }
 
 get {
-  url: http://localhost:8002/drivers/9e8bbaad-4314-4983-af88-f5a56b3806bc/offer
+  url: http://localhost:8090/api/matching/drivers/9e8bbaad-4314-4983-af88-f5a56b3806bc/offer
   body: none
   auth: inherit
+}
+
+headers {
+  Authorization: Bearer {{auth_token}}
 }
 
 settings {

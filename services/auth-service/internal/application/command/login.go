@@ -8,6 +8,7 @@ import (
 	"auth-service/internal/common/decorator"
 	commonerrors "auth-service/internal/common/errors"
 	"auth-service/internal/domain"
+	"auth-service/internal/infrastructure/metrics"
 
 	contracts "github.com/oxf/MyUber/contracts/http"
 
@@ -45,6 +46,9 @@ func NewLoginHandler(
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandler[Login, LoginResult] {
+	if metricsClient == nil {
+		metricsClient = metrics.NewNoopMetricsClient()
+	}
 
 	handler := &LoginHandler{repo: repo, clientRepo: clientRepo, refreshRepo: refreshRepo, hasher: hasher, tokenIssuer: tokenIssuer, logger: logger, metrics: metricsClient}
 
@@ -99,9 +103,6 @@ func (h *LoginHandler) Handle(ctx context.Context, cmd Login) (LoginResult, erro
 }
 
 func (h *LoginHandler) incLogins(ctx context.Context, outcome string) {
-	if h.metrics == nil {
-		return
-	}
 	h.metrics.IncCounter(ctx, "myubergo.logins", attribute.String("outcome", outcome))
 }
 

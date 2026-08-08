@@ -5,6 +5,7 @@ import (
 	"driver-service/internal/application/services"
 	"driver-service/internal/common/decorator"
 	"driver-service/internal/domain"
+	"driver-service/internal/infrastructure/metrics"
 	"encoding/json"
 	"time"
 
@@ -35,6 +36,9 @@ func NewUpdateShiftHandler(
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandlerNoResult[UpdateShift] {
+	if metricsClient == nil {
+		metricsClient = metrics.NewNoopMetricsClient()
+	}
 
 	handler := &UpdateShiftHandler{
 		repo:        repo,
@@ -88,7 +92,7 @@ func (h *UpdateShiftHandler) Handle(
 				return err
 			} else if !changed {
 				h.logger.Warnf("shift %s: driver %s not flipped Offline->Online (not currently Offline)", cmd.ID, shift.DriverID)
-			} else if h.metrics != nil {
+			} else {
 				h.metrics.IncCounter(ctx, "myubergo.shifts.started")
 				h.metrics.IncCounter(ctx, "myubergo.driver.status_transitions",
 					attribute.String("from", "Offline"), attribute.String("to", "Online"))
@@ -102,7 +106,7 @@ func (h *UpdateShiftHandler) Handle(
 				return err
 			} else if !changed {
 				h.logger.Warnf("shift %s: driver %s not flipped Online->Offline (not currently Online, e.g. still OnRide)", cmd.ID, shift.DriverID)
-			} else if h.metrics != nil {
+			} else {
 				h.metrics.IncCounter(ctx, "myubergo.shifts.ended")
 				h.metrics.IncCounter(ctx, "myubergo.driver.status_transitions",
 					attribute.String("from", "Online"), attribute.String("to", "Offline"))
@@ -114,6 +118,7 @@ func (h *UpdateShiftHandler) Handle(
 			DriverID:  shift.DriverID,
 			Status:    cmd.Status,
 			Rating:    profile.Rating,
+			UserID:    profile.UserID,
 			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 		}
 

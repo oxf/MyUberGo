@@ -14,3 +14,7 @@ var ErrOfferGone = errors.New("offer expired, cancelled, or not offered to this 
 
 // ErrRideTaken: another driver won the atomic accept race. HTTP maps it to 409.
 var ErrRideTaken = errors.New("ride already accepted by another driver")
+
+// ErrForbidden: the caller's X-User-Id doesn't match the driverId they're
+// acting on (or the driver has no cached userId yet). HTTP maps it to 403.
+var ErrForbidden = errors.New("caller does not own this driver")

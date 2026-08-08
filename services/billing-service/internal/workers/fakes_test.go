@@ -428,12 +428,30 @@ func (r *fakeOutboxRepo) GetUnprocessedBatch(ctx context.Context, limit int) ([]
 		if m.Processed {
 			continue
 		}
+		if m.ClaimedUntil != nil {
+			claimedUntil, err := time.Parse(time.RFC3339, *m.ClaimedUntil)
+			if err == nil && claimedUntil.After(time.Now().UTC()) {
+				continue
+			}
+		}
 		result = append(result, m)
 		if len(result) >= limit {
 			break
 		}
 	}
 	return result, nil
+}
+
+func (r *fakeOutboxRepo) SetClaimedUntil(ctx context.Context, id string, claimedUntil string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range r.messages {
+		if m.ID == id {
+			m.ClaimedUntil = &claimedUntil
+			return nil
+		}
+	}
+	return commonerrors.ErrNotFound
 }
 
 func (r *fakeOutboxRepo) MarkProcessed(ctx context.Context, id string) error {

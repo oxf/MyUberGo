@@ -9,6 +9,7 @@ import (
 	"matching-service/internal/common/decorator"
 	cmnerrors "matching-service/internal/common/errors"
 	"matching-service/internal/domain"
+	"matching-service/internal/infrastructure/metrics"
 
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/attribute"
@@ -51,6 +52,9 @@ func NewBroadcastOffersHandler(
 	if rides == nil || drivers == nil || offers == nil {
 		panic("nil repo")
 	}
+	if metricsClient == nil {
+		metricsClient = metrics.NewNoopMetricsClient()
+	}
 	handler := &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers, logger: logger, metrics: metricsClient}
 	return decorator.ApplyCommandDecoratorsNoResult[BroadcastOffers](handler, logger, metricsClient)
 }
@@ -74,10 +78,8 @@ func (h *BroadcastOffersHandler) Handle(ctx context.Context, cmd BroadcastOffers
 			return err
 		}
 		h.log().Warnf("giving up on ride %s after %d attempts", cmd.RideID, MaxAttempts)
-		if h.metrics != nil {
-			h.metrics.IncCounter(ctx, "myubergo.matching.rides_failed")
-			h.metrics.RecordValue(ctx, "myubergo.matching.broadcast_rounds", float64(MaxAttempts))
-		}
+		h.metrics.IncCounter(ctx, "myubergo.matching.rides_failed")
+		h.metrics.RecordValue(ctx, "myubergo.matching.broadcast_rounds", float64(MaxAttempts))
 		return h.offers.DeletePending(ctx, cmd.RideID)
 	}
 
@@ -128,10 +130,8 @@ func (h *BroadcastOffersHandler) Handle(ctx context.Context, cmd BroadcastOffers
 	}
 	// IncCounter once per rate-limited driver, not once per round — a round-level
 	// increment used to understate this by up to PoolWidthPerAttempt×.
-	if h.metrics != nil {
-		for i := 0; i < rateLimited; i++ {
-			h.metrics.IncCounter(ctx, "myubergo.matching.rate_limited")
-		}
+	for i := 0; i < rateLimited; i++ {
+		h.metrics.IncCounter(ctx, "myubergo.matching.rate_limited")
 	}
 
 	targets := domain.SelectOfferTargets(candidates, alreadyOffered, excluded, BroadcastSize)
@@ -167,11 +167,9 @@ func (h *BroadcastOffersHandler) Handle(ctx context.Context, cmd BroadcastOffers
 	h.log().Infof("ride %s attempt %d: offered to %d driver(s) (pool %d, excluded %d)",
 		cmd.RideID, cmd.Attempt, offered, len(candidates), len(excluded))
 
-	if h.metrics != nil {
-		h.metrics.IncCounter(ctx, "myubergo.matching.offers_broadcast",
-			attribute.Int("attempt", cmd.Attempt),
-		)
-	}
+	h.metrics.IncCounter(ctx, "myubergo.matching.offers_broadcast",
+		attribute.Int("attempt", cmd.Attempt),
+	)
 
 	// Arm (or re-arm) the retry deadline even when nobody was offered —
 	// drivers may come online before the next sweep.

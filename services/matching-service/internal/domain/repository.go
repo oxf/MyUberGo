@@ -27,6 +27,10 @@ type DriverRepository interface {
 	// AddOnline re-adds a driver to drivers:online, e.g. after a matched
 	// ride they were reserved for gets cancelled.
 	AddOnline(ctx context.Context, driverID string, rating float64) error
+	// GetUserID returns the driver's auth.user(id), cached from ShiftUpdatedEvent.UserID —
+	// used to check a caller's X-User-Id against the driverId they're acting on.
+	// Empty string (not an error) if the driver has never had a shift.updated cached.
+	GetUserID(ctx context.Context, driverID string) (string, error)
 }
 
 type OfferRepository interface {

@@ -30,6 +30,17 @@ const (
 	paymentCompletedTestTopic = "payment.completed.pkgtest"
 )
 
+// migrationFiles lists the split migration files in apply order — WithInitScripts alone
+// would apply them in sorted-name order, which is wrong once numbering exceeds one digit.
+var migrationFiles = []string{
+	"../../../shared/migrations/sql/0001_extensions.up.sql",
+	"../../../shared/migrations/sql/0002_auth.up.sql",
+	"../../../shared/migrations/sql/0003_ride.up.sql",
+	"../../../shared/migrations/sql/0004_driver.up.sql",
+	"../../../shared/migrations/sql/0005_ride_driver_fk.up.sql",
+	"../../../shared/migrations/sql/0006_billing.up.sql",
+}
+
 func testLogger() *logrus.Entry {
 	l := logrus.New()
 	l.SetOutput(io.Discard)
@@ -60,7 +71,7 @@ func runTests(m *testing.M) int {
 		postgres.WithDatabase("postgres"),
 		postgres.WithUsername("postgres"),
 		postgres.WithPassword("postgres"),
-		postgres.WithInitScripts("../../../shared/migrations/init.sql"),
+		postgres.WithOrderedInitScripts(migrationFiles...),
 		postgres.BasicWaitStrategies(),
 	)
 	if err != nil {

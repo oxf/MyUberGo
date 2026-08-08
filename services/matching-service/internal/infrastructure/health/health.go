@@ -24,3 +24,7 @@ func (p redisPinger) Ping(ctx context.Context) error {
 func NewChecker(rdb *redis.Client, checkInterval time.Duration) *Checker {
 	return commonhealth.NewChecker(redisPinger{rdb: rdb}, checkInterval)
 }
+
+var GoSafe = commonhealth.GoSafe
+
+var HealthcheckSelf = commonhealth.HealthcheckSelf

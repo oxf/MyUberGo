@@ -5,6 +5,7 @@ import (
 	"driver-service/internal/application/services"
 	"driver-service/internal/common/decorator"
 	"driver-service/internal/domain"
+	"driver-service/internal/infrastructure/metrics"
 
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/attribute"
@@ -29,6 +30,9 @@ func NewProcessRideCompletedHandler(
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandlerNoResult[ProcessRideCompleted] {
+	if metricsClient == nil {
+		metricsClient = metrics.NewNoopMetricsClient()
+	}
 
 	handler := &ProcessRideCompletedHandler{
 		profileRepo: profileRepo,
@@ -60,10 +64,8 @@ func (h *ProcessRideCompletedHandler) Handle(ctx context.Context, cmd ProcessRid
 			h.logger.Warnf("ride.completed: driver %s not flipped to Online (not currently OnRide) for ride %s; skipping total_rides_completed increment", cmd.DriverID, cmd.RideID)
 			return nil
 		}
-		if h.metrics != nil {
-			h.metrics.IncCounter(ctx, "myubergo.driver.status_transitions",
-				attribute.String("from", "OnRide"), attribute.String("to", "Online"))
-		}
+		h.metrics.IncCounter(ctx, "myubergo.driver.status_transitions",
+			attribute.String("from", "OnRide"), attribute.String("to", "Online"))
 		return h.profileRepo.IncrementRidesCompleted(ctx, cmd.DriverID)
 	})
 }

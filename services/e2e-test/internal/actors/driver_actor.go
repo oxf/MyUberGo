@@ -34,7 +34,7 @@ type DriverActor struct {
 	// acc is the driver's own authenticated identity, kept as a field (like
 	// profileID/phone) so every helper below can attach a bearer token
 	// without threading it through each call — Kong requires one on every
-	// driver-service/ride-service route now (see gateway/kong.yml).
+	// driver-service/ride-service/matching-service route now (see gateway/kong.yml).
 	acc *account
 }
 
@@ -218,7 +218,7 @@ func (a *DriverActor) pollForOffer(ctx context.Context, window time.Duration) bo
 	deadline := time.Now().Add(window)
 	for time.Now().Before(deadline) {
 		start := time.Now()
-		offer, err := a.Matching.GetDriverOffer(ctx, a.profileID)
+		offer, err := a.Matching.GetDriverOffer(ctx, a.acc.accessToken, a.profileID)
 		if err != nil {
 			var apiErr *apiclient.APIError
 			if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
@@ -245,7 +245,7 @@ func (a *DriverActor) pollForOffer(ctx context.Context, window time.Duration) bo
 
 func (a *DriverActor) acceptOffer(ctx context.Context, rideID string) {
 	start := time.Now()
-	resp, err := a.Matching.AcceptRide(ctx, rideID, contracts.AcceptRideRequest{DriverId: a.profileID})
+	resp, err := a.Matching.AcceptRide(ctx, a.acc.accessToken, rideID, contracts.AcceptRideRequest{DriverId: a.profileID})
 
 	var apiErr *apiclient.APIError
 	if err != nil && errors.As(err, &apiErr) && (apiErr.Status == http.StatusConflict || apiErr.Status == http.StatusBadRequest) {
@@ -271,14 +271,14 @@ func (a *DriverActor) acceptOffer(ctx context.Context, rideID string) {
 
 	// Deep verification: offer is gone, and a duplicate accept must 409.
 	start = time.Now()
-	_, err = a.Matching.GetDriverOffer(ctx, a.profileID)
+	_, err = a.Matching.GetDriverOffer(ctx, a.acc.accessToken, a.profileID)
 	v = &Verify{}
 	v.True("offer cleared", errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound,
 		"expected 404 for current offer after accept")
 	a.record(a.ID, "matching.offer.get", start, nil, v)
 
 	start = time.Now()
-	_, err = a.Matching.AcceptRide(ctx, rideID, contracts.AcceptRideRequest{DriverId: a.profileID})
+	_, err = a.Matching.AcceptRide(ctx, a.acc.accessToken, rideID, contracts.AcceptRideRequest{DriverId: a.profileID})
 	v = &Verify{}
 	// 409 = ride already taken (the expected case). 400 is also legitimate:
 	// the rider can cancel a just-matched ride at any moment, and if that

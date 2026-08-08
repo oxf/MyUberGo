@@ -58,9 +58,9 @@ func (r *PostgresOutboxRepository) GetUnprocessedBatch(
 	rows, err := executor.QueryContext(
 		ctx,
 		`
-		SELECT id, topic, event_type, payload, processed, retries, trace_context
+		SELECT id, topic, event_type, payload, processed, retries, claimed_until, trace_context
 		FROM driver.outbox_message
-		WHERE processed = false
+		WHERE processed = false AND (claimed_until IS NULL OR claimed_until < NOW())
 		ORDER BY created_at
 		LIMIT $1
 		FOR UPDATE SKIP LOCKED
@@ -77,7 +77,7 @@ func (r *PostgresOutboxRepository) GetUnprocessedBatch(
 	for rows.Next() {
 		var m domain.OutboxMessage
 
-		if err := rows.Scan(&m.ID, &m.Topic, &m.EventType, &m.Payload, &m.Processed, &m.Retries, &m.TraceContext); err != nil {
+		if err := rows.Scan(&m.ID, &m.Topic, &m.EventType, &m.Payload, &m.Processed, &m.Retries, &m.ClaimedUntil, &m.TraceContext); err != nil {
 			return nil, err
 		}
 
@@ -85,6 +85,24 @@ func (r *PostgresOutboxRepository) GetUnprocessedBatch(
 	}
 
 	return messages, rows.Err()
+}
+
+func (r *PostgresOutboxRepository) SetClaimedUntil(
+	ctx context.Context,
+	id string,
+	claimedUntil string,
+) error {
+
+	executor := Executor(ctx, r.db)
+
+	_, err := executor.ExecContext(
+		ctx,
+		`UPDATE driver.outbox_message SET claimed_until = $2 WHERE id = $1`,
+		id,
+		claimedUntil,
+	)
+
+	return err
 }
 
 func (r *PostgresOutboxRepository) MarkProcessed(

@@ -9,6 +9,7 @@ import (
 	"matching-service/internal/common/decorator"
 	cmnerrors "matching-service/internal/common/errors"
 	"matching-service/internal/domain"
+	"matching-service/internal/infrastructure/metrics"
 
 	contracts "github.com/oxf/MyUber/contracts/kafka"
 	"github.com/sirupsen/logrus"
@@ -20,6 +21,10 @@ import (
 type AcceptRide struct {
 	RideID   string
 	DriverID string
+	// CallerUserID is the caller's own auth.user(id) (Kong's injected
+	// X-User-Id). Must match DriverID's cached userId or Handle returns
+	// ErrForbidden — see CLAUDE.md's Kong route note for the rollout caveat.
+	CallerUserID string
 }
 
 type AcceptRideHandler struct {
@@ -42,18 +47,28 @@ func NewAcceptRideHandler(
 	if rides == nil || drivers == nil || offers == nil || publisher == nil {
 		panic("nil dependency")
 	}
+	if metricsClient == nil {
+		metricsClient = metrics.NewNoopMetricsClient()
+	}
 	handler := &AcceptRideHandler{rides: rides, drivers: drivers, offers: offers, publisher: publisher, logger: logger, metrics: metricsClient}
 	return decorator.ApplyCommandDecoratorsNoResult[AcceptRide](handler, logger, metricsClient)
 }
 
 func (h *AcceptRideHandler) recordAcceptResult(ctx context.Context, result string) {
-	if h.metrics != nil {
-		h.metrics.IncCounter(ctx, "myubergo.matching.accept_result", attribute.String("result", result))
-	}
+	h.metrics.IncCounter(ctx, "myubergo.matching.accept_result", attribute.String("result", result))
 }
 
 func (h *AcceptRideHandler) Handle(ctx context.Context, cmd AcceptRide) error {
-	if _, err := h.rides.GetRide(ctx, cmd.RideID); err != nil {
+	ownerUserID, err := h.drivers.GetUserID(ctx, cmd.DriverID)
+	if err != nil {
+		return err
+	}
+	if ownerUserID == "" || ownerUserID != cmd.CallerUserID {
+		return cmnerrors.ErrForbidden
+	}
+
+	ride, err := h.rides.GetRide(ctx, cmd.RideID)
+	if err != nil {
 		return err // ErrNotFound → 404 at the HTTP layer
 	}
 
@@ -123,9 +138,10 @@ func (h *AcceptRideHandler) Handle(ctx context.Context, cmd AcceptRide) error {
 	}
 
 	payload, err := json.Marshal(contracts.RideAcceptedEvent{
-		RideID:     cmd.RideID,
-		DriverID:   cmd.DriverID,
-		AcceptedAt: time.Now().UTC().Format(time.RFC3339),
+		RideID:      cmd.RideID,
+		DriverID:    cmd.DriverID,
+		AcceptedAt:  time.Now().UTC().Format(time.RFC3339),
+		RequestedAt: ride.CreatedAt,
 	})
 	if err != nil {
 		return err

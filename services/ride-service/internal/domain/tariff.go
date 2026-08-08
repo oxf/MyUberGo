@@ -12,7 +12,7 @@ type Tariff struct {
 }
 
 // TariffRepository reads fare tables. There is no write path today —
-// ride.tariff rows are seeded by init.sql, not managed via the API.
+// ride.tariff rows are seeded by migrations, not managed via the API.
 type TariffRepository interface {
 	GetByName(ctx context.Context, name string) (*Tariff, error)
 }

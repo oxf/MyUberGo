@@ -2,12 +2,13 @@ package command
 
 import (
 	"context"
+	"driver-service/internal/infrastructure/metrics"
 	"testing"
 )
 
 func TestProcessRideCompleted_FlipsOnRideToOnlineAndIncrements(t *testing.T) {
 	repo := &fakeDriverStatusRepo{changed: true}
-	h := &ProcessRideCompletedHandler{profileRepo: repo, transaction: fakeTx{}, logger: testLogger()}
+	h := &ProcessRideCompletedHandler{profileRepo: repo, transaction: fakeTx{}, logger: testLogger(), metrics: metrics.NewNoopMetricsClient()}
 
 	err := h.Handle(context.Background(), ProcessRideCompleted{
 		RideID:     "ride-1",

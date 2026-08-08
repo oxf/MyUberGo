@@ -7,6 +7,7 @@ import (
 	"ride-service/internal/common/decorator"
 	commonerrors "ride-service/internal/common/errors"
 	"ride-service/internal/domain"
+	"ride-service/internal/infrastructure/metrics"
 	"time"
 
 	contractsKafka "github.com/oxf/MyUber/contracts/kafka"
@@ -38,6 +39,9 @@ func NewCompleteRideHandler(
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandler[CompleteRide, CompleteRideResult] {
+	if metricsClient == nil {
+		metricsClient = metrics.NewNoopMetricsClient()
+	}
 
 	handler := &CompleteRideHandler{
 		repo:        repo,
@@ -100,7 +104,7 @@ func (h *CompleteRideHandler) Handle(ctx context.Context, cmd CompleteRide) (Com
 		return nil
 	})
 
-	if err == nil && h.metrics != nil {
+	if err == nil {
 		h.metrics.IncCounter(ctx, "myubergo.rides.completed", attribute.String("currency", currency))
 	}
 

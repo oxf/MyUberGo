@@ -4,6 +4,7 @@ import (
 	"billing-service/internal/application/services"
 	"billing-service/internal/common/decorator"
 	"billing-service/internal/domain"
+	"billing-service/internal/infrastructure/metrics"
 	"context"
 	"encoding/json"
 	"time"
@@ -48,6 +49,9 @@ func NewFinalizeChargeFailedHandler(
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandlerNoResult[FinalizeChargeFailed] {
+	if metricsClient == nil {
+		metricsClient = metrics.NewNoopMetricsClient()
+	}
 
 	handler := &FinalizeChargeFailedHandler{
 		invoiceRepo: invoiceRepo,
@@ -140,7 +144,7 @@ func (h *FinalizeChargeFailedHandler) Handle(ctx context.Context, cmd FinalizeCh
 	if err != nil {
 		return err
 	}
-	if attempted && h.metrics != nil {
+	if attempted {
 		h.metrics.IncCounter(ctx, "myubergo.payments.attempted",
 			attribute.String("outcome", "failed"),
 			attribute.String("provider", cmd.Provider),
