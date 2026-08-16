@@ -90,6 +90,7 @@ func main() {
 			CreateRide:      command.NewCreateRideHandler(rideRepo, tariffRepo, outboxRepo, transactionManager, logger, metricsClient),
 			MarkRideMatched: command.NewMarkRideMatchedHandler(rideRepo, logger, metricsClient),
 			MarkRideBilled:  command.NewMarkRideBilledHandler(rideRepo, logger, metricsClient),
+			FailRide:        command.NewFailRideHandler(rideRepo, logger, metricsClient),
 			CancelRide:      command.NewCancelRideHandler(rideRepo, outboxRepo, transactionManager, feeCalculator, logger, metricsClient),
 			StartRide:       command.NewStartRideHandler(rideRepo, outboxRepo, transactionManager, logger, metricsClient),
 			CompleteRide:    command.NewCompleteRideHandler(rideRepo, outboxRepo, transactionManager, logger, metricsClient),
@@ -172,6 +173,15 @@ func main() {
 	health.GoSafe(logger, healthChecker, workerCtx, "payment-completed-consumer", func() {
 		defer shutdownManager.Done()
 		paymentCompletedConsumer.Run(workerCtx, "payment.completed")
+	})
+
+	// ride.matching_failed consumer: flips a ride to Failed once matching-service
+	// gives up after exhausting its retries (docs/AUDIT_2026-08-15.md #11).
+	rideMatchingFailedConsumer := consumers.NewRideMatchingFailedConsumer(application, kafkaBroker, logger)
+	shutdownManager.Add(1)
+	health.GoSafe(logger, healthChecker, workerCtx, "ride-matching-failed-consumer", func() {
+		defer shutdownManager.Done()
+		rideMatchingFailedConsumer.Run(workerCtx, "ride.matching_failed")
 	})
 
 	// Start server in a goroutine

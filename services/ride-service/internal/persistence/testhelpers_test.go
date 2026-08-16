@@ -23,6 +23,7 @@ var migrationFiles = []string{
 	"../../../shared/migrations/sql/0004_driver.up.sql",
 	"../../../shared/migrations/sql/0005_ride_driver_fk.up.sql",
 	"../../../shared/migrations/sql/0006_billing.up.sql",
+	"../../../shared/migrations/sql/0008_ride_failed_status.up.sql",
 }
 
 var seedSeq atomic.Int64

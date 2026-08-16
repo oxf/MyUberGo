@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // RawPing is one unvalidated position sample as received from the wire — no
 // driverId field: identity is resolved from the authenticated userId instead.
@@ -43,7 +46,9 @@ func ValidatePing(raw RawPing, previous *Position, cfg ValidationConfig, now tim
 	if err != nil {
 		return Position{}, RejectInvalidCoordinate
 	}
-	if raw.AccuracyM > cfg.MaxAccuracyM {
+	// NaN > x and negative > x are both false in Go, so a NaN or negative
+	// AccuracyM would otherwise pass through unrejected (docs/AUDIT_2026-08-15.md #10).
+	if math.IsNaN(raw.AccuracyM) || raw.AccuracyM < 0 || raw.AccuracyM > cfg.MaxAccuracyM {
 		return Position{}, RejectPoorAccuracy
 	}
 	if raw.DeviceTs.After(now.Add(cfg.MaxFutureSkew)) {

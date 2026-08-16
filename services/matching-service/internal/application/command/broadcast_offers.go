@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"matching-service/internal/domain"
 	"matching-service/internal/infrastructure/metrics"
 
+	contracts "github.com/oxf/MyUber/contracts/kafka"
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/sync/errgroup"
@@ -24,6 +26,13 @@ const (
 	OfferTTL            = 30 * time.Second
 	RateLimitPerMinute  = 3
 	AcceptClaimTTL      = time.Hour
+
+	// LocationOversampleFactor cushions the geo-discovery query: location-service returns
+	// geographic candidates only (no availability filter), so an un-cushioned attempt-1 query
+	// for exactly PoolWidthPerAttempt drivers can be starved down to far fewer once intersected
+	// against drivers:online. The rating-only fallback pool doesn't need this — TopOnlineDrivers
+	// already returns only online drivers (docs/AUDIT_2026-08-15.md #3).
+	LocationOversampleFactor = 5
 
 	// baseRadiusKm/radiusStepKm/maxRadiusKm implement the radius-expanding retry (5→7→9→11→13km,
 	// cap 15); the 15km cap is never reached since MaxAttempts=5, but is kept as documented behavior.
@@ -48,31 +57,34 @@ type BroadcastOffers struct {
 }
 
 type BroadcastOffersHandler struct {
-	rides    domain.RideRepository
-	drivers  domain.DriverRepository
-	offers   domain.OfferRepository
-	location services.LocationClient
-	logger   *logrus.Entry
-	metrics  decorator.MetricsClient
+	rides     domain.RideRepository
+	drivers   domain.DriverRepository
+	offers    domain.OfferRepository
+	location  services.LocationClient
+	publisher services.EventPublisher
+	logger    *logrus.Entry
+	metrics   decorator.MetricsClient
 }
 
-// NewBroadcastOffersHandler takes location last so a nil or erroring LocationClient are both
-// handled by the same fallback path in selectCandidates (LOCATION_SPEC.md §2.2).
+// NewBroadcastOffersHandler takes location second-to-last (with publisher last) so a nil or
+// erroring LocationClient are both handled by the same fallback path in selectCandidates
+// (LOCATION_SPEC.md §2.2).
 func NewBroadcastOffersHandler(
 	rides domain.RideRepository,
 	drivers domain.DriverRepository,
 	offers domain.OfferRepository,
 	location services.LocationClient,
+	publisher services.EventPublisher,
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandlerNoResult[BroadcastOffers] {
-	if rides == nil || drivers == nil || offers == nil {
-		panic("nil repo")
+	if rides == nil || drivers == nil || offers == nil || publisher == nil {
+		panic("nil dependency")
 	}
 	if metricsClient == nil {
 		metricsClient = metrics.NewNoopMetricsClient()
 	}
-	handler := &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers, location: location, logger: logger, metrics: metricsClient}
+	handler := &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers, location: location, publisher: publisher, logger: logger, metrics: metricsClient}
 	return decorator.ApplyCommandDecoratorsNoResult[BroadcastOffers](handler, logger, metricsClient)
 }
 
@@ -96,6 +108,7 @@ func (h *BroadcastOffersHandler) Handle(ctx context.Context, cmd BroadcastOffers
 		}
 		h.log().Warnf("giving up on ride %s after %d attempts", cmd.RideID, MaxAttempts)
 		h.metrics.IncCounter(ctx, "myubergo.matching.rides_failed")
+		h.publishMatchingFailed(ctx, cmd.RideID)
 		h.metrics.RecordValue(ctx, "myubergo.matching.broadcast_rounds", float64(MaxAttempts))
 		return h.offers.DeletePending(ctx, cmd.RideID)
 	}
@@ -203,7 +216,8 @@ func (h *BroadcastOffersHandler) selectCandidates(ctx context.Context, ride *dom
 	limit := attempt * PoolWidthPerAttempt
 
 	if h.location != nil {
-		if candidates, ok := h.tryLocationDiscovery(ctx, ride, attempt, limit); ok {
+		locationLimit := limit * LocationOversampleFactor
+		if candidates, ok := h.tryLocationDiscovery(ctx, ride, attempt, locationLimit); ok {
 			return candidates, nil
 		}
 		h.metrics.IncCounter(ctx, "myubergo.matching.location_fallbacks")
@@ -247,6 +261,22 @@ func (h *BroadcastOffersHandler) tryLocationDiscovery(ctx context.Context, ride 
 		}
 	}
 	return domain.RankCandidates(candidates, true), true
+}
+
+// publishMatchingFailed tells ride-service its Postgres row would otherwise stay
+// 'Requested' forever with no signal matching ever gave up (docs/AUDIT_2026-08-15.md #11).
+// Direct publish, no outbox — same at-most-once tradeoff as AcceptRideHandler's
+// ride.accepted publish: Redis has no transaction to hide a dual write behind, and
+// MarkFailed above is already durable regardless of whether this publish succeeds.
+func (h *BroadcastOffersHandler) publishMatchingFailed(ctx context.Context, rideID string) {
+	payload, err := json.Marshal(contracts.RideMatchingFailedEvent{RideID: rideID})
+	if err != nil {
+		h.log().WithError(err).Errorf("failed to marshal ride.matching_failed for ride %s", rideID)
+		return
+	}
+	if err := h.publisher.Publish(ctx, "ride.matching_failed", payload); err != nil {
+		h.log().WithError(err).Errorf("failed to publish ride.matching_failed for ride %s", rideID)
+	}
 }
 
 func (h *BroadcastOffersHandler) log() *logrus.Entry {

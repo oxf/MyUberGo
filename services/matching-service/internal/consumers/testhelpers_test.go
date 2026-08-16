@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oxf/MyUber/common/kafkapublisher"
 	redisgo "github.com/redis/go-redis/v9"
 	segmentio "github.com/segmentio/kafka-go"
 	"github.com/sirupsen/logrus"
@@ -102,11 +103,13 @@ func runTests(m *testing.M) int {
 	driverRepo := cache.NewDriverRepository(testRedis)
 	rideRepo := cache.NewRideRepository(testRedis)
 	offerRepo := cache.NewOfferRepository(testRedis)
+	publisher := kafkapublisher.New(kafkaBroker)
+	defer publisher.Close()
 	application := app.Application{
 		Commands: app.Commands{
 			UpsertDriver:    command.NewUpsertDriverHandler(driverRepo, testLogger(), metrics.NewNoopMetricsClient()),
 			CreateRide:      command.NewCreateRideHandler(rideRepo, testLogger(), metrics.NewNoopMetricsClient()),
-			BroadcastOffers: command.NewBroadcastOffersHandler(rideRepo, driverRepo, offerRepo, nil, testLogger(), metrics.NewNoopMetricsClient()),
+			BroadcastOffers: command.NewBroadcastOffersHandler(rideRepo, driverRepo, offerRepo, nil, publisher, testLogger(), metrics.NewNoopMetricsClient()),
 			CancelRide:      command.NewCancelRideHandler(rideRepo, driverRepo, offerRepo, testLogger(), metrics.NewNoopMetricsClient()),
 		},
 	}

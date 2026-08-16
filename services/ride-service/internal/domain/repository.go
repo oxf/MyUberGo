@@ -22,4 +22,8 @@ type RideRepository interface {
 	CancelRide(ctx context.Context, id, reason string) error
 	MarkRideStarted(ctx context.Context, id string, startedAt time.Time) error
 	CompleteRide(ctx context.Context, id string, finishedAt time.Time) error
+	// FailRide flips a ride to Failed once matching-service gives up after exhausting
+	// its retries. Idempotent against redelivery (WHERE status = 'Requested'), same
+	// guard style as MarkRideMatched (docs/AUDIT_2026-08-15.md #11).
+	FailRide(ctx context.Context, rideID string) error
 }

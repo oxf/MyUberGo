@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"sync"
@@ -198,11 +199,11 @@ func pool(n int) []domain.Candidate {
 }
 
 func newTestBroadcastHandler(rides *fakeRides, drivers *fakeDrivers, offers *fakeOffers) *BroadcastOffersHandler {
-	return &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers, metrics: metrics.NewNoopMetricsClient()}
+	return &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers, publisher: &fakePublisher{}, metrics: metrics.NewNoopMetricsClient()}
 }
 
 func newTestBroadcastHandlerWithLocation(rides *fakeRides, drivers domain.DriverRepository, offers *fakeOffers, location services.LocationClient) *BroadcastOffersHandler {
-	return &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers, location: location, metrics: metrics.NewNoopMetricsClient()}
+	return &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers, location: location, publisher: &fakePublisher{}, metrics: metrics.NewNoopMetricsClient()}
 }
 
 func TestBroadcastOffers_TopFiveFirstAttempt(t *testing.T) {
@@ -247,7 +248,9 @@ func TestBroadcastOffers_SkipsOfferedAndRateLimited(t *testing.T) {
 func TestBroadcastOffers_GivesUpAfterMaxAttempts(t *testing.T) {
 	rides := &fakeRides{ride: &domain.Ride{RideID: "r1", Status: domain.RideStatusSearching}}
 	offers := &fakeOffers{offered: map[string]bool{}, busy: map[string]bool{}, counts: map[string]int64{}}
+	pub := &fakePublisher{}
 	h := newTestBroadcastHandler(rides, &fakeDrivers{pool: pool(3)}, offers)
+	h.publisher = pub
 
 	if err := h.Handle(context.Background(), BroadcastOffers{RideID: "r1", Attempt: MaxAttempts + 1}); err != nil {
 		t.Fatal(err)
@@ -257,6 +260,18 @@ func TestBroadcastOffers_GivesUpAfterMaxAttempts(t *testing.T) {
 	}
 	if len(offers.offeredNow) != 0 {
 		t.Fatalf("no offers expected after give-up, got %v", offers.offeredNow)
+	}
+	// docs/AUDIT_2026-08-15.md #11: giving up must publish ride.matching_failed so
+	// ride-service's Postgres row doesn't stay 'Requested' forever with no signal.
+	if len(pub.topics) != 1 || pub.topics[0] != "ride.matching_failed" {
+		t.Fatalf("expected one publish to ride.matching_failed, got topics=%v", pub.topics)
+	}
+	var event contracts.RideMatchingFailedEvent
+	if err := json.Unmarshal(pub.payloads[0], &event); err != nil {
+		t.Fatalf("unmarshal published payload: %v", err)
+	}
+	if event.RideID != "r1" {
+		t.Fatalf("published event rideId = %q, want %q", event.RideID, "r1")
 	}
 }
 
@@ -315,6 +330,28 @@ func TestBroadcastOffers_UsesLocationDiscoveryWhenAvailable(t *testing.T) {
 	}
 	if loc.gotRadiusKm != radiusForAttempt(1) {
 		t.Fatalf("nearby called with radiusKm=%v, want %v", loc.gotRadiusKm, radiusForAttempt(1))
+	}
+}
+
+// TestBroadcastOffers_LocationQueryIsOversampled guards against starving the first round:
+// location-service has no availability filter, so an un-cushioned query for exactly
+// BroadcastSize candidates can yield fewer than 5 once intersected against drivers:online
+// (docs/AUDIT_2026-08-15.md #3). The fallback pool (TopOnlineDrivers) doesn't need the
+// same cushion since it already returns only online drivers.
+func TestBroadcastOffers_LocationQueryIsOversampled(t *testing.T) {
+	rides := &fakeRides{ride: &domain.Ride{RideID: "r1", Status: domain.RideStatusSearching}}
+	offers := &fakeOffers{offered: map[string]bool{}, busy: map[string]bool{}, counts: map[string]int64{}}
+	drivers := &fakeDrivers{onlineRatings: map[string]float64{}}
+	loc := &fakeLocationClient{}
+	h := newTestBroadcastHandlerWithLocation(rides, drivers, offers, loc)
+
+	if err := h.Handle(context.Background(), BroadcastOffers{RideID: "r1", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	wantLimit := PoolWidthPerAttempt * LocationOversampleFactor
+	if loc.gotLimit != wantLimit {
+		t.Fatalf("nearby called with limit=%d, want %d (attempt=1 * PoolWidthPerAttempt * LocationOversampleFactor)", loc.gotLimit, wantLimit)
 	}
 }
 

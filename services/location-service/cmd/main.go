@@ -73,10 +73,23 @@ func main() {
 	stalenessThreshold := time.Duration(envconfig.Int("LOCATION_STALENESS_SECONDS", 120)) * time.Second
 	sweepInterval := time.Duration(envconfig.Int("LOCATION_SWEEP_INTERVAL_SECONDS", 30)) * time.Second
 
-	driverLocationRepo := cache.NewDriverLocationRepository(redisDb)
+	driverLocationRepo := cache.NewDriverLocationRepository(redisDb, stalenessThreshold)
 	ownerRepo := cache.NewOwnerRepository(redisDb)
 
 	metricsClient := metrics.NewOtelMetricsClient(serviceName)
+
+	// geo-index-size-vs-drivers:online gauge (LOCATION_SPEC.md §12,
+	// docs/AUDIT_2026-08-15.md #6) — same shape as matching-service's own
+	// myubergo.drivers.online observable gauge.
+	if err := metricsClient.Gauge(
+		"myubergo.location.geo_index_size",
+		nil,
+		func(ctx context.Context) (int64, error) {
+			return redisDb.ZCard(ctx, "loc:drivers:geo").Result()
+		},
+	); err != nil {
+		log.Fatal(err)
+	}
 
 	application := app.Application{
 		Commands: app.Commands{

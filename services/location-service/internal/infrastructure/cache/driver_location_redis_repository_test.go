@@ -11,6 +11,10 @@ import (
 	"location-service/internal/domain"
 )
 
+// testStalenessThreshold matches the LOCATION_STALENESS_SECONDS default (cmd/main.go)
+// so fresh (time.Now()) fixtures used throughout this file pass Nearby's staleness filter.
+const testStalenessThreshold = 120 * time.Second
+
 var cacheSeedSeq atomic.Int64
 
 func nextCacheID(prefix string) string {
@@ -28,7 +32,7 @@ func mustCoord(t *testing.T, lat, lon float64) domain.Coordinate {
 
 func TestUpsertPositionAndNearby_FiltersByRadius(t *testing.T) {
 	ctx := context.Background()
-	repo := NewDriverLocationRepository(testRedis)
+	repo := NewDriverLocationRepository(testRedis, testStalenessThreshold)
 
 	center := mustCoord(t, 34.707, 33.022) // Limassol
 	near := nextCacheID("driver")
@@ -77,7 +81,7 @@ func TestUpsertPositionAndNearby_FiltersByRadius(t *testing.T) {
 // swap: it'd put the driver on the wrong side of the planet, failing loudly.
 func TestNearby_DistanceMatchesHaversineWithinTolerance(t *testing.T) {
 	ctx := context.Background()
-	repo := NewDriverLocationRepository(testRedis)
+	repo := NewDriverLocationRepository(testRedis, testStalenessThreshold)
 
 	center := mustCoord(t, 34.707, 33.022)
 	target := mustCoord(t, 34.707+0.01, 33.022) // ~1.1km north
@@ -114,9 +118,57 @@ func TestNearby_DistanceMatchesHaversineWithinTolerance(t *testing.T) {
 	}
 }
 
+// TestNearby_ExcludesStaleLastseen guards docs/AUDIT_2026-08-15.md #5: a driver can
+// remain in the geo index for up to StalenessWorker's sweep interval after they stop
+// pinging. Nearby must not return them as a live candidate in that gap.
+func TestNearby_ExcludesStaleLastseen(t *testing.T) {
+	ctx := context.Background()
+	repo := NewDriverLocationRepository(testRedis, testStalenessThreshold)
+
+	center := mustCoord(t, 34.707, 33.022)
+	fresh := nextCacheID("driver")
+	stale := nextCacheID("driver")
+
+	now := time.Now().UTC()
+	if err := repo.UpsertPosition(ctx, fresh, domain.Position{
+		Coordinate: center, AccuracyM: 10, DeviceTs: now, ServerTs: now,
+	}); err != nil {
+		t.Fatalf("upsert fresh driver: %v", err)
+	}
+	// Still geographically present (geo index has no per-member TTL), but
+	// well past testStalenessThreshold — simulates the pre-sweep gap.
+	if err := repo.UpsertPosition(ctx, stale, domain.Position{
+		Coordinate: center, AccuracyM: 10,
+		DeviceTs: now.Add(-10 * time.Minute), ServerTs: now.Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("upsert stale driver: %v", err)
+	}
+
+	results, err := repo.Nearby(ctx, center, 5, 10)
+	if err != nil {
+		t.Fatalf("nearby: %v", err)
+	}
+
+	var gotFresh, gotStale bool
+	for _, r := range results {
+		if r.DriverID == fresh {
+			gotFresh = true
+		}
+		if r.DriverID == stale {
+			gotStale = true
+		}
+	}
+	if !gotFresh {
+		t.Fatal("expected fresh driver in results")
+	}
+	if gotStale {
+		t.Fatal("stale driver (past the staleness threshold) should have been excluded")
+	}
+}
+
 func TestLastPosition_RoundTripsAllFields(t *testing.T) {
 	ctx := context.Background()
-	repo := NewDriverLocationRepository(testRedis)
+	repo := NewDriverLocationRepository(testRedis, testStalenessThreshold)
 
 	driverID := nextCacheID("driver")
 	coord := mustCoord(t, 34.707, 33.022)
@@ -147,7 +199,7 @@ func TestLastPosition_RoundTripsAllFields(t *testing.T) {
 
 func TestLastPosition_MissingDriverReturnsNilNotError(t *testing.T) {
 	ctx := context.Background()
-	repo := NewDriverLocationRepository(testRedis)
+	repo := NewDriverLocationRepository(testRedis, testStalenessThreshold)
 
 	got, err := repo.LastPosition(ctx, nextCacheID("never-pinged"))
 	if err != nil {
@@ -160,7 +212,7 @@ func TestLastPosition_MissingDriverReturnsNilNotError(t *testing.T) {
 
 func TestStaleDriverIDsAndEvict(t *testing.T) {
 	ctx := context.Background()
-	repo := NewDriverLocationRepository(testRedis)
+	repo := NewDriverLocationRepository(testRedis, testStalenessThreshold)
 
 	coord := mustCoord(t, 34.707, 33.022)
 	stale := nextCacheID("driver")
@@ -216,7 +268,7 @@ func TestStaleDriverIDsAndEvict(t *testing.T) {
 }
 
 func TestEvict_EmptyIsNoop(t *testing.T) {
-	if err := NewDriverLocationRepository(testRedis).Evict(context.Background(), nil); err != nil {
+	if err := NewDriverLocationRepository(testRedis, testStalenessThreshold).Evict(context.Background(), nil); err != nil {
 		t.Fatalf("expected no-op, got error: %v", err)
 	}
 }

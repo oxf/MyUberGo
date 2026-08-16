@@ -26,8 +26,9 @@ import (
 // Re-joining the hardcoded GroupID per test was flaky on this single-node KRaft broker
 // (slow member reap), so each consumer starts once per package run on one fixed topic.
 const (
-	rideAcceptedTestTopic     = "ride.accepted.pkgtest"
-	paymentCompletedTestTopic = "payment.completed.pkgtest"
+	rideAcceptedTestTopic       = "ride.accepted.pkgtest"
+	paymentCompletedTestTopic   = "payment.completed.pkgtest"
+	rideMatchingFailedTestTopic = "ride.matching_failed.pkgtest"
 )
 
 // migrationFiles lists the split migration files in apply order — WithInitScripts alone
@@ -39,6 +40,7 @@ var migrationFiles = []string{
 	"../../../shared/migrations/sql/0004_driver.up.sql",
 	"../../../shared/migrations/sql/0005_ride_driver_fk.up.sql",
 	"../../../shared/migrations/sql/0006_billing.up.sql",
+	"../../../shared/migrations/sql/0008_ride_failed_status.up.sql",
 }
 
 func testLogger() *logrus.Entry {
@@ -120,12 +122,16 @@ func runTests(m *testing.M) int {
 	if err := createTopicNoTest(paymentCompletedTestTopic); err != nil {
 		log.Fatalf("create topic %s: %v", paymentCompletedTestTopic, err)
 	}
+	if err := createTopicNoTest(rideMatchingFailedTestTopic); err != nil {
+		log.Fatalf("create topic %s: %v", rideMatchingFailedTestTopic, err)
+	}
 
 	rideRepo := persistence.NewPostgresRideRepository(testDB)
 	application := app.Application{
 		Commands: app.Commands{
 			MarkRideMatched: command.NewMarkRideMatchedHandler(rideRepo, testLogger(), metrics.NewNoopMetricsClient()),
 			MarkRideBilled:  command.NewMarkRideBilledHandler(rideRepo, testLogger(), metrics.NewNoopMetricsClient()),
+			FailRide:        command.NewFailRideHandler(rideRepo, testLogger(), metrics.NewNoopMetricsClient()),
 		},
 	}
 
@@ -134,6 +140,7 @@ func runTests(m *testing.M) int {
 
 	go NewRideAcceptedConsumer(application, kafkaBroker, testLogger()).Run(consumerCtx, rideAcceptedTestTopic)
 	go NewPaymentCompletedConsumer(application, kafkaBroker, testLogger()).Run(consumerCtx, paymentCompletedTestTopic)
+	go NewRideMatchingFailedConsumer(application, kafkaBroker, testLogger()).Run(consumerCtx, rideMatchingFailedTestTopic)
 
 	return m.Run()
 }

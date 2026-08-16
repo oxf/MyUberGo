@@ -6,7 +6,7 @@ A distributed, event-driven clone of Uber built in Go to learn microservices pat
 
 ## 🏗️ Architecture Overview
 
-The system is designed as 8 services communicating asynchronously via **Apache Kafka** (event streaming) and synchronously via **REST/HTTP**. **5 are implemented today** (Auth, Ride, Matching, Driver, Billing); **2 are planned** (Location, Notification); an API Gateway (Kong) fronts the implemented services — see status markers in the section below.
+The system is designed as 8 services communicating asynchronously via **Apache Kafka** (event streaming) and synchronously via **REST/HTTP**. **6 are implemented today** (Auth, Ride, Matching, Driver, Billing, Location — Location is Slice 1 of 4, see §6 below); **1 is planned** (Notification); an API Gateway (Kong) fronts the 6 implemented services — see status markers in the section below.
 
 ### System Architecture Diagram (target design)
 
@@ -106,13 +106,13 @@ Fans out push/SMS/email notifications for every ride/shift/payment lifecycle eve
 
 **Kafka subscribes to everything**: `ride.requested`, `ride.accepted`, `ride.started`, `ride.finished`, `ride.cancelled`, `payment.completed`, `shift.started`, `shift.ended` — each mapped to a specific notification to client and/or driver (see table in-code once implemented).
 
-### 8. API Gateway — 🚧 Scaffolded, not implemented (target port `:80`/`:443`)
+### 8. API Gateway — ✅ Implemented (Kong, port `:8090`)
 
-Single entry point: validates the JWT issued by Auth Service, extracts claims (`sub`, `email`, `role`, `driver_id`), strips `Authorization` and injects `X-User-Id`/`X-User-Email`/`X-User-Role`/`X-Driver-Id` headers, routes by path prefix, and rate-limits (per-user, per-IP, per-endpoint).
+Single entry point: Kong (`gateway/kong.yml`) validates the JWT issued by Auth Service via its `jwt` plugin, and a `post-function` Lua snippet extracts claims and injects `X-User-Id`/`X-User-Email`/`X-User-Role`/`X-Client-Id` headers (overwriting any the caller sent directly), routes by path prefix, and rate-limits (per-user, per-IP, per-endpoint — see `gateway/kong.yml`'s plugins). Notification service routing isn't relevant yet since that service doesn't exist.
 
-**Routes (target)**: `/api/auth/*` → Auth (no token), `/api/rides/*` → Ride, `/api/shifts/*` + `/api/drivers/*` → Driver, `/api/location/*` → Location, `/api/billing/*` → Billing, `/api/notifications/*` → Notification (internal only).
+**Routes (actual)**: `/api/auth/{signup,login,refresh}` → Auth (public, no token); `/api/auth/{me,logout,users}`, `/api/ride/*`, `/api/driver/*`, `/api/billing/*`, `/api/matching/*`, `/api/location/*` → their respective services (protected, `jwt` + header injection); `GET /api/auth/users`, `GET /api/ride`, `GET /api/driver/driver`, `GET /api/driver/driver-shift`, `GET /api/billing/invoices`, `GET /api/billing/ledger/balance` → Admin-only (adds a `require_admin` check). See CLAUDE.md's "API Gateway (Kong)" section for the full route-precedence rules.
 
-> Downstream services already expect gateway-forwarded headers (e.g. `ride-service` reads `X-User-Id` directly) even though the gateway itself doesn't exist yet — see Phase 2 of the roadmap.
+> Downstream services trust the gateway-forwarded headers (e.g. `ride-service` reads `X-User-Id`/`X-Client-Id` directly) because Kong is the sole ingress — none of the 6 implemented services publish a host port on their own.
 
 ---
 
@@ -173,16 +173,16 @@ To facilitate learning, the services are designed in progressive architectural c
 ### Phase 1: Clean Architecture Refactoring (Core Services)
 *   [x] `driver-service` refactored to CA/CQRS.
 *   [x] `matching-service` refactored to CA/CQRS + simplified matching algorithm implemented (discovery/broadcast/atomic accept/retry/rate limiting against Redis). Geo-radius discovery landed 2026-08-12 (Location service Slice 1) — ranking is now `0.5×distance + 0.5×rating` when Location is available, rating-only on fallback. Remaining: TIERED broadcast strategy, Stage-3 concurrent fan-out (goroutines/channels for the broadcast step).
-*   [ ] **Refactor `ride-service`**: `ride-service` is already Stage 2 (CQRS/DDD layered, not Stage 1 as this line previously implied) and the `Cancelled` cancellation flow (`DELETE /ride/{id}`, `ride.cancelled` publish/consume) is now implemented — see the Ride/Matching/Driver Service sections above. Remaining: add `RIDE_REQUEST`/`TARIFF` tables and time-of-day pricing (schema has `ride.tariff` but it isn't read), and a real (non-stub) cancellation fee calculator once Billing exists.
-*   [ ] **Refactor `auth-service`**: move JWT generation and password hashing into domain services, add `updated_at`/`deleted_at` soft delete, `GET /api/auth/me`, `POST /api/auth/logout`.
+*   [x] **Refactor `ride-service`**: `ride-service` is already Stage 2 (CQRS/DDD layered, not Stage 1 as this line previously implied) and the `Cancelled` cancellation flow (`DELETE /ride/{id}`, `ride.cancelled` publish/consume) is now implemented — see the Ride/Matching/Driver Service sections above. Remaining: add `RIDE_REQUEST`/`TARIFF` tables and time-of-day pricing (schema has `ride.tariff` but it isn't read), and a real (non-stub) cancellation fee calculator once Billing exists.
+*   [x] **Refactor `auth-service`** (2026-07-25): moved JWT generation and password hashing into domain services (`PasswordHasher`/`TokenIssuer` ports), added `updated_at`/`deleted_at` soft delete, `GET /api/auth/me`, `POST /api/auth/logout`.
 
 ### Phase 2: Gateway Configuration & Inter-service Auth
-*   [ ] Scaffold and implement the **API Gateway**: JWT validation against the shared secret, `X-User-Id`/`X-User-Email`/`X-User-Role`/`X-Driver-Id` header injection, path-based routing table, rate limiting.
-*   [ ] Secure downstream service communication (verify downstream endpoints only accept gateway-forwarded headers).
+*   [x] Scaffold and implement the **API Gateway** (Kong, `gateway/kong.yml`): JWT validation via the shared secret, `X-User-Id`/`X-User-Email`/`X-User-Role`/`X-Client-Id` header injection, path-based routing table, rate limiting — see §8 above.
+*   [x] Secure downstream service communication — Kong is the sole ingress for all 6 implemented services (none publish a host port), so downstream services trust the gateway-forwarded headers without re-validating the JWT themselves.
 
 ### Phase 3: New Feature Services
 *   [ ] **Location Service** (Slice 1 of 4 done, 2026-08-12 — see the Location Service section above and `docs/location/LOCATION_SPEC.md`): driver ping ingest + Redis geo index + nearby-drivers query, consumed by Matching. Remaining: WebSocket live tracking, NoSQL history with TTL + ride-id GSI, map-matched ride summaries, `ride.started`/`ride.finished`-driven tracking windows (opens on `ride.accepted` instead, deliberately — see the spec), Geoapify proxy.
-*   [ ] **Billing & Payment Service**: payment methods, `ride.finished`/`ride.cancelled` consumers, order/receipt/commission generation, `payment.completed`/`payment.failed` publishers.
+*   [x] **Billing & Payment Service** (2026-07-25, Stripe adapter 2026-08-01): payment methods, `ride.completed`/`ride.cancelled` consumers, invoice/ledger generation, `payment.completed`/`payment.failed` publishers. Remaining (deferred per `docs/billing/BILLING_SPEC.md` §9): driver payouts/Connect, wallet/credits/refunds, FX, a reconciliation poller for payments stuck in `processing`.
 *   [ ] **Notification Service**: consume every ride/shift/payment event and fan out push/SMS/email per template, with delivery-status tracking.
 
 ### Phase 4: Production Quality & Observability

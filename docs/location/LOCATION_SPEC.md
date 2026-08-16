@@ -4,7 +4,7 @@ Design spec for `services/location-service` (Phase 3 of the README roadmap). Tar
 
 Intended home: `docs/location/LOCATION_SPEC.md`, mirroring `docs/billing/BILLING_SPEC.md`.
 
-**Status: Slice 1 in progress.** This document was originally written in a chat session without codebase access. It has since been checked against the actual repo (2026-08-12) and corrected in place — see §0.1. Do not assume any table, topic, Redis key, contract struct, or container named here is present until its slice in §13 is checked off — check `services/shared/migrations/sql/`, `services/contracts/`, `gateway/kong.yml`, and `docker-compose.yml` before writing code against anything.
+**Status: Slice 1 complete (2026-08-12), Slice 2 not started.** This document was originally written in a chat session without codebase access. It has since been checked against the actual repo (2026-08-12) and corrected in place — see §0.1. Do not assume any table, topic, Redis key, contract struct, or container named here is present until its slice in §13 is checked off — check `services/shared/migrations/sql/`, `services/contracts/`, `gateway/kong.yml`, and `docker-compose.yml` before writing code against anything.
 
 ---
 
@@ -477,18 +477,18 @@ Each slice ends with something that builds, runs, and is exercised by `e2e-test`
 
 Unblocks matching's geo discovery, which is the highest-value open item in the backlog.
 
-- [ ] Scaffold `services/location-service` (Stage 2 shape per §2.8), own Go module, `replace` directives for `contracts`/`observability`/`common` (**not** `shared` — that directory has no `go.mod`), Dockerfile copying the whole service dir (not just `cmd` — see the auth-service Dockerfile bug in `CLAUDE.md`)
-- [ ] `LocationIngestor` port; `POST /batch` adapter first (testable without a WS client) — no `driverId` in the request body (§9)
-- [ ] Ping validation (§5.5) with per-reason rejection metrics
-- [ ] `GEOADD loc:drivers:geo` + `ZADD loc:drivers:lastseen` + `loc:driver:{id}` hash, pipelined
-- [ ] `StalenessWorker` (§5.3) — **this slice, not later**
-- [ ] `GET /internal/drivers/nearby` via `GEOSEARCH ... WITHDIST`
-- [ ] Kong route (`strip_path: true`, matching-service's route is the template), docker-compose entry (no host port, Redis + Kafka deps only — no Postgres until Slice 3), health checks (Redis-only pinger), graceful shutdown
-- [ ] `shift.updated` consumer → cache the owner mapping **both directions** (`loc:driver:{id}:owner`, `loc:user:{userId}:driver`) for §9
-- [ ] new `services/common/httpclient` (timeout + otelhttp transport) — this is matching-service's first outbound HTTP call ever, so there's no existing client helper to reuse
-- [ ] matching-service: `LocationClient` over `httpclient`, over-fetch + intersect via a new `OnlineRatings(ids)` repo method, `0.5×distance + 0.5×rating` ranking (§17 decision — README's 0.2 acceptance weight has no data source yet), radius-expanding retry (5→7→9→11→13km, cap 15), **fallback to today's `TopOnlineDrivers` pool on Location failure**, `myubergo.matching.location_fallbacks` counter
-- [ ] `.github/workflows/ci.yml`: add `location-service` to the build/vet/test/lint matrix
-- [ ] `e2e-test`: drivers emit pings (§14) with a bearing-and-speed movement model; assert the four behaviours in §14
+- [x] Scaffold `services/location-service` (Stage 2 shape per §2.8), own Go module, `replace` directives for `contracts`/`observability`/`common` (**not** `shared` — that directory has no `go.mod`), Dockerfile copying the whole service dir (not just `cmd` — see the auth-service Dockerfile bug in `CLAUDE.md`)
+- [x] `LocationIngestor` port; `POST /batch` adapter first (testable without a WS client) — no `driverId` in the request body (§9)
+- [x] Ping validation (§5.5) with per-reason rejection metrics
+- [x] `GEOADD loc:drivers:geo` + `ZADD loc:drivers:lastseen` + `loc:driver:{id}` hash, pipelined
+- [x] `StalenessWorker` (§5.3) — **this slice, not later**
+- [x] `GET /internal/drivers/nearby` via `GEOSEARCH ... WITHDIST`
+- [x] Kong route (`strip_path: true`, matching-service's route is the template), docker-compose entry (no host port, Redis + Kafka deps only — no Postgres until Slice 3), health checks (Redis-only pinger), graceful shutdown
+- [x] `shift.updated` consumer → cache the owner mapping **both directions** (`loc:driver:{id}:owner`, `loc:user:{userId}:driver`) for §9
+- [x] new `services/common/httpclient` (timeout + otelhttp transport) — this is matching-service's first outbound HTTP call ever, so there's no existing client helper to reuse
+- [x] matching-service: `LocationClient` over `httpclient`, over-fetch + intersect via a new `OnlineRatings(ids)` repo method, `0.5×distance + 0.5×rating` ranking (§17 decision — README's 0.2 acceptance weight has no data source yet), radius-expanding retry (5→7→9→11→13km, cap 15), **fallback to today's `TopOnlineDrivers` pool on Location failure**, `myubergo.matching.location_fallbacks` counter
+- [x] `.github/workflows/ci.yml`: add `location-service` to the build/vet/test/lint matrix
+- [x] `e2e-test`: drivers emit pings (§14) with a bearing-and-speed movement model; assert the four behaviours in §14
 
 ### Slice 2 — WebSocket + live tracking *(must have)*
 

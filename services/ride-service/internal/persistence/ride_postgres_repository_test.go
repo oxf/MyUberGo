@@ -133,6 +133,58 @@ func TestMarkRideMatched_GuardBlocksRedelivery(t *testing.T) {
 	}
 }
 
+// TestFailRide_GuardBlocksRedeliveryAndAlreadyMatched guards docs/AUDIT_2026-08-15.md #11:
+// matching-service publishes ride.matching_failed after exhausting its retries, and the
+// "AND status = 'Requested'" guard must (a) make a redelivered failure a no-op and (b) never
+// clobber a ride that matched in the meantime (a real race: the retry that gave up and the
+// accept that won could be in flight at the same time).
+func TestFailRide_GuardBlocksRedeliveryAndAlreadyMatched(t *testing.T) {
+	ctx := context.Background()
+	repo := NewPostgresRideRepository(testDB)
+	clientID := seedClient(t, testDB)
+	rideID := seedRide(t, testDB, clientID, "Requested")
+
+	if err := repo.FailRide(ctx, rideID); err != nil {
+		t.Fatalf("first FailRide: %v", err)
+	}
+	ride, err := repo.GetRideByID(ctx, rideID)
+	if err != nil {
+		t.Fatalf("GetRideByID: %v", err)
+	}
+	if ride.Status != "Failed" {
+		t.Fatalf("expected ride Failed, got status=%s", ride.Status)
+	}
+
+	// Redelivery must be a no-op — the guard only matches status = 'Requested'.
+	if err := repo.FailRide(ctx, rideID); err != nil {
+		t.Fatalf("second (redelivered) FailRide: %v", err)
+	}
+	ride, err = repo.GetRideByID(ctx, rideID)
+	if err != nil {
+		t.Fatalf("GetRideByID after redelivery: %v", err)
+	}
+	if ride.Status != "Failed" {
+		t.Fatalf("guard failed: redelivery changed status to %s (want unchanged Failed)", ride.Status)
+	}
+
+	// A ride that already matched must never be clobbered by a late/racing failure.
+	driver1 := seedDriver(t, testDB)
+	matchedRideID := seedRide(t, testDB, clientID, "Requested")
+	if err := repo.MarkRideMatched(ctx, matchedRideID, driver1, time.Now()); err != nil {
+		t.Fatalf("MarkRideMatched: %v", err)
+	}
+	if err := repo.FailRide(ctx, matchedRideID); err != nil {
+		t.Fatalf("FailRide on already-matched ride: %v", err)
+	}
+	ride, err = repo.GetRideByID(ctx, matchedRideID)
+	if err != nil {
+		t.Fatalf("GetRideByID for matched ride: %v", err)
+	}
+	if ride.Status != "Matched" {
+		t.Fatalf("guard failed: FailRide clobbered a Matched ride, got status=%s", ride.Status)
+	}
+}
+
 func TestMarkRideBilled_GuardBlocksRedelivery(t *testing.T) {
 	ctx := context.Background()
 	repo := NewPostgresRideRepository(testDB)

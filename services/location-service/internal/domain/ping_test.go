@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -57,6 +58,21 @@ func TestValidatePing(t *testing.T) {
 			raw:  RawPing{Lat: 34.707, Lon: 33.022, AccuracyM: 100, DeviceTs: now},
 			now:  now,
 			want: RejectNone,
+		},
+		{
+			// NaN > x is always false in Go, so an un-guarded check would let this
+			// through (docs/AUDIT_2026-08-15.md #10).
+			name: "NaN accuracy rejected",
+			raw:  RawPing{Lat: 34.707, Lon: 33.022, AccuracyM: math.NaN(), DeviceTs: now},
+			now:  now,
+			want: RejectPoorAccuracy,
+		},
+		{
+			// A negative accuracy > MaxAccuracyM is also always false in Go.
+			name: "negative accuracy rejected",
+			raw:  RawPing{Lat: 34.707, Lon: 33.022, AccuracyM: -1, DeviceTs: now},
+			now:  now,
+			want: RejectPoorAccuracy,
 		},
 		{
 			name: "clock skew too far in the future",

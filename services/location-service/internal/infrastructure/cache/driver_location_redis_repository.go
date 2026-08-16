@@ -21,10 +21,14 @@ func driverKey(driverID string) string { return "loc:driver:" + driverID }
 
 type DriverLocationRepository struct {
 	rdb *redis.Client
+	// stalenessThreshold filters Nearby's results against loc:drivers:lastseen so a
+	// driver who stopped pinging doesn't stay a candidate for the ~150s worst-case
+	// gap before StalenessWorker's next sweep evicts them (docs/AUDIT_2026-08-15.md #5).
+	stalenessThreshold time.Duration
 }
 
-func NewDriverLocationRepository(rdb *redis.Client) *DriverLocationRepository {
-	return &DriverLocationRepository{rdb: rdb}
+func NewDriverLocationRepository(rdb *redis.Client, stalenessThreshold time.Duration) *DriverLocationRepository {
+	return &DriverLocationRepository{rdb: rdb, stalenessThreshold: stalenessThreshold}
 }
 
 // LastPosition reads loc:driver:{id} in one round trip. A missing key (never
@@ -106,8 +110,10 @@ func (r *DriverLocationRepository) UpsertPosition(ctx context.Context, driverID 
 	return err
 }
 
-// Nearby runs GEOSEARCH ... BYRADIUS ... ASC WITHDIST — geographic
-// candidates only, nearest first, no availability filtering.
+// Nearby runs GEOSEARCH ... BYRADIUS ... ASC WITHDIST — geographic candidates
+// only, nearest first — then drops any candidate whose lastseen score is
+// older than stalenessThreshold, so a driver mid-gap before the next
+// StalenessWorker sweep isn't returned as a live candidate.
 func (r *DriverLocationRepository) Nearby(ctx context.Context, center domain.Coordinate, radiusKm float64, limit int) ([]domain.NearbyDriver, error) {
 	locs, err := r.rdb.GeoSearchLocation(ctx, geoKey, &redis.GeoSearchLocationQuery{
 		GeoSearchQuery: redis.GeoSearchQuery{
@@ -123,9 +129,27 @@ func (r *DriverLocationRepository) Nearby(ctx context.Context, center domain.Coo
 	if err != nil {
 		return nil, err
 	}
+	if len(locs) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]string, len(locs))
+	for i, loc := range locs {
+		ids[i] = loc.Name
+	}
+	scores, err := r.rdb.ZMScore(ctx, lastSeenKey, ids...).Result()
+	if err != nil {
+		return nil, err
+	}
+	cutoff := float64(time.Now().Add(-r.stalenessThreshold).UnixMilli())
 
 	out := make([]domain.NearbyDriver, 0, len(locs))
-	for _, loc := range locs {
+	for i, loc := range locs {
+		// A missing lastseen entry scores 0 in go-redis's ZMScore, which is
+		// always older than cutoff — treated the same as genuinely stale.
+		if scores[i] < cutoff {
+			continue
+		}
 		// loc.Dist arrives in km; round once to the nearest metre and cast to
 		// int64 — never persist/compare an intermediate float distance.
 		out = append(out, domain.NearbyDriver{

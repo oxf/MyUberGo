@@ -98,7 +98,7 @@ func main() {
 		Commands: app.Commands{
 			UpsertDriver:    command.NewUpsertDriverHandler(driverRepo, logger, metricsClient),
 			CreateRide:      command.NewCreateRideHandler(rideRepo, logger, metricsClient),
-			BroadcastOffers: command.NewBroadcastOffersHandler(rideRepo, driverRepo, offerRepo, locationClient, logger, metricsClient),
+			BroadcastOffers: command.NewBroadcastOffersHandler(rideRepo, driverRepo, offerRepo, locationClient, publisher, logger, metricsClient),
 			AcceptRide:      command.NewAcceptRideHandler(rideRepo, driverRepo, offerRepo, publisher, logger, metricsClient),
 			CancelRide:      command.NewCancelRideHandler(rideRepo, driverRepo, offerRepo, logger, metricsClient),
 		},

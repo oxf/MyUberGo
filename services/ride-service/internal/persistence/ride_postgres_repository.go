@@ -116,6 +116,19 @@ func (r *PostgresRideRepository) MarkRideMatched(ctx context.Context, rideID, dr
 	return err
 }
 
+// FailRide flips a ride to Failed once matching-service gives up after exhausting its
+// retries. The "AND status = 'Requested'" guard makes this idempotent against Kafka's
+// at-least-once redelivery of ride.matching_failed, same pattern as MarkRideMatched.
+func (r *PostgresRideRepository) FailRide(ctx context.Context, rideID string) error {
+	executor := Executor(ctx, r.db)
+	_, err := executor.ExecContext(ctx, `
+		UPDATE ride.ride
+		SET status = 'Failed'
+		WHERE id = $1 AND status = 'Requested'
+	`, rideID)
+	return err
+}
+
 // MarkRideBilled sets bill_id once billing-service publishes
 // payment.completed. The "AND bill_id IS NULL" guard makes this idempotent
 // against Kafka's at-least-once redelivery, same pattern as MarkRideMatched.

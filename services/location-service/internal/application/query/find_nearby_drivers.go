@@ -21,6 +21,7 @@ type FindNearbyDrivers struct {
 
 type FindNearbyDriversHandler struct {
 	drivers domain.DriverLocationRepository
+	metrics decorator.MetricsClient
 }
 
 func NewFindNearbyDriversHandler(
@@ -31,7 +32,7 @@ func NewFindNearbyDriversHandler(
 	if drivers == nil {
 		panic("nil repo")
 	}
-	handler := &FindNearbyDriversHandler{drivers: drivers}
+	handler := &FindNearbyDriversHandler{drivers: drivers, metrics: metricsClient}
 	return decorator.ApplyQueryDecorators[FindNearbyDrivers, []domain.NearbyDriver](handler, logger, metricsClient)
 }
 
@@ -43,5 +44,15 @@ func (h *FindNearbyDriversHandler) Handle(ctx context.Context, q FindNearbyDrive
 	if q.RadiusKm <= 0 || q.Limit <= 0 {
 		return nil, cmnerrors.ErrInvalidInput
 	}
-	return h.drivers.Nearby(ctx, center, q.RadiusKm, q.Limit)
+	candidates, err := h.drivers.Nearby(ctx, center, q.RadiusKm, q.Limit)
+	if err != nil {
+		return nil, err
+	}
+	// nearby-candidates-returned (LOCATION_SPEC.md §12, docs/AUDIT_2026-08-15.md
+	// #6) — query latency itself is already covered by the generic
+	// myubergo.query.duration decorator metric, no separate histogram needed.
+	if h.metrics != nil {
+		h.metrics.RecordValue(ctx, "myubergo.location.nearby_candidates_returned", float64(len(candidates)))
+	}
+	return candidates, nil
 }

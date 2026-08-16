@@ -29,14 +29,14 @@ func (r *PostgresClientRepository) Create(ctx context.Context, c *domain.Client)
 
 func (r *PostgresClientRepository) GetByUserID(ctx context.Context, userID string) (*domain.Client, error) {
 	row := Executor(ctx, r.db).QueryRowContext(ctx, `
-		SELECT id, user_id, rating, total_rides_completed, created_at
+		SELECT id, user_id, created_at
 		FROM auth.client
 		WHERE user_id = $1
 	`, userID)
 
 	var c domain.Client
 	var createdAt time.Time
-	if err := row.Scan(&c.ID, &c.UserID, &c.Rating, &c.TotalRidesCompleted, &createdAt); err != nil {
+	if err := row.Scan(&c.ID, &c.UserID, &createdAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, commonerrors.ErrNotFound
 		}
