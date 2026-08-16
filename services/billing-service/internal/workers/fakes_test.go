@@ -494,17 +494,6 @@ func (r *fakeOutboxRepo) CountByRetries(ctx context.Context, maxRetries int) (pe
 	return pending, parked, nil
 }
 
-func (r *fakeOutboxRepo) get(id string) *domain.OutboxMessage {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, m := range r.messages {
-		if m.ID == id {
-			return m
-		}
-	}
-	return nil
-}
-
 func (r *fakeOutboxRepo) countByTopic(topic string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
