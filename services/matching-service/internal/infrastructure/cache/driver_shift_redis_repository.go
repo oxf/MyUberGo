@@ -76,3 +76,20 @@ func (r *DriverRepository) GetUserID(ctx context.Context, driverID string) (stri
 	}
 	return userID, err
 }
+
+// OnlineRatings is ZMSCORE against drivers:online for exactly the given ids — one round trip,
+// same "0 = not present" convention as Rating (ratings are never actually 0 in practice).
+func (r *DriverRepository) OnlineRatings(ctx context.Context, driverIDs []string) (map[string]float64, error) {
+	out := make(map[string]float64, len(driverIDs))
+	if len(driverIDs) == 0 {
+		return out, nil
+	}
+	scores, err := r.rdb.ZMScore(ctx, onlineDriversKey, driverIDs...).Result()
+	if err != nil {
+		return nil, err
+	}
+	for i, id := range driverIDs {
+		out[id] = scores[i]
+	}
+	return out, nil
+}

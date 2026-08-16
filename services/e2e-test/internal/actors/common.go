@@ -15,9 +15,8 @@ import (
 
 const password = "e2e-password-123"
 
-// Seeded admin account (services/shared/migrations/sql/0002_auth.up.sql) — the only way
-// to reach GET /users, GET /driver, and GET /driver-shift now that those
-// list endpoints are Admin-only at the Kong gateway (see gateway/kong.yml).
+// Seeded admin account — the only way to reach GET /users/driver/driver-shift, which
+// are Admin-only at the Kong gateway.
 const adminEmail = "admin@myubergo.local"
 const adminPassword = "admin123"
 
@@ -28,11 +27,11 @@ type Deps struct {
 	Ride     *apiclient.RideClient
 	Matching *apiclient.MatchingClient
 	Billing  *apiclient.BillingClient
+	Location *apiclient.LocationClient
 	Stats    *stats.Collector
 
-	// AdminAccessToken is fetched once at startup (see LoginAsAdmin) and
-	// reused by every actor for the Admin-only list endpoints. Actors never
-	// mutate it, so sharing it by value across goroutines is safe.
+	// AdminAccessToken is fetched once at startup and reused by every actor; never mutated,
+	// so sharing it by value across goroutines is safe.
 	AdminAccessToken string
 }
 
@@ -41,16 +40,13 @@ type account struct {
 	userID       string
 	accessToken  string
 	refreshToken string
-	// clientID is auth.client(id), populated from GET /me after login. Only
-	// set for Client-role accounts (empty for Driver accounts, which have no
-	// auth.client row).
+	// clientID is auth.client(id) from GET /me; only set for Client-role accounts
+	// (Driver accounts have no auth.client row).
 	clientID string
 }
 
-// LoginAsAdmin blocks until it obtains an access token for the seeded admin
-// account or ctx is cancelled (empty return) — called once at startup,
-// before any actor goroutines start, so there's no concurrent access to
-// worry about.
+// LoginAsAdmin blocks until it obtains an admin access token or ctx is cancelled (empty return);
+// called once at startup before actor goroutines start, so no concurrent access to worry about.
 func LoginAsAdmin(ctx context.Context, auth *apiclient.AuthClient) string {
 	for {
 		resp, err := auth.Login(ctx, contracts.LoginRequest{Email: adminEmail, Password: adminPassword})
@@ -82,13 +78,8 @@ func (d Deps) record(actor, op string, start time.Time, err error, v *Verify) {
 	d.Stats.Record(e)
 }
 
-// signupAndLogin retries until it has a working account or ctx is cancelled
-// (nil return). Errors are recorded, never fatal — the stack may still be
-// starting up when the simulator launches. Signup and Login are retried as
-// two independent phases (see ensureSignedUp/loginUntilReady) rather than
-// one combined retry unit: if Signup succeeds but Login then fails (a 429,
-// or any other blip), retrying the combined unit would re-send Signup with
-// an email that's now already taken, 500ing forever.
+// signupAndLogin retries until it has a working account or ctx is cancelled. Signup and Login
+// are retried as independent phases — a combined retry would re-send a now-taken Signup on a Login blip.
 func (d Deps) signupAndLogin(ctx context.Context, actor, email, name, phone string, role contracts.UserRole, rnd *rand.Rand) *account {
 	if !d.ensureSignedUp(ctx, actor, email, name, phone, role, rnd) {
 		return nil
@@ -98,15 +89,8 @@ func (d Deps) signupAndLogin(ctx context.Context, actor, email, name, phone stri
 		return nil
 	}
 
-	// userID and a Client's clientId (auth.client(id), distinct from
-	// userID — see the role-table refactor notes in CLAUDE.md/PLAN.md) both
-	// come from GET /me rather than the Signup response body, since
-	// ensureSignedUp's "already registered" fallback path (below) never
-	// gets a fresh Signup response to read a userId from. Retried like the
-	// two phases above it — a transient /me blip must not leave the account
-	// permanently unusable with an empty userID. A Driver has no client
-	// row, so me.ClientId is nil and acc.clientID stays empty, which is
-	// expected, not an error.
+	// userID/clientID come from GET /me, not the Signup response, since the "already
+	// registered" fallback path has none; nil ClientId (Driver accounts) is expected, not an error.
 	me, ok := d.getMeUntilReady(ctx, actor, acc.accessToken, rnd)
 	if !ok {
 		return nil
@@ -119,12 +103,8 @@ func (d Deps) signupAndLogin(ctx context.Context, actor, email, name, phone stri
 	return acc
 }
 
-// ensureSignedUp retries Signup alone until it succeeds or ctx is done. A
-// 409 (email already registered) is treated as a legitimate outcome, not a
-// failure — same convention as a legitimate lost-race 409 in
-// driver_actor.go's acceptOffer — because the only realistic way e2e-test
-// sees a 409 for one of its own generated emails is an earlier Signup call
-// in this same retry loop having actually gone through.
+// ensureSignedUp retries Signup alone until it succeeds or ctx is done. A 409 is treated as
+// success, not failure — the only way e2e-test sees one is an earlier retry having gone through.
 func (d Deps) ensureSignedUp(ctx context.Context, actor, email, name, phone string, role contracts.UserRole, rnd *rand.Rand) bool {
 	for {
 		start := time.Now()

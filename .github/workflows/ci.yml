@@ -17,6 +17,7 @@ jobs:
           - ride-service
           - driver-service
           - matching-service
+          - location-service
           - billing-service
           - contracts
           - observability
@@ -43,11 +44,8 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          # v6 only supports golangci-lint v1, whose latest release predates
-          # Go 1.26 support entirely (can't parse this repo's `go 1.26`
-          # toolchain directive). v7 is required for golangci-lint v2 — the
-          # v2.12.2 release actually verified locally against this repo's
-          # .golangci.yml (v2 schema) and go1.26 modules.
+          # v6 only supports golangci-lint v1, which can't parse this repo's `go 1.26` toolchain.
+          # v7 is required for v2; v2.12.2 is verified locally against this repo's .golangci.yml.
           version: v2.12.2
           working-directory: services/${{ matrix.service }}
           args: --config=${{ github.workspace }}/.golangci.yml

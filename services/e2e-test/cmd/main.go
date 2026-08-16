@@ -24,6 +24,7 @@ type config struct {
 	driverURL   string
 	matchingURL string
 	billingURL  string
+	locationURL string
 
 	clients int
 	drivers int
@@ -34,6 +35,10 @@ type config struct {
 	runFor         time.Duration
 
 	seed int64
+
+	// scenario selects a one-shot proof instead of the continuous simulation; empty
+	// (default) keeps today's behavior — see actors.RunLocationRadiusScenario.
+	scenario string
 }
 
 func main() {
@@ -56,32 +61,31 @@ func main() {
 		Ride:     apiclient.NewRideClient(cfg.rideURL),
 		Matching: apiclient.NewMatchingClient(cfg.matchingURL),
 		Billing:  apiclient.NewBillingClient(cfg.billingURL),
+		Location: apiclient.NewLocationClient(cfg.locationURL),
 		Stats:    stats.NewCollector(256),
 	}
 
 	go deps.Stats.Run(cfg.reportInterval)
 
-	// GET /users, GET /driver, and GET /driver-shift are Admin-only at the
-	// Kong gateway now (see gateway/kong.yml) — every actor's list-endpoint
-	// verifies need this token, so it's fetched once, up front, rather than
-	// per actor.
+	// GET /users, /driver, /driver-shift are Admin-only at Kong — every actor's list-endpoint
+	// verify needs this token, so it's fetched once up front rather than per actor.
 	log.Println("logging in as seeded admin (services/shared/migrations/sql/0002_auth.up.sql)...")
 	deps.AdminAccessToken = actors.LoginAsAdmin(ctx, deps.Auth)
 	if deps.AdminAccessToken == "" {
 		log.Println("warning: could not log in as admin before shutdown; list-endpoint verifies will fail")
 	}
 
+	if cfg.scenario != "" {
+		runScenario(ctx, cfg, deps)
+		return
+	}
+
 	// runID makes emails unique across runs — auth.user.email is unique and
 	// the DB persists between simulator runs.
 	runID := time.Now().Unix()
 
-	// PAYMENT_PROVIDER mirrors billing-service's own env var (same default,
-	// "stub") — pointing this simulator at a PAYMENT_PROVIDER=stripe stack
-	// is then just "set the same env var you already set for
-	// docker-compose". pm_stub_* tokens are StubProvider-only fixtures, not
-	// real Stripe objects — sending them straight to the real Stripe API
-	// 404s ("No such PaymentMethod"), which is what these two helpers exist
-	// to prevent.
+	// PAYMENT_PROVIDER mirrors billing-service's own env var. pm_stub_* tokens are
+	// StubProvider-only fixtures — sending them to real Stripe 404s, hence the two helpers below.
 	paymentProvider := getenv("PAYMENT_PROVIDER", "stub")
 	log.Printf("payment provider: %s (default token %s, decline token %s)",
 		paymentProvider, defaultPaymentMethodToken(paymentProvider), declinePaymentMethodToken(paymentProvider))
@@ -103,9 +107,8 @@ func main() {
 		wg.Go(func() { actor.Run(ctx) })
 	}
 
-	// One dedicated declining client (BILLING_SPEC.md §9's e2e-test step):
-	// every invoice it ever generates is charged against the decline token,
-	// so its rides are the ones that eventually reach uncollectible.
+	// One dedicated declining client (BILLING_SPEC.md §9): every invoice it generates
+	// is charged against the decline token, so its rides eventually reach uncollectible.
 	decliningClient := &actors.ClientActor{
 		Deps:               deps,
 		ID:                 "decline-client-0",
@@ -137,15 +140,14 @@ func main() {
 func loadConfig() config {
 	cfg := config{}
 
-	// auth/ride/driver/matching now go through Kong (the API gateway) — see
-	// gateway/kong.yml and CLAUDE.md's "API Gateway" section. Each base URL
-	// includes the /api/<service> prefix Kong routes on and strips before
-	// forwarding, so apiclient paths below (e.g. "/login", "/ride") don't change.
+	// auth/ride/driver/matching go through Kong; each base URL includes the /api/<service>
+	// prefix Kong strips before forwarding, so apiclient paths below don't change.
 	flag.StringVar(&cfg.authURL, "auth-url", getenv("E2E_AUTH_URL", "http://localhost:8090/api/auth"), "auth-service base URL (via gateway)")
 	flag.StringVar(&cfg.rideURL, "ride-url", getenv("E2E_RIDE_URL", "http://localhost:8090/api/ride"), "ride-service base URL (via gateway)")
 	flag.StringVar(&cfg.driverURL, "driver-url", getenv("E2E_DRIVER_URL", "http://localhost:8090/api/driver"), "driver-service base URL (via gateway)")
 	flag.StringVar(&cfg.matchingURL, "matching-url", getenv("E2E_MATCHING_URL", "http://localhost:8090/api/matching"), "matching-service base URL (via gateway)")
 	flag.StringVar(&cfg.billingURL, "billing-url", getenv("E2E_BILLING_URL", "http://localhost:8090/api/billing"), "billing-service base URL (via gateway)")
+	flag.StringVar(&cfg.locationURL, "location-url", getenv("E2E_LOCATION_URL", "http://localhost:8090/api/location"), "location-service base URL (via gateway)")
 	flag.IntVar(&cfg.clients, "clients", getenvInt("E2E_CLIENTS", 5), "number of virtual clients")
 	flag.IntVar(&cfg.drivers, "drivers", getenvInt("E2E_DRIVERS", 3), "number of virtual drivers")
 	flag.DurationVar(&cfg.rideInterval, "ride-interval", getenvDuration("E2E_RIDE_INTERVAL", 5*time.Second), "base interval between rides per client (jittered +/-50%)")
@@ -153,20 +155,34 @@ func loadConfig() config {
 	flag.DurationVar(&cfg.reportInterval, "report-interval", getenvDuration("E2E_REPORT_INTERVAL", 10*time.Second), "stats report interval")
 	flag.DurationVar(&cfg.runFor, "run-for", getenvDuration("E2E_RUN_FOR", 0), "stop after this duration (0 = run until Ctrl-C)")
 	flag.Int64Var(&cfg.seed, "seed", time.Now().UnixNano(), "base random seed (per-actor seeds derive from it)")
+	flag.StringVar(&cfg.scenario, "scenario", getenv("E2E_SCENARIO", ""), "run a one-shot proof instead of the continuous simulation, then exit (supported: location-radius)")
 	flag.Parse()
 
 	return cfg
 }
 
-// defaultPaymentMethodToken/declinePaymentMethodToken pick the fixture token
-// that actually works against whichever provider billing-service is
-// configured with. Stripe forbids attaching decline-simulating cards to a
-// Customer object at all ("You can't attach cards that simulate issuer
-// declines to a Customer object") — pm_card_chargeCustomerFail is Stripe's
-// purpose-built "attach succeeds, later off-session charge declines"
-// fixture, not the naive pm_card_visa_chargeDeclined. There is no
-// attachable "insufficient funds" fixture at all, so that failure_code
-// isn't reproducible against real Stripe — not attempted here.
+// runScenario dispatches a one-shot proof and exits non-zero on failure, unlike the open-ended
+// continuous simulation. Its own 5min timeout (independent of -run-for) covers the ~150s staleness assertion.
+func runScenario(ctx context.Context, cfg config, deps actors.Deps) {
+	scenarioCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	var passed bool
+	switch cfg.scenario {
+	case "location-radius":
+		passed = actors.RunLocationRadiusScenario(scenarioCtx, deps, cfg.seed)
+	default:
+		log.Fatalf("unknown -scenario %q (supported: location-radius)", cfg.scenario)
+	}
+
+	deps.Stats.Close()
+	if !passed {
+		os.Exit(1)
+	}
+}
+
+// defaultPaymentMethodToken/declinePaymentMethodToken pick the fixture token for the active provider.
+// Stripe forbids attaching decline cards directly, so the decline token is pm_card_chargeCustomerFail (attach succeeds, charge fails later).
 func defaultPaymentMethodToken(provider string) string {
 	if provider == "stripe" {
 		return "pm_card_visa"

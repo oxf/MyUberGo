@@ -215,15 +215,42 @@ services:
           header_name: X-User-Id
           minute: 600
 
-  # -- matching-service: everything requires a valid token. Ownership of a driverId is checked
-  # in-service against X-User-Id (see matching-service's AcceptRideHandler/GetDriverOfferHandler) —
-  # Kong just guarantees the caller is authenticated, same pattern as billing-service above. --
+  # -- matching-service: everything requires a valid token; driverId ownership is checked in-service
+  # against X-User-Id (AcceptRideHandler/GetDriverOfferHandler), same pattern as billing above. --
   - name: matching-service
     url: http://matching-service:8002
     routes:
       - name: matching-protected
         paths:
           - /api/matching
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 600
+
+  # -- location-service: client-facing ping ingest only (POST /batch). GET /internal/drivers/nearby
+  # is deliberately not routed here — network-isolated, reachable only inside the compose network. --
+  - name: location-service
+    url: http://location-service:8004
+    routes:
+      - name: location-protected
+        paths:
+          - /api/location
         strip_path: true
     plugins:
       - name: jwt

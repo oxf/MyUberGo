@@ -106,7 +106,7 @@ func runTests(m *testing.M) int {
 		Commands: app.Commands{
 			UpsertDriver:    command.NewUpsertDriverHandler(driverRepo, testLogger(), metrics.NewNoopMetricsClient()),
 			CreateRide:      command.NewCreateRideHandler(rideRepo, testLogger(), metrics.NewNoopMetricsClient()),
-			BroadcastOffers: command.NewBroadcastOffersHandler(rideRepo, driverRepo, offerRepo, testLogger(), metrics.NewNoopMetricsClient()),
+			BroadcastOffers: command.NewBroadcastOffersHandler(rideRepo, driverRepo, offerRepo, nil, testLogger(), metrics.NewNoopMetricsClient()),
 			CancelRide:      command.NewCancelRideHandler(rideRepo, driverRepo, offerRepo, testLogger(), metrics.NewNoopMetricsClient()),
 		},
 	}

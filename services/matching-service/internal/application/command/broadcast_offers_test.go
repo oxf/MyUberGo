@@ -2,11 +2,13 @@ package command
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"testing"
 	"time"
 
+	"matching-service/internal/application/services"
 	"matching-service/internal/domain"
 	"matching-service/internal/infrastructure/metrics"
 
@@ -40,9 +42,44 @@ type fakeDrivers struct {
 	pool      []domain.Candidate
 	removed   []string
 	addedBack map[string]float64
-	// userIDs maps driverID -> owning auth.user(id); GetUserID returns "" for
-	// an unlisted driver (the default deny for AcceptRideHandler's ownership check).
+	// userIDs maps driverID -> owning auth.user(id); GetUserID returns "" for an unlisted driver.
 	userIDs map[string]string
+	// onlineRatings backs OnlineRatings — a driverID absent (or mapped to 0) means not online.
+	onlineRatings map[string]float64
+}
+
+func (f *fakeDrivers) OnlineRatings(ctx context.Context, ids []string) (map[string]float64, error) {
+	out := make(map[string]float64, len(ids))
+	for _, id := range ids {
+		out[id] = f.onlineRatings[id]
+	}
+	return out, nil
+}
+
+// erroringOnlineRatingsDrivers overrides only OnlineRatings to fail, so the availability-intersect
+// failure point (not just the Nearby call) is independently testable.
+type erroringOnlineRatingsDrivers struct {
+	*fakeDrivers
+}
+
+func (f *erroringOnlineRatingsDrivers) OnlineRatings(ctx context.Context, ids []string) (map[string]float64, error) {
+	return nil, errors.New("redis down")
+}
+
+// fakeLocationClient is the services.LocationClient test double; recording the last call's
+// arguments lets tests assert the ride's pickup coordinates and attempt-derived radius pass through.
+type fakeLocationClient struct {
+	nearby      []services.NearbyDriver
+	err         error
+	gotLat      float64
+	gotLon      float64
+	gotRadiusKm float64
+	gotLimit    int
+}
+
+func (f *fakeLocationClient) Nearby(ctx context.Context, lat, lon, radiusKm float64, limit int) ([]services.NearbyDriver, error) {
+	f.gotLat, f.gotLon, f.gotRadiusKm, f.gotLimit = lat, lon, radiusKm, limit
+	return f.nearby, f.err
 }
 
 func (f *fakeDrivers) GetUserID(ctx context.Context, driverID string) (string, error) {
@@ -82,10 +119,8 @@ type fakeOffers struct {
 	cancelled      bool
 	cleared        []string
 
-	// mu guards offeredNow: BroadcastOffersHandler now calls TryOffer
-	// concurrently (one goroutine per target), so this fake must be safe for
-	// concurrent mutation the same way a real Redis-backed implementation
-	// would be.
+	// mu guards offeredNow: TryOffer is now called concurrently (one goroutine per
+	// target), so this fake must be safe for concurrent mutation like a real repo.
 	mu         sync.Mutex
 	offeredNow []string
 }
@@ -166,6 +201,10 @@ func newTestBroadcastHandler(rides *fakeRides, drivers *fakeDrivers, offers *fak
 	return &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers, metrics: metrics.NewNoopMetricsClient()}
 }
 
+func newTestBroadcastHandlerWithLocation(rides *fakeRides, drivers domain.DriverRepository, offers *fakeOffers, location services.LocationClient) *BroadcastOffersHandler {
+	return &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers, location: location, metrics: metrics.NewNoopMetricsClient()}
+}
+
 func TestBroadcastOffers_TopFiveFirstAttempt(t *testing.T) {
 	rides := &fakeRides{ride: &domain.Ride{RideID: "r1", Status: domain.RideStatusSearching}}
 	offers := &fakeOffers{offered: map[string]bool{}, busy: map[string]bool{}, counts: map[string]int64{}}
@@ -231,6 +270,104 @@ func TestBroadcastOffers_NonSearchingRideCleansUp(t *testing.T) {
 	}
 	if len(offers.deletedPending) != 1 || len(offers.offeredNow) != 0 {
 		t.Fatalf("expected only pending cleanup, got %+v / %v", offers.deletedPending, offers.offeredNow)
+	}
+}
+
+func TestRadiusForAttempt(t *testing.T) {
+	tests := []struct {
+		attempt int
+		want    float64
+	}{
+		{1, 5}, {2, 7}, {3, 9}, {4, 11}, {5, 13}, {6, 15}, {100, 15},
+	}
+	for _, tt := range tests {
+		if got := radiusForAttempt(tt.attempt); got != tt.want {
+			t.Errorf("radiusForAttempt(%d) = %v, want %v", tt.attempt, got, tt.want)
+		}
+	}
+}
+
+func TestBroadcastOffers_UsesLocationDiscoveryWhenAvailable(t *testing.T) {
+	rides := &fakeRides{ride: &domain.Ride{RideID: "r1", Status: domain.RideStatusSearching, PickupLat: 34.7, PickupLng: 33.0}}
+	offers := &fakeOffers{offered: map[string]bool{}, busy: map[string]bool{}, counts: map[string]int64{}}
+	drivers := &fakeDrivers{
+		pool:          pool(7), // must NOT be used — this test asserts location's candidates win
+		onlineRatings: map[string]float64{"near-1": 4.5, "near-2": 4.8},
+	}
+	loc := &fakeLocationClient{nearby: []services.NearbyDriver{
+		{DriverID: "near-1", DistanceM: 500},
+		{DriverID: "near-2", DistanceM: 200},
+	}}
+	h := newTestBroadcastHandlerWithLocation(rides, drivers, offers, loc)
+
+	if err := h.Handle(context.Background(), BroadcastOffers{RideID: "r1", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := append([]string(nil), offers.offeredNow...)
+	sort.Strings(got)
+	want := []string{"near-1", "near-2"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("got %v want %v (should use location's candidates, not the fallback pool)", got, want)
+	}
+	if loc.gotLat != 34.7 || loc.gotLon != 33.0 {
+		t.Fatalf("nearby called with lat=%v lon=%v, want the ride's pickup (34.7, 33.0)", loc.gotLat, loc.gotLon)
+	}
+	if loc.gotRadiusKm != radiusForAttempt(1) {
+		t.Fatalf("nearby called with radiusKm=%v, want %v", loc.gotRadiusKm, radiusForAttempt(1))
+	}
+}
+
+func TestBroadcastOffers_FiltersOutOfflineLocationCandidates(t *testing.T) {
+	rides := &fakeRides{ride: &domain.Ride{RideID: "r1", Status: domain.RideStatusSearching}}
+	offers := &fakeOffers{offered: map[string]bool{}, busy: map[string]bool{}, counts: map[string]int64{}}
+	// "offline-1" is deliberately absent from onlineRatings — Location returns it as a
+	// geographic candidate (it doesn't know shift state), but it must never be offered.
+	drivers := &fakeDrivers{onlineRatings: map[string]float64{"online-1": 4.5}}
+	loc := &fakeLocationClient{nearby: []services.NearbyDriver{
+		{DriverID: "online-1", DistanceM: 100},
+		{DriverID: "offline-1", DistanceM: 50},
+	}}
+	h := newTestBroadcastHandlerWithLocation(rides, drivers, offers, loc)
+
+	if err := h.Handle(context.Background(), BroadcastOffers{RideID: "r1", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(offers.offeredNow) != 1 || offers.offeredNow[0] != "online-1" {
+		t.Fatalf("got %v, want exactly [online-1] — the read-path intersection must exclude a geographically-close but offline driver", offers.offeredNow)
+	}
+}
+
+func TestBroadcastOffers_FallsBackWhenLocationErrors(t *testing.T) {
+	rides := &fakeRides{ride: &domain.Ride{RideID: "r1", Status: domain.RideStatusSearching}}
+	offers := &fakeOffers{offered: map[string]bool{}, busy: map[string]bool{}, counts: map[string]int64{}}
+	drivers := &fakeDrivers{pool: pool(3)}
+	loc := &fakeLocationClient{err: errors.New("connection refused")}
+	h := newTestBroadcastHandlerWithLocation(rides, drivers, offers, loc)
+
+	if err := h.Handle(context.Background(), BroadcastOffers{RideID: "r1", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(offers.offeredNow) != 3 {
+		t.Fatalf("got %d offers, want 3 (the fallback rating-only pool) — a Location error must never fail the ride", len(offers.offeredNow))
+	}
+}
+
+func TestBroadcastOffers_FallsBackWhenOnlineRatingsErrors(t *testing.T) {
+	rides := &fakeRides{ride: &domain.Ride{RideID: "r1", Status: domain.RideStatusSearching}}
+	offers := &fakeOffers{offered: map[string]bool{}, busy: map[string]bool{}, counts: map[string]int64{}}
+	drivers := &erroringOnlineRatingsDrivers{fakeDrivers: &fakeDrivers{pool: pool(3)}}
+	loc := &fakeLocationClient{nearby: []services.NearbyDriver{{DriverID: "x", DistanceM: 100}}}
+	h := newTestBroadcastHandlerWithLocation(rides, drivers, offers, loc)
+
+	if err := h.Handle(context.Background(), BroadcastOffers{RideID: "r1", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(offers.offeredNow) != 3 {
+		t.Fatalf("got %d offers, want 3 (the fallback rating-only pool) after the availability intersect itself errors", len(offers.offeredNow))
 	}
 }
 

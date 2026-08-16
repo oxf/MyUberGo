@@ -28,8 +28,9 @@ Flags override environment variables; both are optional.
 | `-driver-url` | `E2E_DRIVER_URL` | `http://localhost:8090/api/driver` | driver-service base URL, via the Kong gateway |
 | `-matching-url` | `E2E_MATCHING_URL` | `http://localhost:8002` | matching-service base URL — reached directly, it has no gateway route (see `gateway/kong.yml`) |
 | `-billing-url` | `E2E_BILLING_URL` | `http://localhost:8090/api/billing` | billing-service base URL, via the Kong gateway |
+| `-location-url` | `E2E_LOCATION_URL` | `http://localhost:8090/api/location` | location-service base URL, via the Kong gateway |
 
-auth/ride/driver now go through Kong (see the repo-root `gateway/` directory and CLAUDE.md's "API Gateway" section) rather than being hit directly — their host ports are no longer published by docker-compose.
+auth/ride/driver/billing/location now go through Kong (see the repo-root `gateway/` directory and CLAUDE.md's "API Gateway" section) rather than being hit directly — their host ports are no longer published by docker-compose.
 | `-clients` | `E2E_CLIENTS` | `5` | number of virtual clients |
 | `-drivers` | `E2E_DRIVERS` | `3` | number of virtual drivers |
 | `-ride-interval` | `E2E_RIDE_INTERVAL` | `5s` | base interval between rides per client (jittered ±50%) |
@@ -37,6 +38,7 @@ auth/ride/driver now go through Kong (see the repo-root `gateway/` directory and
 | `-report-interval` | `E2E_REPORT_INTERVAL` | `10s` | stats report interval |
 | `-run-for` | `E2E_RUN_FOR` | `0` (forever) | stop automatically after this duration — for timed/CI runs |
 | `-seed` | — | wall clock | base random seed (per-actor seeds derive from it) |
+| `-scenario` | `E2E_SCENARIO` | `` (continuous simulation) | run a one-shot proof instead — see "Scenario mode" below |
 
 ## What each actor does
 
@@ -56,6 +58,28 @@ HTTP failures and verification mismatches are logged per actor and counted per o
 - `GET /users`, `GET /driver`, and `GET /driver-shift` are Admin-only at the Kong gateway now (see `gateway/kong.yml`). The simulator logs in once at startup as the seeded admin (`services/shared/migrations/sql/0002_auth.up.sql`) and shares that token (`Deps.AdminAccessToken`) across every actor's list-endpoint verify — an ordinary client/driver token gets a 403 on these three routes.
 - Emails embed a run ID (`client-{runID}-{i}@e2e.local`) because `auth.user.email` is unique and the DB persists across runs.
 - ride-service doesn't consume `ride.accepted` yet, so once a driver accepts a ride the simulator has no way to verify that ride's Postgres status actually reaches `Matched` — that check lands once ride-service adopts Stage 2.
+
+## Scenario mode
+
+`-scenario=location-radius` (or `E2E_SCENARIO=location-radius`) replaces the continuous simulation above with a one-shot proof of the four behaviors location-service's Slice 1 exists to deliver (`docs/location/LOCATION_SPEC.md` §14), run entirely through the same public APIs a real client uses:
+
+```bash
+cd services/e2e-test
+go run ./cmd -scenario=location-radius
+```
+
+It provisions its own drivers/clients at fixed, controlled positions (unrelated to the `-clients`/`-drivers` flags, which are ignored in this mode) and checks, for each:
+
+1. **In-range vs. out-of-range** — a driver ~2km from a ride's pickup gets offered it; one ~10km away never does.
+2. **Offline but pinging** — a driver who ends their shift (removed from matching-service's online pool) but keeps sending location pings is never offered, even though it's geographically in range the whole time.
+3. **Radius expansion** — a driver ~8km away (outside attempts 1-2's 5km/7km, inside attempt 3's 9km) isn't offered until matching-service's retry has widened the search radius enough to include it.
+4. **Staleness eviction** — a driver who stops pinging entirely is evicted from location-service's geo index and stops being offered rides, once its position is older than the staleness threshold.
+
+Expect **~2.5-3 minutes total** — the staleness assertion can't resolve faster than location-service's own `LOCATION_STALENESS_SECONDS` default (120s) plus one sweep tick, and all four assertions run concurrently (not sequentially) specifically to keep that from dominating the whole run. Prints a PASS/FAIL line per assertion and exits non-zero if any failed.
+
+For faster local iteration, temporarily lower `LOCATION_STALENESS_SECONDS`/`LOCATION_SWEEP_INTERVAL_SECONDS` on the running `location-service` container (e.g. to `20`/`5`) before running the scenario — this is a manual override for development, not something the scenario itself controls.
+
+Since it runs on the host, it can't reach location-service's internal-only `GET /internal/drivers/nearby` (no Kong route — see CLAUDE.md's "Location service status") — every assertion is instead observed via `GET /drivers/{driverId}/offer`, the same endpoint the continuous driver actors already poll.
 
 ## Observing side effects
 

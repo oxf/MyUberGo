@@ -18,10 +18,8 @@ services:
       timeout: 5s
       retries: 5
 
-  # One-shot: applies services/shared/migrations/sql/*.up.sql via golang-migrate, then
-  # exits 0. Replaces postgres's own docker-entrypoint-initdb.d mount (which only ever
-  # ran once against a fresh volume) so `docker-compose up` alone now picks up new
-  # migration files without a `down -v` volume wipe.
+  # One-shot: applies services/shared/migrations/sql/*.up.sql via golang-migrate, replacing
+  # postgres's docker-entrypoint-initdb.d mount so new migrations apply without a volume wipe.
   migrate:
     image: migrate/migrate:v4.18.1
     volumes:
@@ -289,6 +287,9 @@ services:
       KAFKA_BROKER: kafka:29092
       SERVICE_PORT: '8002'
       REDIS_URL: redis:6379
+      # location-service's internal nearby-drivers endpoint (LOCATION_SPEC.md §2.2); falls back to
+      # the rating-only pool on error, so deliberately not a depends_on — matching must work either way.
+      LOCATION_URL: http://location-service:8004
       OTEL_SERVICE_NAME: matching-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
@@ -336,6 +337,45 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  location-service:
+    build:
+      context: .
+      dockerfile: services/location-service/Dockerfile
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD", "/app/app", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    environment:
+      KAFKA_BROKER: kafka:29092
+      SERVICE_PORT: '8004'
+      REDIS_URL: redis:6379
+      LOCATION_STALENESS_SECONDS: '120'
+      LOCATION_SWEEP_INTERVAL_SECONDS: '30'
+      LOCATION_MAX_ACCURACY_M: '100'
+      LOCATION_MAX_SPEED_KMH: '200'
+      LOCATION_MAX_FUTURE_SKEW_SECONDS: '120'
+      LOCATION_MAX_PAST_SKEW_SECONDS: '600'
+      OTEL_SERVICE_NAME: location-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_RESOURCE_ATTRIBUTES: 'service.namespace=myubergo,deployment.environment=${APP_ENV:-local},service.version=${GIT_SHA:-dev}'
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      LOG_LEVEL: '${LOG_LEVEL:-info}'
+    # No published host port (Kong is the sole ingress); GET /internal/drivers/nearby is never
+    # Kong-routed, reachable only from matching-service. Redis + Kafka only — Postgres arrives in Slice 3.
+    depends_on:
+      redis:
+        condition: service_healthy
       kafka:
         condition: service_healthy
       otel-collector:
@@ -426,6 +466,8 @@ services:
       ride-service:
         condition: service_healthy
       driver-service:
+        condition: service_healthy
+      location-service:
         condition: service_healthy
       billing-service:
         condition: service_healthy

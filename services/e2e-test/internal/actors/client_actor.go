@@ -13,10 +13,8 @@ import (
 	"e2e-test/internal/apiclient"
 )
 
-// ClientActor simulates a rider: signup, login, then request rides forever,
-// deep-verifying each one by reading it back. Rides never get a driver
-// assigned today (matching-service doesn't assign yet), so the lifecycle
-// stops at "ride exists, status Requested".
+// ClientActor requests rides forever, deep-verifying each by reading it back; lifecycle
+// stops at "ride exists, status Requested" since matching-service doesn't assign here.
 type ClientActor struct {
 	Deps
 	ID       string
@@ -24,23 +22,15 @@ type ClientActor struct {
 	Interval time.Duration
 	Rnd      *rand.Rand
 
-	// PaymentMethodToken picks the payment provider's outcome for every
-	// charge attempt on this client's invoices — cmd/main.go resolves the
-	// right fixture token for whichever PAYMENT_PROVIDER billing-service is
-	// running (defaultPaymentMethodToken/declinePaymentMethodToken) and sets
-	// this explicitly for every actor. The "pm_stub_ok" fallback below is
-	// only a defensive default for the empty-string case; it is never what
-	// actually selects the token in normal operation.
+	// PaymentMethodToken picks this client's charge outcome — cmd/main.go sets it explicitly
+	// per actor; the "pm_stub_ok" fallback below only covers the defensive empty-string case.
 	PaymentMethodToken string
 
-	// pending is the last ride request sent, kept so the read-back can be
-	// compared field by field.
+	// pending is the last ride request sent, kept for field-by-field read-back comparison.
 	pending contracts.CreateRideRequest
 
-	// decoy is a second, genuinely signed-up account used only to provoke
-	// the ownership check on someone else's ride. Kong derives X-User-Id
-	// from a valid token's own claims (see gateway/kong.yml), so a spoofed
-	// header no longer works — "someone else" has to be a real account.
+	// decoy is a real second account used to provoke the ownership check — Kong derives
+	// X-User-Id from the token's own claims, so a spoofed header can't stand in for it.
 	decoy *account
 }
 
@@ -120,20 +110,11 @@ func (a *ClientActor) verifyRide(ctx context.Context, acc *account, rideID strin
 	a.record(a.ID, "ride.get", start, err, v)
 }
 
-// verifyRideSettled is a two-stage poll run after a ride that wasn't
-// cancelled: first wait for the ride to reach a terminal Completed status,
-// then (only if it does) wait for its invoice to settle. Both stages use
-// this client's own token — only the client who requested a ride can pass
-// billing-service's ownership check on GET /rides/{rideId}/invoice (see
-// billing-service/internal/interfaces/http/handler/invoice_handler.go).
-// This intentionally does NOT live on DriverActor: a driver's own token has
-// no client_id claim, so it can never legitimately read a ride's invoice.
+// verifyRideSettled two-stage-polls a non-cancelled ride: wait for Completed, then wait for
+// invoice settlement, using the client's own token (only the requester passes ownership check).
 func (a *ClientActor) verifyRideSettled(ctx context.Context, acc *account, rideID string) {
-	// Stage 1: wait for the ride to complete. Only 3 driver actors serve
-	// however many clients are running, so most rides never reach Completed
-	// within any bounded window — that's normal load-shedding, not a bug.
-	// Soft: give up silently (no stat recorded) rather than treating "never
-	// picked up" as a failure.
+	// Stage 1: wait for completion. Few drivers serve many clients, so most rides never
+	// reach Completed in any bounded window (normal load-shedding) — give up silently.
 	var ride contracts.RideDto
 	var err error
 	completed := false
@@ -151,11 +132,8 @@ func (a *ClientActor) verifyRideSettled(ctx context.Context, acc *account, rideI
 		return
 	}
 
-	// Stage 2: poll for the invoice to settle. Delivery is async
-	// (ride.completed -> the outbox -> billing-service's consumer ->
-	// ChargeWorker's next tick), so a still-"open" invoice after this
-	// window isn't treated as a failure — only a reached terminal status
-	// (paid/uncollectible) is asserted.
+	// Stage 2: poll for invoice settlement. Delivery is async (outbox -> consumer -> ChargeWorker),
+	// so a still-"open" invoice after this window isn't a failure — only a terminal status is asserted.
 	start := time.Now()
 	var inv contracts.InvoiceDto
 	for attempt := range 10 {
@@ -186,19 +164,15 @@ func (a *ClientActor) verifyRideSettled(ctx context.Context, acc *account, rideI
 		return
 	}
 
-	// Cheapest possible regression test for the double-entry invariants
-	// (BILLING_SPEC.md §10): exercises the ledger balance query end-to-end.
-	// Not asserting an exact value here — this client may have other rides
-	// mid-settlement concurrently, so client_receivable isn't guaranteed to
-	// be exactly 0 or exactly this invoice's amount at the instant we check.
+	// Cheapest regression test for the double-entry invariants (BILLING_SPEC.md §10) — no exact-value
+	// assertion, since concurrent rides mid-settlement mean the balance isn't a fixed expected number.
 	start = time.Now()
 	_, err = a.Billing.GetLedgerBalance(ctx, a.Deps.AdminAccessToken, "client_receivable", inv.ClientId, inv.Currency)
 	a.record(a.ID, "billing.ledger.balance", start, err, nil)
 }
 
-// cancelAndVerifyRide deep-verifies the whole cancellation contract for a
-// just-requested (still "Requested") ride: a non-owner can't cancel it, the
-// owner can, the ride reads back as Cancelled, and a repeat cancel 409s.
+// cancelAndVerifyRide deep-verifies the cancellation contract: non-owner can't cancel,
+// owner can, the ride reads back Cancelled, and a repeat cancel 409s.
 func (a *ClientActor) cancelAndVerifyRide(ctx context.Context, acc *account, rideID string) {
 	var apiErr *apiclient.APIError
 
@@ -236,9 +210,8 @@ func (a *ClientActor) cancelAndVerifyRide(ctx context.Context, acc *account, rid
 	a.record(a.ID, "ride.cancel.conflict", start, nil, v)
 }
 
-// verifyRideInList uses the shared admin token: GET /ride is Admin-only at
-// the Kong gateway now (see gateway/kong.yml), not reachable with the
-// client's own token.
+// verifyRideInList uses the shared admin token: GET /ride is Admin-only at Kong,
+// not reachable with the client's own token.
 func (a *ClientActor) verifyRideInList(ctx context.Context, rideID string) {
 	start := time.Now()
 	resp, err := a.Ride.ListRides(ctx, a.Deps.AdminAccessToken, 1, 50)
@@ -257,9 +230,8 @@ func (a *ClientActor) verifyRideInList(ctx context.Context, rideID string) {
 	a.record(a.ID, "ride.list", start, err, v)
 }
 
-// verifyMe confirms GET /me round-trips the caller's own id/email/role —
-// derived from the bearer token's own claims, not any spoofable header (see
-// gateway/kong.yml's inject_user_headers post-function).
+// verifyMe confirms GET /me round-trips the caller's id/email/role, derived from the
+// bearer token's own claims, not any spoofable header.
 func (a *ClientActor) verifyMe(ctx context.Context, acc *account) {
 	start := time.Now()
 	me, err := a.Auth.Me(ctx, acc.accessToken)
@@ -292,9 +264,8 @@ func (a *ClientActor) logoutDecoyAndVerify(ctx context.Context) {
 	a.record(a.ID, "auth.logout.refresh_rejected", start, nil, v)
 }
 
-// verifyUserInList uses the shared admin token: GET /users is Admin-only at
-// the Kong gateway now (see gateway/kong.yml), not reachable with the
-// client's own token.
+// verifyUserInList uses the shared admin token: GET /users is Admin-only at Kong,
+// not reachable with the client's own token.
 func (a *ClientActor) verifyUserInList(ctx context.Context, acc *account) {
 	start := time.Now()
 	resp, err := a.Auth.ListUsers(ctx, a.Deps.AdminAccessToken, 1, 50)
@@ -317,28 +288,23 @@ func (a *ClientActor) randomRideRequest() contracts.CreateRideRequest {
 	n := a.Rnd.Intn(1000)
 	tariffName := "Standard"
 	if n%5 == 0 {
-		// Occasionally exercise the USD tariff so a client accumulates
-		// rides in two currencies (BILLING_SPEC.md §10: a client with one
-		// EUR and one USD ride must have two distinct client_receivable
-		// balances, never a single summed one).
+		// Occasionally use the USD tariff: a client with EUR+USD rides must have two
+		// distinct client_receivable balances, never one summed (BILLING_SPEC.md §10).
 		tariffName = "Standard USD"
 	}
 	return contracts.CreateRideRequest{
-		PickupLat:     50.40 + a.Rnd.Float64()*0.1,
-		PickupLng:     30.50 + a.Rnd.Float64()*0.1,
+		PickupLat:     rideBoxLat + a.Rnd.Float64()*rideBoxSpanDeg,
+		PickupLng:     rideBoxLon + a.Rnd.Float64()*rideBoxSpanDeg,
 		PickupAddress: fmt.Sprintf("Pickup St %d", n),
-		DestLat:       50.40 + a.Rnd.Float64()*0.1,
-		DestLng:       30.50 + a.Rnd.Float64()*0.1,
+		DestLat:       rideBoxLat + a.Rnd.Float64()*rideBoxSpanDeg,
+		DestLng:       rideBoxLon + a.Rnd.Float64()*rideBoxSpanDeg,
 		DestAddress:   fmt.Sprintf("Destination Ave %d", n),
 		TariffName:    tariffName,
 	}
 }
 
-// attachAndVerifyPaymentMethod adds this client's billing payment method
-// (the success token by default, the decline token for the dedicated
-// declining client actor — see cmd/main.go's provider-aware token mapping)
-// right after signup, so every ride this client completes has something
-// for the ChargeWorker to charge.
+// attachAndVerifyPaymentMethod adds this client's payment method (success or decline token,
+// per cmd/main.go's mapping) right after signup, for ChargeWorker to charge later.
 func (a *ClientActor) attachAndVerifyPaymentMethod(ctx context.Context, acc *account) {
 	token := a.PaymentMethodToken
 	if token == "" {

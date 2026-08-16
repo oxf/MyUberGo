@@ -13,14 +13,8 @@ import (
 	"e2e-test/internal/apiclient"
 )
 
-// DriverActor simulates a driver: signup, login, create a profile, then
-// cycle shifts forever (open -> Online -> work -> Ended), deep-verifying each
-// step. Two service quirks are encoded here:
-//   - driver.shift has no status column: only "Ended" persists anything
-//     (ended_at), other statuses just emit a shift.updated event. So shift
-//     end is verified via endedAt, never via a status round-trip.
-//   - CreateShift rejects a second active shift per driver, so every cycle
-//     ends its shift before the next one starts.
+// DriverActor cycles shifts forever (open -> Online -> work -> Ended), deep-verifying each step.
+// Shift end is checked via endedAt (no status column); each cycle ends its shift before the next starts.
 type DriverActor struct {
 	Deps
 	ID       string
@@ -31,11 +25,13 @@ type DriverActor struct {
 	profileID string
 	phone     string // auth.user.phone at signup — driver.driver no longer stores name/phone
 
-	// acc is the driver's own authenticated identity, kept as a field (like
-	// profileID/phone) so every helper below can attach a bearer token
-	// without threading it through each call — Kong requires one on every
-	// driver-service/ride-service/matching-service route now (see gateway/kong.yml).
+	// acc holds the driver's identity so helpers can attach a bearer token without
+	// threading it through every call — Kong requires one on every route.
 	acc *account
+
+	// position is lazily seeded on the first ping, then advanced tick by tick for the
+	// actor's lifetime — a fresh random position per ping would defeat the movement model.
+	position *driverPosition
 }
 
 func (a *DriverActor) Run(ctx context.Context) {
@@ -165,9 +161,8 @@ func (a *DriverActor) verifyEndedShift(ctx context.Context, shiftID string) {
 	a.record(a.ID, "driver.shift.get", start, err, v)
 }
 
-// verifyShiftInList uses the shared admin token: GET /driver-shift is
-// Admin-only at the Kong gateway now (see gateway/kong.yml), not reachable
-// with the driver's own token.
+// verifyShiftInList uses the shared admin token: GET /driver-shift is Admin-only at
+// Kong, not reachable with the driver's own token.
 func (a *DriverActor) verifyShiftInList(ctx context.Context, shiftID string) {
 	start := time.Now()
 	resp, err := a.Driver.ListShifts(ctx, a.Deps.AdminAccessToken, 1, 50)
@@ -186,9 +181,8 @@ func (a *DriverActor) verifyShiftInList(ctx context.Context, shiftID string) {
 	a.record(a.ID, "driver.shift.list", start, err, v)
 }
 
-// updateAndVerifyLicencePlate exercises PUT /driver — driver.driver no
-// longer stores name/phone (see CLAUDE.md/PLAN.md role-table refactor
-// notes), so only vehicle fields round-trip here now.
+// updateAndVerifyLicencePlate exercises PUT /driver — driver.driver no longer stores
+// name/phone, so only vehicle fields round-trip here.
 func (a *DriverActor) updateAndVerifyLicencePlate(ctx context.Context) {
 	newPlate := fmt.Sprintf("E2E%04d", a.Rnd.Intn(10000))
 
@@ -211,12 +205,13 @@ func (a *DriverActor) updateAndVerifyLicencePlate(ctx context.Context) {
 	a.record(a.ID, "driver.get", start, getErr, v)
 }
 
-// pollForOffer polls the matching service during the Online work window and
-// accepts the first offer it sees. Returns false when ctx is done. 404 on the
-// offer endpoint means "no offer yet" — normal, not recorded as a failure.
+// pollForOffer polls during the Online window and accepts the first offer seen (404 = "no
+// offer yet", not a failure), emitting one GPS ping per iteration to stay geo-discoverable.
 func (a *DriverActor) pollForOffer(ctx context.Context, window time.Duration) bool {
 	deadline := time.Now().Add(window)
 	for time.Now().Before(deadline) {
+		a.emitLocationPing(ctx)
+
 		start := time.Now()
 		offer, err := a.Matching.GetDriverOffer(ctx, a.acc.accessToken, a.profileID)
 		if err != nil {
@@ -243,17 +238,42 @@ func (a *DriverActor) pollForOffer(ctx context.Context, window time.Duration) bo
 	return ctx.Err() == nil
 }
 
+// emitLocationPing sends one simulated GPS ping, advancing position by real elapsed time so
+// displacement matches claimed speed; deviceTs uses RFC3339Nano so same-second calls don't collide.
+func (a *DriverActor) emitLocationPing(ctx context.Context) {
+	now := time.Now().UTC()
+	if a.position == nil {
+		a.position = newDriverPosition(a.Rnd, rideBoxLat, rideBoxLon, rideBoxSpanDeg, now)
+	}
+	lat, lon := a.position.advanceTo(now, a.Rnd)
+
+	start := time.Now()
+	resp, err := a.Location.IngestBatch(ctx, a.acc.accessToken, contracts.LocationBatchRequest{
+		Pings: []contracts.LocationPingDto{{
+			Lat:        lat,
+			Lon:        lon,
+			AccuracyM:  10,
+			HeadingDeg: a.position.bearingDeg,
+			SpeedMps:   a.position.speedMps,
+			DeviceTs:   now.Format(time.RFC3339Nano),
+		}},
+	})
+	v := &Verify{}
+	if err == nil {
+		v.Eq("accepted", resp.Accepted, 1)
+		v.Eq("rejected", resp.Rejected, 0)
+	}
+	a.record(a.ID, "location.ping", start, err, v)
+}
+
 func (a *DriverActor) acceptOffer(ctx context.Context, rideID string) {
 	start := time.Now()
 	resp, err := a.Matching.AcceptRide(ctx, a.acc.accessToken, rideID, contracts.AcceptRideRequest{DriverId: a.profileID})
 
 	var apiErr *apiclient.APIError
 	if err != nil && errors.As(err, &apiErr) && (apiErr.Status == http.StatusConflict || apiErr.Status == http.StatusBadRequest) {
-		// Lost the race to another driver — either someone else's TryAccept
-		// won (409) or our own current_offer got overwritten by a broadcast
-		// retry before we called Accept (400, ErrOfferGone). Both are
-		// legitimate outcomes of BROADCAST-style offering, not failures —
-		// same convention as the deliberate duplicate-accept check below.
+		// Lost the race: another driver's accept won (409) or our offer got overwritten by a
+		// broadcast retry (400, ErrOfferGone) — both legitimate outcomes of BROADCAST offering.
 		a.record(a.ID, "matching.ride.accept", start, nil, nil)
 		return
 	}
@@ -280,10 +300,8 @@ func (a *DriverActor) acceptOffer(ctx context.Context, rideID string) {
 	start = time.Now()
 	_, err = a.Matching.AcceptRide(ctx, a.acc.accessToken, rideID, contracts.AcceptRideRequest{DriverId: a.profileID})
 	v = &Verify{}
-	// 409 = ride already taken (the expected case). 400 is also legitimate:
-	// the rider can cancel a just-matched ride at any moment, and if that
-	// race lands between the two accept calls, IsCancelled short-circuits
-	// AcceptRideHandler before it reaches the "already taken" check.
+	// 409 = already taken (expected). 400 is also legitimate: a rider cancel racing between
+	// the two accept calls makes IsCancelled short-circuit before the "already taken" check.
 	legitimate := errors.As(err, &apiErr) && (apiErr.Status == http.StatusConflict || apiErr.Status == http.StatusBadRequest)
 	v.True("duplicate accept rejected", legitimate,
 		"expected 409 (already taken) or 400 (ride cancelled) on duplicate accept")
@@ -298,12 +316,8 @@ func (a *DriverActor) acceptOffer(ctx context.Context, rideID string) {
 	a.verifyBackOnline(ctx, prevCompleted+1)
 }
 
-// verifyOnRide polls the driver's profile until driver-service's async
-// ride.accepted consumer flips status Online -> OnRide, then records a
-// single result. Intermediate not-yet-flipped reads aren't recorded as
-// failures — only the final outcome is, same convention as pollForOffer's
-// "not there yet" 404 handling. Returns the profile's totalRidesCompleted
-// as a baseline for verifyBackOnline's increment check.
+// verifyOnRide polls until driver-service's ride.accepted consumer flips Online -> OnRide,
+// recording only the final outcome; returns totalRidesCompleted as a baseline for verifyBackOnline.
 func (a *DriverActor) verifyOnRide(ctx context.Context) int {
 	start := time.Now()
 	var profile contracts.DriverDto
@@ -326,17 +340,8 @@ func (a *DriverActor) verifyOnRide(ctx context.Context) int {
 	return profile.TotalRidesCompleted
 }
 
-// startAndVerifyRide retries because /ride/{id}/start depends on
-// ride-service's own (independent, uncoordinated) consumption of
-// ride.accepted - verifyOnRide having already observed OnRide only proves
-// driver-service's separate consumer group caught up, not ride-service's.
-// This is a known, accepted race (see PLAN.md/CLAUDE.md discussion) that
-// isn't being fixed at the source - ride.accepted is a direct Kafka publish
-// (no outbox), so the lag here is bounded by ordinary consumer-group
-// catch-up time under load, observed up to a few seconds in testing. The
-// budget below is a best-effort accommodation for that, not a guarantee -
-// a StartRide that still fails after this many attempts is worth surfacing
-// as a real failure, not silently retried forever.
+// startAndVerifyRide retries since ride-service consumes ride.accepted independently of
+// driver-service's own consumer group; a known, accepted lag (up to a few seconds observed), not fixed at the source.
 func (a *DriverActor) startAndVerifyRide(ctx context.Context, rideID string) bool {
 	start := time.Now()
 	var resp contracts.StartRideResponse
@@ -370,21 +375,8 @@ func (a *DriverActor) completeAndVerifyRide(ctx context.Context, rideID string) 
 	a.record(a.ID, "ride.complete", start, err, v)
 }
 
-// verifyBackOnline polls until driver-service's async ride.completed
-// consumer flips OnRide -> Online and increments total_rides_completed,
-// mirroring verifyOnRide's poll-retry convention. Unlike ride.accepted
-// (published directly by matching-service), ride.completed goes through
-// ride-service's transactional outbox, which only wakes on a 2s ticker and
-// drains a fixed batch size - under bursty e2e-test load (many
-// ride.requested/ride.cancelled events sharing the same outbox and worker)
-// that queue can back up well beyond one tick: observed end-to-end delay up
-// to ~44s in testing (CompleteRide -> ProcessRideCompleted), not just a few
-// seconds. The outbox worker itself isn't being changed, so the budget here
-// is a best-effort accommodation for that observed worst case plus margin,
-// not a claim that the lag is now impossible - a GetDriver that still isn't
-// Online after this many attempts is worth surfacing as a real failure. The
-// per-attempt interval is widened to match the outbox's own ~2s cadence
-// instead of polling faster than the underlying value can possibly change.
+// verifyBackOnline polls until ride.completed flips OnRide -> Online and increments
+// total_rides_completed; unlike ride.accepted, this goes through ride-service's outbox (2s ticker, batched), observed up to ~44s under load — budget sized for that plus margin.
 func (a *DriverActor) verifyBackOnline(ctx context.Context, wantMinCompleted int) {
 	start := time.Now()
 	var profile contracts.DriverDto

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"matching-service/internal/application/services"
 	"matching-service/internal/common/decorator"
 	cmnerrors "matching-service/internal/common/errors"
 	"matching-service/internal/domain"
@@ -16,8 +17,6 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Simplified matching parameters: geo radius is replaced by a widening rating-ranked
-// pool until the Location service exists (see README "Matching Algorithm").
 const (
 	BroadcastSize       = 5
 	PoolWidthPerAttempt = 5
@@ -25,7 +24,21 @@ const (
 	OfferTTL            = 30 * time.Second
 	RateLimitPerMinute  = 3
 	AcceptClaimTTL      = time.Hour
+
+	// baseRadiusKm/radiusStepKm/maxRadiusKm implement the radius-expanding retry (5→7→9→11→13km,
+	// cap 15); the 15km cap is never reached since MaxAttempts=5, but is kept as documented behavior.
+	baseRadiusKm = 5.0
+	radiusStepKm = 2.0
+	maxRadiusKm  = 15.0
 )
+
+func radiusForAttempt(attempt int) float64 {
+	r := baseRadiusKm + float64(attempt-1)*radiusStepKm
+	if r > maxRadiusKm {
+		return maxRadiusKm
+	}
+	return r
+}
 
 // BroadcastOffers runs one BROADCAST round: pick top-BroadcastSize eligible drivers from
 // a widening pool, record offers in Redis, and (re)arm the retry deadline.
@@ -35,17 +48,21 @@ type BroadcastOffers struct {
 }
 
 type BroadcastOffersHandler struct {
-	rides   domain.RideRepository
-	drivers domain.DriverRepository
-	offers  domain.OfferRepository
-	logger  *logrus.Entry
-	metrics decorator.MetricsClient
+	rides    domain.RideRepository
+	drivers  domain.DriverRepository
+	offers   domain.OfferRepository
+	location services.LocationClient
+	logger   *logrus.Entry
+	metrics  decorator.MetricsClient
 }
 
+// NewBroadcastOffersHandler takes location last so a nil or erroring LocationClient are both
+// handled by the same fallback path in selectCandidates (LOCATION_SPEC.md §2.2).
 func NewBroadcastOffersHandler(
 	rides domain.RideRepository,
 	drivers domain.DriverRepository,
 	offers domain.OfferRepository,
+	location services.LocationClient,
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandlerNoResult[BroadcastOffers] {
@@ -55,7 +72,7 @@ func NewBroadcastOffersHandler(
 	if metricsClient == nil {
 		metricsClient = metrics.NewNoopMetricsClient()
 	}
-	handler := &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers, logger: logger, metrics: metricsClient}
+	handler := &BroadcastOffersHandler{rides: rides, drivers: drivers, offers: offers, location: location, logger: logger, metrics: metricsClient}
 	return decorator.ApplyCommandDecoratorsNoResult[BroadcastOffers](handler, logger, metricsClient)
 }
 
@@ -83,7 +100,7 @@ func (h *BroadcastOffersHandler) Handle(ctx context.Context, cmd BroadcastOffers
 		return h.offers.DeletePending(ctx, cmd.RideID)
 	}
 
-	candidates, err := h.drivers.TopOnlineDrivers(ctx, cmd.Attempt*PoolWidthPerAttempt)
+	candidates, err := h.selectCandidates(ctx, ride, cmd.Attempt)
 	if err != nil {
 		return err
 	}
@@ -178,6 +195,58 @@ func (h *BroadcastOffersHandler) Handle(ctx context.Context, cmd BroadcastOffers
 		Attempt:  cmd.Attempt,
 		Deadline: time.Now().Add(OfferTTL),
 	})
+}
+
+// selectCandidates tries geo discovery first, then intersects with availability (Location
+// doesn't know shift state); any failure falls back to the rating-only pool (LOCATION_SPEC.md §2.2).
+func (h *BroadcastOffersHandler) selectCandidates(ctx context.Context, ride *domain.Ride, attempt int) ([]domain.Candidate, error) {
+	limit := attempt * PoolWidthPerAttempt
+
+	if h.location != nil {
+		if candidates, ok := h.tryLocationDiscovery(ctx, ride, attempt, limit); ok {
+			return candidates, nil
+		}
+		h.metrics.IncCounter(ctx, "myubergo.matching.location_fallbacks")
+	}
+
+	candidates, err := h.drivers.TopOnlineDrivers(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	return domain.RankCandidates(candidates, false), nil
+}
+
+// tryLocationDiscovery is the geo-first path. ok is false on any failure,
+// signalling the caller to fall back — never treated as a ride failure.
+func (h *BroadcastOffersHandler) tryLocationDiscovery(ctx context.Context, ride *domain.Ride, attempt, limit int) ([]domain.Candidate, bool) {
+	nearby, err := h.location.Nearby(ctx, ride.PickupLat, ride.PickupLng, radiusForAttempt(attempt), limit)
+	if err != nil {
+		h.log().WithError(err).Warn("location discovery unavailable, falling back to rating-only pool")
+		return nil, false
+	}
+
+	ids := make([]string, len(nearby))
+	distanceByID := make(map[string]int64, len(nearby))
+	for i, n := range nearby {
+		ids[i] = n.DriverID
+		distanceByID[n.DriverID] = n.DistanceM
+	}
+
+	ratings, err := h.drivers.OnlineRatings(ctx, ids)
+	if err != nil {
+		h.log().WithError(err).Warn("location discovery: online-ratings intersect failed, falling back to rating-only pool")
+		return nil, false
+	}
+
+	var candidates []domain.Candidate
+	for _, id := range ids {
+		// Location has no availability data — rating 0 means "not in drivers:online" (same
+		// convention as DriverRepository.Rating), the "intersect locally" half of §2.2's design.
+		if rating := ratings[id]; rating != 0 {
+			candidates = append(candidates, domain.Candidate{DriverID: id, Rating: rating, DistanceM: distanceByID[id]})
+		}
+	}
+	return domain.RankCandidates(candidates, true), true
 }
 
 func (h *BroadcastOffersHandler) log() *logrus.Entry {

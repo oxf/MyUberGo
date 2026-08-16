@@ -39,6 +39,9 @@ func durationViews() []sdkmetric.View {
 	commandBuckets := []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30}
 	timeToMatchBuckets := []float64{.5, 1, 2.5, 5, 10, 20, 30, 60, 120, 300}
 	fareMinorBuckets := []float64{100, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000}
+	// location-service's ingest lag (serverTs - deviceTs), the freshness SLI — finer-grained
+	// than commandBuckets since clock delta can legitimately run several seconds on a slow network.
+	ingestLagBuckets := []float64{.05, .1, .25, .5, 1, 2, 5, 10, 15, 30}
 
 	return []sdkmetric.View{
 		// obsmetrics.RecordDuration always feeds seconds; command/query
@@ -62,6 +65,10 @@ func durationViews() []sdkmetric.View {
 		sdkmetric.NewView(
 			sdkmetric.Instrument{Name: "myubergo.payment.amount_minor"},
 			sdkmetric.Stream{Aggregation: sdkmetric.AggregationExplicitBucketHistogram{Boundaries: fareMinorBuckets}},
+		),
+		sdkmetric.NewView(
+			sdkmetric.Instrument{Name: "myubergo.location.ingest_lag"},
+			sdkmetric.Stream{Aggregation: sdkmetric.AggregationExplicitBucketHistogram{Boundaries: ingestLagBuckets}},
 		),
 	}
 }

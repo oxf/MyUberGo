@@ -14,12 +14,14 @@ import (
 	"matching-service/internal/consumers"
 	"matching-service/internal/infrastructure/cache"
 	"matching-service/internal/infrastructure/health"
+	"matching-service/internal/infrastructure/location"
 	"matching-service/internal/infrastructure/metrics"
 	"matching-service/internal/infrastructure/shutdown"
 	"matching-service/internal/interfaces/http/handler"
 	"matching-service/internal/workers"
 
 	"github.com/oxf/MyUber/common/envconfig"
+	"github.com/oxf/MyUber/common/httpclient"
 	httpmw "github.com/oxf/MyUber/common/httpmiddleware"
 	"github.com/oxf/MyUber/common/kafkapublisher"
 	"github.com/oxf/MyUber/observability/obshttp"
@@ -68,6 +70,13 @@ func main() {
 	rideRepo := cache.NewRideRepository(redisDb)
 	offerRepo := cache.NewOfferRepository(redisDb)
 
+	// locationClient is location-service's geo-discovery adapter. Short timeout: BroadcastOffersHandler
+	// must fall back to the rating-only pool rather than block on a slow/down dependency (LOCATION_SPEC.md §2.2).
+	locationClient := location.NewHTTPClient(
+		envconfig.String("LOCATION_URL", "http://location-service:8004"),
+		httpclient.New(2*time.Second),
+	)
+
 	// Concrete *obsmetrics.Client (assignable to decorator.MetricsClient via structural
 	// typing) so the drivers-online observable gauge below can register on it directly.
 	metricsClient := metrics.NewOtelMetricsClient(serviceName)
@@ -89,7 +98,7 @@ func main() {
 		Commands: app.Commands{
 			UpsertDriver:    command.NewUpsertDriverHandler(driverRepo, logger, metricsClient),
 			CreateRide:      command.NewCreateRideHandler(rideRepo, logger, metricsClient),
-			BroadcastOffers: command.NewBroadcastOffersHandler(rideRepo, driverRepo, offerRepo, logger, metricsClient),
+			BroadcastOffers: command.NewBroadcastOffersHandler(rideRepo, driverRepo, offerRepo, locationClient, logger, metricsClient),
 			AcceptRide:      command.NewAcceptRideHandler(rideRepo, driverRepo, offerRepo, publisher, logger, metricsClient),
 			CancelRide:      command.NewCancelRideHandler(rideRepo, driverRepo, offerRepo, logger, metricsClient),
 		},

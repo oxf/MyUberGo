@@ -1,0 +1,35 @@
+meta {
+  name: Batch Ping
+  type: http
+  seq: 1
+}
+
+post {
+  url: http://localhost:8090/api/location/batch
+  body: json
+  auth: inherit
+}
+
+headers {
+  Authorization: Bearer {{auth_token}}
+}
+
+body:json {
+  {
+    "pings": [
+      {
+        "lat": 50.45,
+        "lon": 30.55,
+        "accuracyM": 10,
+        "headingDeg": 90,
+        "speedMps": 8.3,
+        "deviceTs": "2026-08-12T12:00:00Z"
+      }
+    ]
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
