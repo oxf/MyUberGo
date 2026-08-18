@@ -244,13 +244,18 @@ services:
           minute: 600
 
   # -- location-service: client-facing ping ingest only (POST /batch). GET /internal/drivers/nearby
-  # is deliberately not routed here — network-isolated, reachable only inside the compose network. --
+  # is deliberately not routed here — network-isolated, reachable only inside the compose network.
+  # The route below is anchored to exactly /api/location/batch (not a bare /api/location prefix) so
+  # that guarantee is actually enforced by Kong, not just asserted in this comment — an unanchored
+  # prefix previously let any JWT holder reach /api/location/internal/drivers/nearby too. --
   - name: location-service
-    url: http://location-service:8004
+    url: http://location-service:8004/batch
     routes:
       - name: location-protected
         paths:
-          - /api/location
+          - ~/api/location/batch$
+        methods:
+          - POST
         strip_path: true
     plugins:
       - name: jwt
