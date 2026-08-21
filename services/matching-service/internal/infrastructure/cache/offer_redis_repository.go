@@ -52,14 +52,21 @@ func (r *OfferRepository) TryOffer(ctx context.Context, rideID, driverID string,
 }
 
 func (r *OfferRepository) CurrentOffer(ctx context.Context, driverID string) (string, time.Time, error) {
-	rideID, err := r.rdb.Get(ctx, offerKey(driverID)).Result()
+	pipe := r.rdb.Pipeline()
+	get := pipe.Get(ctx, offerKey(driverID))
+	pttl := pipe.PTTL(ctx, offerKey(driverID))
+	// Aggregate error deliberately ignored: a missing key resolves as redis.Nil on
+	// get's own Result() below, which is the no-offer case, not a failure.
+	_, _ = pipe.Exec(ctx)
+
+	rideID, err := get.Result()
 	if err == redis.Nil {
 		return "", time.Time{}, nil
 	}
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	ttl, err := r.rdb.PTTL(ctx, offerKey(driverID)).Result()
+	ttl, err := pttl.Result()
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -178,10 +185,9 @@ func (r *OfferRepository) OfferCounts(ctx context.Context, driverIDs []string) (
 // simplification per the plan, not an oversight.
 func (r *OfferRepository) IncrOfferCount(ctx context.Context, driverID string) error {
 	pipe := r.rdb.Pipeline()
-	incr := pipe.Incr(ctx, rateKey(driverID))
+	pipe.Incr(ctx, rateKey(driverID))
 	pipe.Expire(ctx, rateKey(driverID), time.Minute)
 	_, err := pipe.Exec(ctx)
-	_ = incr
 	return err
 }
 
@@ -197,24 +203,46 @@ func (r *OfferRepository) DeletePending(ctx context.Context, rideID string) erro
 }
 
 func (r *OfferRepository) ListPending(ctx context.Context) ([]domain.PendingRide, error) {
-	var out []domain.PendingRide
+	var keys []string
 	iter := r.rdb.Scan(ctx, 0, "pending_ride:*", 100).Iterator()
 	for iter.Next(ctx) {
-		key := iter.Val()
-		m, err := r.rdb.HGetAll(ctx, key).Result()
+		keys = append(keys, iter.Val())
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	// One pipelined HGETALL per key instead of a round-trip per pending ride.
+	pipe := r.rdb.Pipeline()
+	cmds := make([]*redis.MapStringStringCmd, len(keys))
+	for i, key := range keys {
+		cmds[i] = pipe.HGetAll(ctx, key)
+	}
+	// Unlike CurrentOffer/HasCurrentOffers, HGetAll never returns redis.Nil — a real
+	// pipeline failure here must surface, not collapse into an indistinguishable empty result.
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, err
+	}
+
+	out := make([]domain.PendingRide, 0, len(keys))
+	for i, cmd := range cmds {
+		m, err := cmd.Result()
 		if err != nil || len(m) == 0 {
 			continue
 		}
-		attempt, _ := strconv.Atoi(m["attempt"])
 		deadline, err := time.Parse(time.RFC3339Nano, m["deadline"])
 		if err != nil {
 			continue
 		}
+		attempt, _ := strconv.Atoi(m["attempt"])
 		out = append(out, domain.PendingRide{
-			RideID:   key[len("pending_ride:"):],
+			RideID:   keys[i][len("pending_ride:"):],
 			Attempt:  attempt,
 			Deadline: deadline,
 		})
 	}
-	return out, iter.Err()
+	return out, nil
 }

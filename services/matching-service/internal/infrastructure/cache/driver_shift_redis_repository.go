@@ -23,22 +23,23 @@ func NewDriverRepository(rdb *redis.Client) *DriverRepository {
 func (r *DriverRepository) UpsertDriver(ctx context.Context, event contracts.ShiftUpdatedEvent) error {
 	key := fmt.Sprintf("driver:%s", event.DriverID)
 
-	if err := r.rdb.HSet(ctx, key, map[string]any{
+	pipe := r.rdb.Pipeline()
+	pipe.HSet(ctx, key, map[string]any{
 		"shiftID":   event.ShiftID,
 		"status":    event.Status,
 		"rating":    event.Rating,
 		"userId":    event.UserID,
 		"updatedAt": event.UpdatedAt,
-	}).Err(); err != nil {
-		return err
-	}
-
+	})
 	// Only "Online" drivers are matchable; any other status (Ended, ...)
 	// removes them from the pool.
 	if event.Status == "Online" {
-		return r.rdb.ZAdd(ctx, onlineDriversKey, redis.Z{Score: event.Rating, Member: event.DriverID}).Err()
+		pipe.ZAdd(ctx, onlineDriversKey, redis.Z{Score: event.Rating, Member: event.DriverID})
+	} else {
+		pipe.ZRem(ctx, onlineDriversKey, event.DriverID)
 	}
-	return r.rdb.ZRem(ctx, onlineDriversKey, event.DriverID).Err()
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 func (r *DriverRepository) TopOnlineDrivers(ctx context.Context, limit int) ([]domain.Candidate, error) {

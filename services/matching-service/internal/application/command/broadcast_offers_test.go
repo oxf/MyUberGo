@@ -124,6 +124,10 @@ type fakeOffers struct {
 	// target), so this fake must be safe for concurrent mutation like a real repo.
 	mu         sync.Mutex
 	offeredNow []string
+
+	// tryOfferErrFor makes one target's offer fail while its siblings succeed,
+	// exercising the partial-failure path.
+	tryOfferErrFor map[string]error
 }
 
 func (f *fakeOffers) OfferedDrivers(ctx context.Context, rideID string) (map[string]bool, error) {
@@ -151,6 +155,9 @@ func (f *fakeOffers) OfferCounts(ctx context.Context, ids []string) (map[string]
 }
 func (f *fakeOffers) IncrOfferCount(ctx context.Context, id string) error { return nil }
 func (f *fakeOffers) TryOffer(ctx context.Context, rideID, driverID string, ttl time.Duration) (bool, error) {
+	if err := f.tryOfferErrFor[driverID]; err != nil {
+		return false, err
+	}
 	f.mu.Lock()
 	f.offeredNow = append(f.offeredNow, driverID)
 	f.mu.Unlock()
@@ -405,6 +412,31 @@ func TestBroadcastOffers_FallsBackWhenOnlineRatingsErrors(t *testing.T) {
 
 	if len(offers.offeredNow) != 3 {
 		t.Fatalf("got %d offers, want 3 (the fallback rating-only pool) after the availability intersect itself errors", len(offers.offeredNow))
+	}
+}
+
+// A failed offer must still leave the retry deadline armed. Otherwise the ride is
+// never re-swept by MatchRetryWorker and stalls silently with offers half-written.
+func TestBroadcastOffers_PartialOfferFailureStillArmsRetryDeadline(t *testing.T) {
+	rides := &fakeRides{ride: &domain.Ride{RideID: "r1", Status: domain.RideStatusSearching}}
+	offers := &fakeOffers{
+		offered:        map[string]bool{},
+		busy:           map[string]bool{},
+		counts:         map[string]int64{},
+		tryOfferErrFor: map[string]error{"c": errors.New("redis timeout")},
+	}
+	h := newTestBroadcastHandler(rides, &fakeDrivers{pool: pool(5)}, offers)
+
+	err := h.Handle(context.Background(), BroadcastOffers{RideID: "r1", Attempt: 1})
+	if err == nil {
+		t.Fatal("expected the offer failure to be reported, got nil")
+	}
+	if len(offers.pending) != 1 || offers.pending[0].Attempt != 1 {
+		t.Fatalf("retry deadline must be armed even on a partial failure, got %+v", offers.pending)
+	}
+	// The 4 healthy targets must still have been offered.
+	if len(offers.offeredNow) != 4 {
+		t.Fatalf("expected 4 successful offers alongside the 1 failure, got %v", offers.offeredNow)
 	}
 }
 

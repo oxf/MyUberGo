@@ -6,13 +6,6 @@
 
 ---
 
-## matching-service concurrency
-
-- [ ] **`MatchRetryWorker.sweep`'s per-ride loop is unbounded and sequential.** It walks every pending ride serially; each `retryOne` does a Redis `AcceptedBy` read plus, once the deadline lapses, a full `BroadcastOffers.Handle`. Unlike `BroadcastOffersHandler`'s own offer-send loop (already fanned out via `errgroup`, bounded at `BroadcastSize = 5`), this one has no bound on N and needs `errgroup.Group.SetLimit` — which appears nowhere in the repo today. This is the actual continuation of the old "Stage 3 concurrent fan-out" item, not `BroadcastOffersHandler` (already done).
-- [ ] **matching-service's `internal/workers` package has no test file at all** — the package holding the item above. Any concurrency change there lands untested unless this is closed first. `billing-service/internal/workers` (`charge_worker_test.go` + `fakes_test.go`) is the template to copy.
-- [ ] **Partial-failure gap in the broadcast fan-out.** `BroadcastOffersHandler.Handle` returns on the first goroutine error from the offer fan-out, before calling `SetPending`. Offers already written to Redis stand, but the retry deadline is never armed, so that ride isn't re-swept by `MatchRetryWorker` and stalls silently. Decide deliberately: accumulate errors (`errors.Join`) and arm the deadline anyway, or move `SetPending` ahead of the error return.
-- [ ] **Minor idiom cleanups** (group into one pass, not separate tasks): a dead `incr := pipe.Incr(...)` / `_ = incr` pair in `OfferRepository.IncrOfferCount`; a redundant per-iteration loop-var copy in the broadcast fan-out (unnecessary under Go's per-iteration loop vars since 1.22); the offered-count accumulator in `BroadcastOffersHandler.Handle` could be an `atomic.Int64` instead of a mutex-guarded int; `OfferRepository.CurrentOffer` and `DriverRepository.UpsertDriver` are each two sequential un-pipelined Redis round-trips that could be one pipelined call.
-
 ## Outbox durability
 
 - [ ] **The outbox's hot query has no supporting index.** `GetUnprocessedBatch` filters on `processed = false AND (claimed_until IS NULL OR claimed_until < NOW())` ordered by `created_at`, but the only indexes on `outbox_message` in any schema are single-column on the low-cardinality `processed` boolean. A partial index on `(created_at) WHERE processed = false` is the fix. Related and also absent: any purge/archival job for processed rows, so these tables only ever grow.
@@ -20,8 +13,7 @@
 
 ## Shared infrastructure
 
-- [ ] **Redis client construction is duplicated verbatim** — including the redisotel wiring and command filter — across matching-service's and location-service's `cmd/main.go`, while Postgres already has a shared `services/common/dbconn` doing DSN resolution, a production-default guard, and env-driven pool tuning. Neither Redis client sets any pool/timeout options at all (bare defaults). Build a `services/common/redisconn` mirroring `dbconn`. Two things whoever does this should know going in: `services/common/go.mod` currently has no go-redis dependency at all, and `REDIS_URL` is misnamed — both services assign it straight to `Addr` as a bare `host:port` and never pass it through `redis.ParseURL`, so adopting `ParseURL` is a behaviour change requiring a `redis://` scheme in every compose env.
-- [ ] **CI runs `go test` with no `-race`.** Cheap to add, and the repo's own next tracked phase is explicitly about concurrency correctness.
+- [ ] **Redis client construction is duplicated verbatim** — including the redisotel wiring and command filter — across matching-service's and location-service's `cmd/main.go`, while Postgres already has a shared `services/common/dbconn` doing DSN resolution, a production-default guard, and env-driven pool tuning. Neither Redis client sets any pool/timeout options at all (bare defaults). Build a `services/common/redisconn` mirroring `dbconn`. Two things whoever does this should know going in: `services/common/go.mod` currently has no go-redis dependency at all, and `REDIS_URL` is misnamed — both services assign it straight to `Addr` as a bare `host:port` and never pass it through `redis.ParseURL`, so adopting `ParseURL` is a behaviour change requiring a `redis://` scheme in every compose env. The matching-concurrency work makes this gap load-bearing rather than cosmetic: a single retry sweep tick can now demand up to `sweepConcurrency × BroadcastSize` (= 8 × 5 = 40, plus overhead) concurrent Redis connections, against go-redis v9's bare default pool (`PoolSize = 10 × GOMAXPROCS`).
 
 ## Test coverage
 

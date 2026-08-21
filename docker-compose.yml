@@ -129,6 +129,13 @@ services:
     image: prom/prometheus:v3.1.0
     restart: unless-stopped
     mem_limit: 512m
+    # Caps the exemplar-WAL-replay warning burst (see docs/CHANGELOG.md 2026-08-21) from
+    # filling disk with an unbounded json-file log after an unclean container stop.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     command:
       - "--config.file=/etc/prometheus/prometheus.yaml"
       - "--web.enable-otlp-receiver"

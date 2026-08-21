@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"matching-service/internal/application/services"
@@ -168,46 +168,47 @@ func (h *BroadcastOffersHandler) Handle(ctx context.Context, cmd BroadcastOffers
 
 	// Each target's try-offer-then-increment sequence is independent of the others',
 	// so fan them out instead of running up to 5 sequential Redis round-trips.
-	var offeredMu sync.Mutex
-	offered := 0
-	g, gCtx := errgroup.WithContext(ctx)
-	for _, t := range targets {
-		driverID := t.DriverID
+	var offered atomic.Int64
+	offerErrs := make([]error, len(targets))
+	var g errgroup.Group
+	g.SetLimit(BroadcastSize)
+	for i, t := range targets {
 		g.Go(func() error {
-			ok, err := h.offers.TryOffer(gCtx, cmd.RideID, driverID, OfferTTL)
+			// Errors go into offerErrs, not the group: every target must be attempted,
+			// and errgroup reports only the first. Not WithContext for the same reason.
+			ok, err := h.offers.TryOffer(ctx, cmd.RideID, t.DriverID, OfferTTL)
 			if err != nil {
-				return err
+				offerErrs[i] = err
+				return nil
 			}
 			if !ok {
 				return nil
 			}
-			if err := h.offers.IncrOfferCount(gCtx, driverID); err != nil {
-				return err
+			if err := h.offers.IncrOfferCount(ctx, t.DriverID); err != nil {
+				offerErrs[i] = err
+				return nil
 			}
-			offeredMu.Lock()
-			offered++
-			offeredMu.Unlock()
+			offered.Add(1)
 			return nil
 		})
 	}
-	if err := g.Wait(); err != nil {
-		return err
-	}
+	_ = g.Wait()
 
 	h.log().Infof("ride %s attempt %d: offered to %d driver(s) (pool %d, excluded %d)",
-		cmd.RideID, cmd.Attempt, offered, len(candidates), len(excluded))
+		cmd.RideID, cmd.Attempt, offered.Load(), len(candidates), len(excluded))
 
 	h.metrics.IncCounter(ctx, "myubergo.matching.offers_broadcast",
 		attribute.Int("attempt", cmd.Attempt),
 	)
 
-	// Arm (or re-arm) the retry deadline even when nobody was offered —
-	// drivers may come online before the next sweep.
-	return h.offers.SetPending(ctx, domain.PendingRide{
+	// Arm (or re-arm) the retry deadline even when nobody was offered, and even when some
+	// offers failed — an un-armed ride is never re-swept and stalls silently.
+	err = h.offers.SetPending(ctx, domain.PendingRide{
 		RideID:   cmd.RideID,
 		Attempt:  cmd.Attempt,
 		Deadline: time.Now().Add(OfferTTL),
 	})
+	return errors.Join(append(offerErrs, err)...)
 }
 
 // selectCandidates tries geo discovery first, then intersects with availability (Location

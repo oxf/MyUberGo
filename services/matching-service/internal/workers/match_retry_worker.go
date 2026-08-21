@@ -13,7 +13,12 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/errgroup"
 )
+
+// sweepConcurrency bounds the per-ride retry fan-out. Unlike BroadcastSize, which caps
+// a known-small target list, N here is every pending ride — so the limit is the point.
+const sweepConcurrency = 8
 
 // Gives the retry sweep its own span so ListPending/AcceptedBy/BroadcastOffers join one
 // trace instead of each becoming a disconnected root, and the sweep's cost is visible.
@@ -67,10 +72,18 @@ func (w *MatchRetryWorker) sweep(ctx context.Context) {
 	}
 	span.SetAttributes(attribute.Int("matching.pending_count", len(pending)))
 
+	// Plain errgroup.Group, not WithContext: retryOne already logs and swallows its own
+	// errors, and one ride's failure must never cancel the siblings mid-sweep.
 	now := time.Now()
+	var g errgroup.Group
+	g.SetLimit(sweepConcurrency)
 	for _, p := range pending {
-		w.retryOne(ctx, p, now)
+		g.Go(func() error {
+			w.retryOne(ctx, p, now)
+			return nil
+		})
 	}
+	_ = g.Wait()
 }
 
 // retryOne is scoped to a single pending ride so its span ends via defer even on panic —
