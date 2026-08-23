@@ -19,8 +19,9 @@ func testLogger() *logrus.Entry {
 
 // fakeRepo is an in-memory Repository — no DB, no network.
 type fakeRepo struct {
-	mu       sync.Mutex
-	messages []*Message
+	mu                  sync.Mutex
+	messages            []*Message
+	markProcessedCtxErr error // ctx.Err() as observed by the last MarkProcessed call
 }
 
 func newFakeRepo() *fakeRepo { return &fakeRepo{} }
@@ -68,6 +69,7 @@ func (r *fakeRepo) SetClaimedUntil(ctx context.Context, id string, claimedUntil 
 func (r *fakeRepo) MarkProcessed(ctx context.Context, id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.markProcessedCtxErr = ctx.Err()
 	for _, m := range r.messages {
 		if m.ID == id {
 			m.Processed = true
@@ -102,9 +104,10 @@ func (r *fakeRepo) get(id string) *Message {
 
 // fakePublisher lets tests script per-topic publish outcomes without a real Kafka broker.
 type fakePublisher struct {
-	mu      sync.Mutex
-	calls   []string
-	failFor map[string]bool
+	mu        sync.Mutex
+	calls     []string
+	failFor   map[string]bool
+	onPublish func() // if set, invoked after a successful publish is recorded
 }
 
 func newFakePublisher() *fakePublisher {
@@ -113,10 +116,15 @@ func newFakePublisher() *fakePublisher {
 
 func (p *fakePublisher) Publish(ctx context.Context, topic string, payload []byte) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.calls = append(p.calls, topic)
-	if p.failFor[topic] {
+	fail := p.failFor[topic]
+	onPublish := p.onPublish
+	p.mu.Unlock()
+	if fail {
 		return errors.New("publish failed")
+	}
+	if onPublish != nil {
+		onPublish()
 	}
 	return nil
 }
@@ -230,5 +238,29 @@ func TestWorker_ProcessBatch_MixedBatch(t *testing.T) {
 	// ok + retry only — parked must never reach the publisher.
 	if publisher.callCount() != 2 {
 		t.Fatalf("expected 2 publish calls (ok + retry), got %d", publisher.callCount())
+	}
+}
+
+// Simulates ctx being cancelled (shutdown) right after a successful publish, before the
+// finalize write — regression guard for the republish-on-shutdown bug this test would catch.
+func TestWorker_ProcessBatch_FinalizeSurvivesShutdown(t *testing.T) {
+	repo := newFakeRepo()
+	insertMessage(repo, "msg-1", "payment.completed", 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	publisher := newFakePublisher()
+	publisher.onPublish = cancel
+	worker := New("test-service", repo, publisher, fakeTransactionManager{}, testLogger(), time.Second)
+
+	if err := worker.processBatch(ctx); err != nil {
+		t.Fatalf("processBatch: %v", err)
+	}
+
+	msg := repo.get("msg-1")
+	if !msg.Processed {
+		t.Fatal("expected message marked processed even though ctx was cancelled right after publish")
+	}
+	if repo.markProcessedCtxErr != nil {
+		t.Fatalf("expected MarkProcessed to receive a live context, got ctx.Err() = %v", repo.markProcessedCtxErr)
 	}
 }

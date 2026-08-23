@@ -6,10 +6,9 @@
 
 ---
 
-## Outbox durability
+## Outbox maintenance
 
-- [ ] **The outbox's hot query has no supporting index.** `GetUnprocessedBatch` filters on `processed = false AND (claimed_until IS NULL OR claimed_until < NOW())` ordered by `created_at`, but the only indexes on `outbox_message` in any schema are single-column on the low-cardinality `processed` boolean. A partial index on `(created_at) WHERE processed = false` is the fix. Related and also absent: any purge/archival job for processed rows, so these tables only ever grow.
-- [ ] **`services/common/outbox`'s `MarkProcessed`/`IncrementRetries` use the worker's cancellable context**, not a publish-scoped one. On shutdown both can silently fail and the row stays claimed for the full lease duration — a published-but-unmarked message is then republished once the lease expires. A `context.WithoutCancel` or a short bounded context closes it.
+- [ ] **No purge/archival job for processed `outbox_message` rows** — these tables only ever grow, in all three schemas (ride, driver, billing).
 
 ## Test coverage
 

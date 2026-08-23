@@ -167,15 +167,20 @@ func (w *Worker) publishOne(ctx context.Context, m *Message) {
 	publishErr = w.publisher.Publish(publishCtx, m.Topic, m.Payload)
 	cancel()
 
+	// Drop ctx's cancellation (not its own timeout) so a shutdown mid-publish can't abort this
+	// write and leave an already-published row claimed until its lease expires and republishes.
+	finalizeCtx, finalizeCancel := context.WithTimeout(context.WithoutCancel(ctx), w.publishTimeout)
+	defer finalizeCancel()
+
 	if publishErr != nil {
 		w.logger.WithContext(msgCtx).WithError(publishErr).WithField("outbox_id", m.ID).Warn("outbox worker: publish failed, will retry")
-		if err := w.repo.IncrementRetries(ctx, m.ID); err != nil {
+		if err := w.repo.IncrementRetries(finalizeCtx, m.ID); err != nil {
 			w.logger.WithError(err).WithField("outbox_id", m.ID).Error("outbox worker: increment retries failed")
 		}
 		return
 	}
 
-	if err := w.repo.MarkProcessed(ctx, m.ID); err != nil {
+	if err := w.repo.MarkProcessed(finalizeCtx, m.ID); err != nil {
 		w.logger.WithError(err).WithField("outbox_id", m.ID).Error("outbox worker: mark processed failed")
 	}
 }
