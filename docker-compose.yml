@@ -293,7 +293,7 @@ services:
     environment:
       KAFKA_BROKER: kafka:29092
       SERVICE_PORT: '8002'
-      REDIS_URL: redis:6379
+      REDIS_URL: redis://redis:6379
       # location-service's internal nearby-drivers endpoint (LOCATION_SPEC.md §2.2); falls back to
       # the rating-only pool on error, so deliberately not a depends_on — matching must work either way.
       LOCATION_URL: http://location-service:8004
@@ -365,7 +365,7 @@ services:
     environment:
       KAFKA_BROKER: kafka:29092
       SERVICE_PORT: '8004'
-      REDIS_URL: redis:6379
+      REDIS_URL: redis://redis:6379
       LOCATION_STALENESS_SECONDS: '120'
       LOCATION_SWEEP_INTERVAL_SECONDS: '30'
       LOCATION_MAX_ACCURACY_M: '100'

@@ -15,7 +15,7 @@ Intended home: `docs/location/LOCATION_SPEC.md`, mirroring `docs/billing/BILLING
 The original draft got the *decisions* (§1–§3) right but several *repo-facing facts* wrong. Fixed in place, noted here so the reasoning isn't lost:
 
 - **§13 replace directives**: `services/shared` is **not a Go module** (SQL migrations only, mounted into the `migrate` container). The three real directives are `contracts`, `observability`, `common`.
-- **§15 env var names**: repo convention is `SERVICE_PORT` (not `PORT`), `REDIS_URL=redis:6379` (not `REDIS_ADDR`), `KAFKA_BROKER` singular (not `KAFKA_BROKERS`), one `PG_DSN` (not `POSTGRES_*`).
+- **§15 env var names**: repo convention is `SERVICE_PORT` (not `PORT`), `REDIS_URL=redis://redis:6379` (not `REDIS_ADDR`; parsed via `redis.ParseURL` — the `redis://` scheme is required), `KAFKA_BROKER` singular (not `KAFKA_BROKERS`), one `PG_DSN` (not `POSTGRES_*`).
 - **§6.1 migration number**: `0007_outbox_claimed_until` already exists; location's is `0008_location`. Its `outbox_message` table needs `claimed_until` and `trace_context` columns from day one, not just the ones shown — see the current `0006_billing.up.sql` for the up-to-date shape.
 - **§7.1 paths**: Kong routes use `strip_path: true`, so service-side handlers register `/batch`, `/rides/{rideId}/counterparty`, etc. — not `/location/batch`.
 - **§8.1**: `ride.started` **does exist** (`ride-service`'s `start_ride.go` publishes it via the outbox) — only `ride.finished` doesn't (the real completion event/topic is `ride.completed`). The conclusion (open the tracking window on `ride.accepted`, not `ride.started`) is unchanged; the reasoning is now "the passenger wants to watch the approach" rather than "the topic doesn't exist."
@@ -562,7 +562,7 @@ Corrected 2026-08-12 to match repo convention (verified against `docker-compose.
 | Env var | Default | Notes |
 |---|---|---|
 | `SERVICE_PORT` | `8004` | not `PORT` |
-| `REDIS_URL` | `redis:6379` | not `REDIS_ADDR`; shared instance, as matching-service uses |
+| `REDIS_URL` | `redis://redis:6379` | not `REDIS_ADDR`; shared instance, as matching-service uses; parsed via `redis.ParseURL` (`services/common/redisconn`), so the `redis://` scheme is required |
 | `PG_DSN` | | Slice 3 only, once the `location` schema exists; not `POSTGRES_*` |
 | `KAFKA_BROKER` | `kafka:29092` | singular, not `KAFKA_BROKERS`; consumer group `location-service` |
 | `DYNAMODB_ENDPOINT` | | Slice 3 only, local endpoint in compose |

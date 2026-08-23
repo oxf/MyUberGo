@@ -6,7 +6,6 @@ require (
 	github.com/oxf/MyUber/common v0.0.0
 	github.com/oxf/MyUber/contracts v0.0.0
 	github.com/oxf/MyUber/observability v0.0.0
-	github.com/redis/go-redis/extra/redisotel/v9 v9.21.0
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/segmentio/kafka-go v0.4.28
 	github.com/sirupsen/logrus v1.9.4
@@ -58,6 +57,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/redis/go-redis/extra/rediscmd/v9 v9.21.0 // indirect
+	github.com/redis/go-redis/extra/redisotel/v9 v9.21.0 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.6 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/testcontainers/testcontainers-go v0.44.0 // indirect

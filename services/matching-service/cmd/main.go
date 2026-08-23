@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	app "matching-service/internal/application"
@@ -24,14 +23,14 @@ import (
 	"github.com/oxf/MyUber/common/httpclient"
 	httpmw "github.com/oxf/MyUber/common/httpmiddleware"
 	"github.com/oxf/MyUber/common/kafkapublisher"
+	"github.com/oxf/MyUber/common/redisconn"
 	"github.com/oxf/MyUber/observability/obshttp"
 	"github.com/oxf/MyUber/observability/obslog"
 	"github.com/oxf/MyUber/observability/otelinit"
-	"github.com/redis/go-redis/extra/redisotel/v9"
-	"github.com/redis/go-redis/v9"
 )
 
 const serviceName = "matching-service"
+const defaultRedisURL = "redis://redis:6379"
 
 func main() {
 	// `app healthcheck` backs Docker's HEALTHCHECK: distroless has no shell/curl,
@@ -50,16 +49,8 @@ func main() {
 
 	logger := obslog.NewLogger(serviceName)
 
-	redisUrl := envconfig.String("REDIS_URL", "redis:6379")
-	redisDb := redis.NewClient(&redis.Options{
-		Addr:     redisUrl,
-		Password: "",
-		DB:       0,
-	})
-	if err := redisotel.InstrumentTracing(redisDb, redisotel.WithCommandFilter(commandFilter)); err != nil {
-		log.Fatal(err)
-	}
-	if err := redisotel.InstrumentMetrics(redisDb); err != nil {
+	redisDb, err := redisconn.Open(defaultRedisURL)
+	if err != nil {
 		log.Fatal(err)
 	}
 
@@ -191,13 +182,4 @@ func main() {
 
 	// Wait for shutdown signal and perform graceful shutdown
 	shutdownManager.WaitForShutdown()
-}
-
-// commandFilter extends redisotel's DefaultCommandFilter to also exclude PING (from
-// health.Checker's ticker), else every ping emits its own orphan trace in Tempo.
-func commandFilter(cmd redis.Cmder) bool {
-	if strings.EqualFold(cmd.Name(), "ping") {
-		return true
-	}
-	return redisotel.DefaultCommandFilter(cmd)
 }
