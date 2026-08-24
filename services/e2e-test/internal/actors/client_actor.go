@@ -292,12 +292,14 @@ func (a *ClientActor) randomRideRequest() contracts.CreateRideRequest {
 		// distinct client_receivable balances, never one summed (BILLING_SPEC.md §10).
 		tariffName = "Standard USD"
 	}
+	pickupLat, pickupLon := randomBoxPoint(a.Rnd)
+	destLat, destLon := randomBoxPoint(a.Rnd)
 	return contracts.CreateRideRequest{
-		PickupLat:     rideBoxLat + a.Rnd.Float64()*rideBoxSpanDeg,
-		PickupLng:     rideBoxLon + a.Rnd.Float64()*rideBoxSpanDeg,
+		PickupLat:     pickupLat,
+		PickupLng:     pickupLon,
 		PickupAddress: fmt.Sprintf("Pickup St %d", n),
-		DestLat:       rideBoxLat + a.Rnd.Float64()*rideBoxSpanDeg,
-		DestLng:       rideBoxLon + a.Rnd.Float64()*rideBoxSpanDeg,
+		DestLat:       destLat,
+		DestLng:       destLon,
 		DestAddress:   fmt.Sprintf("Destination Ave %d", n),
 		TariffName:    tariffName,
 	}

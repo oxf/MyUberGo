@@ -17,7 +17,7 @@ The original draft got the *decisions* (§1–§3) right but several *repo-facin
 - **§13 replace directives**: `services/shared` is **not a Go module** (SQL migrations only, mounted into the `migrate` container). The three real directives are `contracts`, `observability`, `common`.
 - **§15 env var names**: repo convention is `SERVICE_PORT` (not `PORT`), `REDIS_URL=redis://redis:6379` (not `REDIS_ADDR`; parsed via `redis.ParseURL` — the `redis://` scheme is required), `KAFKA_BROKER` singular (not `KAFKA_BROKERS`), one `PG_DSN` (not `POSTGRES_*`).
 - **§6.1 migration number**: `0007_outbox_claimed_until` already exists; location's is `0008_location`. Its `outbox_message` table needs `claimed_until` and `trace_context` columns from day one, not just the ones shown — see the current `0006_billing.up.sql` for the up-to-date shape.
-- **§7.1 paths**: Kong routes use `strip_path: true`, so service-side handlers register `/batch`, `/rides/{rideId}/counterparty`, etc. — not `/location/batch`.
+- **§7.1 paths**: Kong routes use `strip_path: true`, so service-side handlers register `/batch` etc. — not `/location/batch`. **Correction (Slice 2 implementation, verified against a real Kong 3.7 container):** this does *not* extend to `/rides/{rideId}/counterparty` — its route has a variable segment, and `strip_path: true` on a regex route strips the *entire* matched path, including the `{rideId}` capture, not just the static prefix (confirmed empirically: a request to `/api/location/rides/abc123/counterparty` arrived at the upstream as just `GET /rides`, with `abc123` gone). The deployed route uses `strip_path: false` instead, and the Go handler is registered at the full `/api/location/rides/{rideId}/counterparty` — see `gateway/kong.yml`'s `location-service-counterparty` route comment and `location-service/cmd/main.go`.
 - **§8.1**: `ride.started` **does exist** (`ride-service`'s `start_ride.go` publishes it via the outbox) — only `ride.finished` doesn't (the real completion event/topic is `ride.completed`). The conclusion (open the tracking window on `ride.accepted`, not `ride.started`) is unchanged; the reasoning is now "the passenger wants to watch the approach" rather than "the topic doesn't exist."
 - **§2.8 Stage-2 shape**: `internal/workers/outbox_worker.go`, the CQRS decorators, health, shutdown, the tx manager, and the Kafka consumer loop have all moved into `services/common` since this spec's shape was described. A new service's `internal/common/*` and `internal/infrastructure/{health,shutdown,metrics}` are now ~10-line type-alias shims (see `matching-service`'s versions) — scaffolding is cheaper than the original text implies.
 - **§11 gap**: `.github/workflows/ci.yml` runs a hardcoded matrix of service directories. A new service not added there is never built, vetted, tested, or linted — added as a required step.
@@ -312,12 +312,12 @@ README calls this `RIDE_SUMMARY_LOCATION`; `location.ride_summary` is more consi
 
 ### §7.1 HTTP — client-facing (via Kong, `/api/location`)
 
-Kong's `/api/location` route uses `strip_path: true` (same as every other service's route in `gateway/kong.yml`), so these are the **service-side** paths — the client-facing path is `/api/location` + this column, e.g. `POST /api/location/batch`. Don't register `/location/batch` inside the service itself; that would double the prefix.
+Kong's routes here mostly use `strip_path: true` (same as every other service's route in `gateway/kong.yml`), so those rows' Service path is what the service registers — the client-facing path is `/api/location` + that column, e.g. `POST /api/location/batch`. Don't register `/location/batch` inside the service itself; that would double the prefix. **Exception: `/rides/{rideId}/counterparty` uses `strip_path: false`** (see §0.1's correction) — its Service path column is the full client-facing path, registered verbatim.
 
 | Method | Service path | Client-facing path | Auth | Purpose |
 |---|---|---|---|---|
 | `POST` | `/batch` | `/api/location/batch` | any authenticated | ping fallback / e2e-test driver |
-| `GET` | `/rides/{rideId}/counterparty` | `/api/location/rides/{rideId}/counterparty` | participant only | one-shot position (UC3/UC4 without WS) |
+| `GET` | `/api/location/rides/{rideId}/counterparty`* | `/api/location/rides/{rideId}/counterparty` | participant only | one-shot position (UC3/UC4 without WS) |
 | `GET` | `/rides/{rideId}/track` | `/api/location/rides/{rideId}/track` | participant or Admin | summary polyline for a past ride |
 | `GET` | `/geocode?text=` | `/api/location/geocode?text=` | any authenticated | Geoapify forward geocode, cached |
 | `GET` | `/geocode/reverse?lat=&lon=` | `/api/location/geocode/reverse?lat=&lon=` | any authenticated | reverse geocode, cached |

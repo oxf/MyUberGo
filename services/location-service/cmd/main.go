@@ -15,8 +15,10 @@ import (
 	"location-service/internal/infrastructure/cache"
 	"location-service/internal/infrastructure/health"
 	"location-service/internal/infrastructure/metrics"
+	"location-service/internal/infrastructure/pubsub"
 	"location-service/internal/infrastructure/shutdown"
 	"location-service/internal/interfaces/http/handler"
+	"location-service/internal/interfaces/ws"
 	"location-service/internal/workers"
 
 	"github.com/oxf/MyUber/common/envconfig"
@@ -63,9 +65,18 @@ func main() {
 	}
 	stalenessThreshold := time.Duration(envconfig.Int("LOCATION_STALENESS_SECONDS", 120)) * time.Second
 	sweepInterval := time.Duration(envconfig.Int("LOCATION_SWEEP_INTERVAL_SECONDS", 30)) * time.Second
+	wsPingInterval := time.Duration(envconfig.Int("LOCATION_WS_PING_SECONDS", 25)) * time.Second
 
 	driverLocationRepo := cache.NewDriverLocationRepository(redisDb, stalenessThreshold)
 	ownerRepo := cache.NewOwnerRepository(redisDb)
+	trackingRepo := cache.NewTrackingRepository(redisDb)
+	clientLocationRepo := cache.NewClientLocationRepository(redisDb)
+	positionPublisher := pubsub.NewRedisPublisher(redisDb)
+
+	// Dispatcher first, then Hub(dispatcher) — avoids circular construction,
+	// see pubsub.Dispatcher's doc comment.
+	dispatcher := pubsub.NewDispatcher(redisDb, logger)
+	hub := ws.NewHub(dispatcher, logger)
 
 	metricsClient := metrics.NewOtelMetricsClient(serviceName)
 
@@ -84,11 +95,17 @@ func main() {
 
 	application := app.Application{
 		Commands: app.Commands{
-			IngestPings: command.NewIngestPingsHandler(ownerRepo, driverLocationRepo, validationConfig, logger, metricsClient),
-			UpsertOwner: command.NewUpsertOwnerHandler(ownerRepo, logger, metricsClient),
+			IngestPings:         command.NewIngestPingsHandler(ownerRepo, driverLocationRepo, trackingRepo, positionPublisher, validationConfig, logger, metricsClient),
+			IngestClientPing:    command.NewIngestClientPingHandler(trackingRepo, clientLocationRepo, positionPublisher, validationConfig, logger, metricsClient),
+			UpsertOwner:         command.NewUpsertOwnerHandler(ownerRepo, logger, metricsClient),
+			RecordRideRequested: command.NewRecordRideRequestedHandler(trackingRepo, logger, metricsClient),
+			RecordRideAccepted:  command.NewRecordRideAcceptedHandler(trackingRepo, logger, metricsClient),
+			CloseTrackingWindow: command.NewCloseTrackingWindowHandler(trackingRepo, logger, metricsClient),
 		},
 		Queries: app.Queries{
-			FindNearbyDrivers: query.NewFindNearbyDriversHandler(driverLocationRepo, logger, metricsClient),
+			FindNearbyDrivers:       query.NewFindNearbyDriversHandler(driverLocationRepo, logger, metricsClient),
+			GetCounterpartyPosition: query.NewGetCounterpartyPositionHandler(trackingRepo, ownerRepo, driverLocationRepo, clientLocationRepo, logger, metricsClient),
+			ListLivePositions:       query.NewListLivePositionsHandler(driverLocationRepo, clientLocationRepo, trackingRepo, logger, metricsClient),
 		},
 	}
 
@@ -107,14 +124,22 @@ func main() {
 
 	// Client-facing (via Kong, /api/location -> strip_path -> here)
 	mux.HandleFunc("POST /batch", locationHandler.IngestBatch)
+	// Full client-facing path, not bare /rides/{rideId}/counterparty — Kong's route for
+	// this one uses strip_path:false, see gateway/kong.yml's location-service-counterparty.
+	mux.HandleFunc("GET /api/location/rides/{rideId}/counterparty", locationHandler.GetCounterparty)
+	// Admin-only fleet-wide snapshot — gated at Kong (require_admin), see
+	// gateway/kong.yml's location-service-admin-positions.
+	mux.HandleFunc("GET /api/location/positions", locationHandler.ListLivePositions)
 
 	// Internal-only (no Kong route, network-isolated — see CLAUDE.md's API Gateway section)
 	mux.HandleFunc("GET /internal/drivers/nearby", locationHandler.NearbyDrivers)
 
 	// Create HTTP server
 	server := &http.Server{
-		Addr:         ":" + port,
-		Handler:      httpmw.BodyLimit(httpmw.RequestID(obshttp.Handler(httpmw.Recover(logger)(mux), serviceName))),
+		Addr: ":" + port,
+		// /ws excluded from otelhttp: it would hold one span open for the connection's
+		// whole lifetime, and it also keeps the ResponseWriter hijackable — see obshttp.Handler.
+		Handler:      httpmw.BodyLimit(httpmw.RequestID(obshttp.Handler(httpmw.Recover(logger)(mux), serviceName, "/ws"))),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -141,11 +166,59 @@ func main() {
 	bgCtx, cancelBg := context.WithCancel(context.Background())
 	shutdownManager.OnStop(cancelBg)
 
+	// Registered here, not with the other routes: WSHandler needs shutdownManager, built
+	// after mux — safe since mux is a live pointer and nothing's dispatched until Listen.
+	wsHandler := ws.NewWSHandler(application, trackingRepo, ownerRepo, hub, healthChecker, shutdownManager, logger, metricsClient, wsPingInterval)
+	mux.HandleFunc("GET /ws", wsHandler.ServeWS)
+
+	// server.Shutdown() doesn't reach hijacked WS connections — force-close them explicitly.
+	shutdownManager.OnStop(hub.CloseAll)
+
+	// The one genuinely long-lived worker in Slice 2 — unlike the per-connection WS
+	// pumps (nil workerCtx), this one's early exit is a real liveness failure.
+	shutdownManager.Add(1)
+	health.GoSafe(logger, healthChecker, bgCtx, "pubsub-dispatcher", func() {
+		defer shutdownManager.Done()
+		dispatcher.Run(bgCtx, hub)
+	})
+
 	shiftUpdatedConsumer := consumers.NewShiftUpdatedConsumer(application, kafkaBroker, logger)
 	shutdownManager.Add(1)
 	health.GoSafe(logger, healthChecker, bgCtx, "shift-updated-consumer", func() {
 		defer shutdownManager.Done()
 		shiftUpdatedConsumer.Run(bgCtx, "shift.updated")
+	})
+
+	// Tracking-window consumers (Slice 2): open on ride.requested/accepted (either order,
+	// see domain.TrackingRepository), close + force-close WS on completed/cancelled.
+	socketCloser := hub
+
+	rideRequestedConsumer := consumers.NewRideRequestedConsumer(application, kafkaBroker, logger)
+	shutdownManager.Add(1)
+	health.GoSafe(logger, healthChecker, bgCtx, "ride-requested-consumer", func() {
+		defer shutdownManager.Done()
+		rideRequestedConsumer.Run(bgCtx, "ride.requested")
+	})
+
+	rideAcceptedConsumer := consumers.NewRideAcceptedConsumer(application, kafkaBroker, logger)
+	shutdownManager.Add(1)
+	health.GoSafe(logger, healthChecker, bgCtx, "ride-accepted-consumer", func() {
+		defer shutdownManager.Done()
+		rideAcceptedConsumer.Run(bgCtx, "ride.accepted")
+	})
+
+	rideCompletedConsumer := consumers.NewRideCompletedConsumer(application, socketCloser, kafkaBroker, logger)
+	shutdownManager.Add(1)
+	health.GoSafe(logger, healthChecker, bgCtx, "ride-completed-consumer", func() {
+		defer shutdownManager.Done()
+		rideCompletedConsumer.Run(bgCtx, "ride.completed")
+	})
+
+	rideCancelledConsumer := consumers.NewRideCancelledConsumer(application, socketCloser, kafkaBroker, logger)
+	shutdownManager.Add(1)
+	health.GoSafe(logger, healthChecker, bgCtx, "ride-cancelled-consumer", func() {
+		defer shutdownManager.Done()
+		rideCancelledConsumer.Run(bgCtx, "ride.cancelled")
 	})
 
 	stalenessWorker := workers.NewStalenessWorker(driverLocationRepo, stalenessThreshold, sweepInterval, logger, metricsClient)

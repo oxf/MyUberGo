@@ -23,12 +23,23 @@ type DriverLocationRepository interface {
 	// Evict removes driverIDs from both the geo index and lastseen set,
 	// pipelined.
 	Evict(ctx context.Context, driverIDs []string) error
+	// AllPositions returns every driver currently within the repository's
+	// staleness threshold of loc:drivers:lastseen, each with its full
+	// position — the fleet-wide read the admin live-positions map uses.
+	AllPositions(ctx context.Context) ([]DriverPosition, error)
 }
 
 // NearbyDriver is one geographic candidate returned by Nearby.
 type NearbyDriver struct {
 	DriverID  string
 	DistanceM int64
+}
+
+// DriverPosition pairs a driver id with its full position, returned by
+// AllPositions.
+type DriverPosition struct {
+	DriverID string
+	Position Position
 }
 
 // OwnerRepository caches the driver<->user mapping from shift.updated —
@@ -40,4 +51,14 @@ type OwnerRepository interface {
 	// DriverIDForUser returns ("", nil) if the user has no cached driver
 	// mapping yet — not an error, the caller has simply never opened a shift.
 	DriverIDForUser(ctx context.Context, userID string) (string, error)
+}
+
+// ClientLocationRepository persists live client (rider) positions —
+// populated only while a ride's tracking window is open (LOCATION_SPEC.md §17 decision 5).
+type ClientLocationRepository interface {
+	// LastPosition returns the client's last stored position, or nil (not an
+	// error) if none.
+	LastPosition(ctx context.Context, clientID string) (*Position, error)
+	// UpsertPosition writes the client's position hash.
+	UpsertPosition(ctx context.Context, clientID string, pos Position) error
 }

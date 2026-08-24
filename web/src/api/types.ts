@@ -89,3 +89,25 @@ export interface RideDto {
   estimatedDistanceKm: number;
   createdAt: string;
 }
+
+export interface LiveDriverPositionDto {
+  driverId: string;
+  lat: number;
+  lon: number;
+  headingDeg: number;
+  speedMps: number;
+  serverTs: string;
+}
+
+export interface LiveClientPositionDto {
+  clientId: string;
+  rideId: string;
+  lat: number;
+  lon: number;
+  serverTs: string;
+}
+
+export interface LivePositionsResponse {
+  drivers: LiveDriverPositionDto[];
+  clients: LiveClientPositionDto[];
+}

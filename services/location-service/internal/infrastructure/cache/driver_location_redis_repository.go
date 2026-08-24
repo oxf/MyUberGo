@@ -41,49 +41,11 @@ func (r *DriverLocationRepository) LastPosition(ctx context.Context, driverID st
 	if len(m) == 0 {
 		return nil, nil
 	}
-
-	lat, err := strconv.ParseFloat(m["lat"], 64)
+	pos, err := decodePositionHash(m)
 	if err != nil {
 		return nil, err
 	}
-	lon, err := strconv.ParseFloat(m["lon"], 64)
-	if err != nil {
-		return nil, err
-	}
-	accuracyM, err := strconv.ParseFloat(m["accuracyM"], 64)
-	if err != nil {
-		return nil, err
-	}
-	headingDeg, err := strconv.ParseFloat(m["headingDeg"], 64)
-	if err != nil {
-		return nil, err
-	}
-	speedMps, err := strconv.ParseFloat(m["speedMps"], 64)
-	if err != nil {
-		return nil, err
-	}
-	deviceTs, err := time.Parse(time.RFC3339, m["deviceTs"])
-	if err != nil {
-		return nil, err
-	}
-	serverTs, err := time.Parse(time.RFC3339, m["serverTs"])
-	if err != nil {
-		return nil, err
-	}
-
-	coord, err := domain.NewCoordinate(lat, lon)
-	if err != nil {
-		return nil, err
-	}
-
-	return &domain.Position{
-		Coordinate: coord,
-		AccuracyM:  accuracyM,
-		HeadingDeg: headingDeg,
-		SpeedMps:   speedMps,
-		DeviceTs:   deviceTs,
-		ServerTs:   serverTs,
-	}, nil
+	return &pos, nil
 }
 
 // UpsertPosition writes the geo index, lastseen score, and detail hash in one
@@ -96,15 +58,7 @@ func (r *DriverLocationRepository) UpsertPosition(ctx context.Context, driverID 
 		Latitude:  pos.Coordinate.Lat,
 	})
 	pipe.ZAdd(ctx, lastSeenKey, redis.Z{Score: float64(pos.ServerTs.UnixMilli()), Member: driverID})
-	pipe.HSet(ctx, driverKey(driverID), map[string]any{
-		"lat":        pos.Coordinate.Lat,
-		"lon":        pos.Coordinate.Lon,
-		"accuracyM":  pos.AccuracyM,
-		"headingDeg": pos.HeadingDeg,
-		"speedMps":   pos.SpeedMps,
-		"deviceTs":   pos.DeviceTs.UTC().Format(time.RFC3339),
-		"serverTs":   pos.ServerTs.UTC().Format(time.RFC3339),
-	})
+	pipe.HSet(ctx, driverKey(driverID), positionHash(pos))
 	pipe.Expire(ctx, driverKey(driverID), locationTTL)
 	_, err := pipe.Exec(ctx)
 	return err
@@ -169,6 +123,49 @@ func (r *DriverLocationRepository) StaleDriverIDs(ctx context.Context, olderThan
 		Stop:    strconv.FormatInt(olderThan.UnixMilli(), 10),
 		ByScore: true,
 	}).Result()
+}
+
+// AllPositions returns every driver within stalenessThreshold of
+// loc:drivers:lastseen, each paired with its detail hash — same staleness
+// cutoff Nearby applies, just without the geo-radius filter.
+func (r *DriverLocationRepository) AllPositions(ctx context.Context) ([]domain.DriverPosition, error) {
+	cutoff := float64(time.Now().Add(-r.stalenessThreshold).UnixMilli())
+	ids, err := r.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key:     lastSeenKey,
+		Start:   strconv.FormatFloat(cutoff, 'f', -1, 64),
+		Stop:    "+inf",
+		ByScore: true,
+	}).Result()
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	pipe := r.rdb.Pipeline()
+	cmds := make([]*redis.MapStringStringCmd, len(ids))
+	for i, id := range ids {
+		cmds[i] = pipe.HGetAll(ctx, driverKey(id))
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, err
+	}
+
+	out := make([]domain.DriverPosition, 0, len(ids))
+	for i, id := range ids {
+		m, err := cmds[i].Result()
+		if err != nil || len(m) == 0 {
+			// Hash TTL'd out between the ZRANGE and HGETALL reads — skip, not an error.
+			continue
+		}
+		pos, err := decodePositionHash(m)
+		if err != nil {
+			continue
+		}
+		out = append(out, domain.DriverPosition{DriverID: id, Position: pos})
+	}
+	return out, nil
 }
 
 // Evict removes driverIDs from both the geo index and lastseen set in one

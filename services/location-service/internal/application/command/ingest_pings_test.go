@@ -35,6 +35,24 @@ func (f *fakeDrivers) UpsertPosition(ctx context.Context, driverID string, pos d
 	return nil
 }
 
+// fakeNoWindowTracking answers "no open window" — the common driver-ingest
+// case; publish behavior is covered by TestIngestPingsHandler_PublishesWhenWindowOpen.
+type fakeNoWindowTracking struct{ domain.TrackingRepository }
+
+func (fakeNoWindowTracking) ActiveRideForDriver(ctx context.Context, driverID string) (string, error) {
+	return "", nil
+}
+
+type fakePublisher struct {
+	domain.PositionPublisher
+	published []domain.PositionUpdate
+}
+
+func (f *fakePublisher) Publish(ctx context.Context, update domain.PositionUpdate) error {
+	f.published = append(f.published, update)
+	return nil
+}
+
 func testCfg() domain.ValidationConfig {
 	return domain.ValidationConfig{
 		MaxAccuracyM:  100,
@@ -46,10 +64,12 @@ func testCfg() domain.ValidationConfig {
 
 func TestIngestPingsHandler_UnknownCallerIsForbidden(t *testing.T) {
 	h := &IngestPingsHandler{
-		owner:   &fakeOwner{driverByUser: map[string]string{}},
-		drivers: &fakeDrivers{},
-		config:  testCfg(),
-		metrics: metrics.NewNoopMetricsClient(),
+		owner:     &fakeOwner{driverByUser: map[string]string{}},
+		drivers:   &fakeDrivers{},
+		config:    testCfg(),
+		metrics:   metrics.NewNoopMetricsClient(),
+		tracking:  fakeNoWindowTracking{},
+		publisher: &fakePublisher{},
 	}
 
 	_, err := h.Handle(context.Background(), IngestPings{UserID: "user-1", Pings: []PingInput{{Lat: 1, Lon: 1, DeviceTs: time.Now()}}})
@@ -62,10 +82,12 @@ func TestIngestPingsHandler_AcceptsValidBatchAndWritesOnlyLastPosition(t *testin
 	now := time.Now().UTC()
 	drivers := &fakeDrivers{}
 	h := &IngestPingsHandler{
-		owner:   &fakeOwner{driverByUser: map[string]string{"user-1": "driver-1"}},
-		drivers: drivers,
-		config:  testCfg(),
-		metrics: metrics.NewNoopMetricsClient(),
+		owner:     &fakeOwner{driverByUser: map[string]string{"user-1": "driver-1"}},
+		drivers:   drivers,
+		config:    testCfg(),
+		metrics:   metrics.NewNoopMetricsClient(),
+		tracking:  fakeNoWindowTracking{},
+		publisher: &fakePublisher{},
 	}
 
 	result, err := h.Handle(context.Background(), IngestPings{
@@ -93,10 +115,12 @@ func TestIngestPingsHandler_RejectsOutOfOrderBatchEntries(t *testing.T) {
 	now := time.Now().UTC()
 	drivers := &fakeDrivers{}
 	h := &IngestPingsHandler{
-		owner:   &fakeOwner{driverByUser: map[string]string{"user-1": "driver-1"}},
-		drivers: drivers,
-		config:  testCfg(),
-		metrics: metrics.NewNoopMetricsClient(),
+		owner:     &fakeOwner{driverByUser: map[string]string{"user-1": "driver-1"}},
+		drivers:   drivers,
+		config:    testCfg(),
+		metrics:   metrics.NewNoopMetricsClient(),
+		tracking:  fakeNoWindowTracking{},
+		publisher: &fakePublisher{},
 	}
 
 	// Pings submitted out of order — handler must sort by DeviceTs before
@@ -120,10 +144,12 @@ func TestIngestPingsHandler_RejectsTeleportWithinSameBatch(t *testing.T) {
 	now := time.Now().UTC()
 	drivers := &fakeDrivers{}
 	h := &IngestPingsHandler{
-		owner:   &fakeOwner{driverByUser: map[string]string{"user-1": "driver-1"}},
-		drivers: drivers,
-		config:  testCfg(),
-		metrics: metrics.NewNoopMetricsClient(),
+		owner:     &fakeOwner{driverByUser: map[string]string{"user-1": "driver-1"}},
+		drivers:   drivers,
+		config:    testCfg(),
+		metrics:   metrics.NewNoopMetricsClient(),
+		tracking:  fakeNoWindowTracking{},
+		publisher: &fakePublisher{},
 	}
 
 	result, err := h.Handle(context.Background(), IngestPings{
@@ -149,10 +175,12 @@ func TestIngestPingsHandler_RejectsTeleportWithinSameBatch(t *testing.T) {
 func TestIngestPingsHandler_AllRejectedWritesNothing(t *testing.T) {
 	drivers := &fakeDrivers{}
 	h := &IngestPingsHandler{
-		owner:   &fakeOwner{driverByUser: map[string]string{"user-1": "driver-1"}},
-		drivers: drivers,
-		config:  testCfg(),
-		metrics: metrics.NewNoopMetricsClient(),
+		owner:     &fakeOwner{driverByUser: map[string]string{"user-1": "driver-1"}},
+		drivers:   drivers,
+		config:    testCfg(),
+		metrics:   metrics.NewNoopMetricsClient(),
+		tracking:  fakeNoWindowTracking{},
+		publisher: &fakePublisher{},
 	}
 
 	result, err := h.Handle(context.Background(), IngestPings{
@@ -167,5 +195,68 @@ func TestIngestPingsHandler_AllRejectedWritesNothing(t *testing.T) {
 	}
 	if len(drivers.upserted) != 0 {
 		t.Fatalf("expected no Redis write when every ping is rejected, got %d", len(drivers.upserted))
+	}
+}
+
+// fakeOpenWindowTracking answers a fixed rideID for every driver — used to
+// exercise IngestPingsHandler.publishIfTracked's positive path.
+type fakeOpenWindowTracking struct {
+	domain.TrackingRepository
+	rideID string
+}
+
+func (f fakeOpenWindowTracking) ActiveRideForDriver(ctx context.Context, driverID string) (string, error) {
+	return f.rideID, nil
+}
+
+func TestIngestPingsHandler_PublishesWhenWindowOpen(t *testing.T) {
+	now := time.Now().UTC()
+	drivers := &fakeDrivers{}
+	publisher := &fakePublisher{}
+	h := &IngestPingsHandler{
+		owner:     &fakeOwner{driverByUser: map[string]string{"user-1": "driver-1"}},
+		drivers:   drivers,
+		config:    testCfg(),
+		metrics:   metrics.NewNoopMetricsClient(),
+		tracking:  fakeOpenWindowTracking{rideID: "ride-1"},
+		publisher: publisher,
+	}
+
+	_, err := h.Handle(context.Background(), IngestPings{
+		UserID: "user-1",
+		Pings:  []PingInput{{Lat: 34.707, Lon: 33.022, AccuracyM: 10, DeviceTs: now}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(publisher.published) != 1 {
+		t.Fatalf("got %d published updates, want 1", len(publisher.published))
+	}
+	got := publisher.published[0]
+	if got.RideID != "ride-1" || got.Subject != domain.SubjectDriver {
+		t.Fatalf("got %+v, want rideID=ride-1 subject=driver", got)
+	}
+}
+
+func TestIngestPingsHandler_NoPublishWhenAllRejected(t *testing.T) {
+	publisher := &fakePublisher{}
+	h := &IngestPingsHandler{
+		owner:     &fakeOwner{driverByUser: map[string]string{"user-1": "driver-1"}},
+		drivers:   &fakeDrivers{},
+		config:    testCfg(),
+		metrics:   metrics.NewNoopMetricsClient(),
+		tracking:  fakeOpenWindowTracking{rideID: "ride-1"},
+		publisher: publisher,
+	}
+
+	_, err := h.Handle(context.Background(), IngestPings{
+		UserID: "user-1",
+		Pings:  []PingInput{{Lat: 999, Lon: 33.022, DeviceTs: time.Now()}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(publisher.published) != 0 {
+		t.Fatalf("expected no publish when every ping is rejected, got %d", len(publisher.published))
 	}
 }

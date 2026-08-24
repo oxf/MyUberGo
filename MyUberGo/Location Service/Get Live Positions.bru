@@ -1,0 +1,20 @@
+meta {
+  name: Get Live Positions
+  type: http
+  seq: 2
+}
+
+get {
+  url: http://localhost:8090/api/location/positions
+  body: none
+  auth: inherit
+}
+
+headers {
+  Authorization: Bearer {{admin_auth_token}}
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

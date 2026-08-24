@@ -77,6 +77,7 @@ export function App() {
         <NavLink to="/shifts">Shifts</NavLink>
         <NavLink to="/rides">Rides</NavLink>
         <NavLink to="/invoices">Invoices</NavLink>
+        <NavLink to="/live-positions">Live Map</NavLink>
       </nav>
       <main>
         <Outlet />

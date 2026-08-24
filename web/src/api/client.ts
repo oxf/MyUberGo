@@ -12,6 +12,22 @@ export const UNAUTHORIZED_EVENT = 'myubergo:unauthorized';
 // this the same as UNAUTHORIZED_EVENT but with a role-specific message.
 export const FORBIDDEN_EVENT = 'myubergo:forbidden';
 
+function withAuthHeaders(): HeadersInit | undefined {
+  const token = getAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : undefined;
+}
+
+function handleAuthStatus(res: Response): void {
+  if (res.status === 401) {
+    clearAccessToken();
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+  }
+  if (res.status === 403) {
+    clearAccessToken();
+    window.dispatchEvent(new Event(FORBIDDEN_EVENT));
+  }
+}
+
 export async function fetchPaged<T>(
   path: string,
   params: PageParams,
@@ -24,22 +40,23 @@ export async function fetchPaged<T>(
     sortDir: params.sortDir,
   });
 
-  const token = getAccessToken();
-  const res = await fetch(`${path}?${qs}`, {
-    signal,
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-  });
-  if (res.status === 401) {
-    clearAccessToken();
-    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
-  }
-  if (res.status === 403) {
-    clearAccessToken();
-    window.dispatchEvent(new Event(FORBIDDEN_EVENT));
-  }
+  const res = await fetch(`${path}?${qs}`, { signal, headers: withAuthHeaders() });
+  handleAuthStatus(res);
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`${res.status} ${res.statusText}: ${body.slice(0, 200)}`);
   }
   return res.json() as Promise<PagedResponse<T>>;
+}
+
+// apiGet is for small, non-paged snapshots (e.g. the admin live-positions
+// map) — fetchPaged's querystring/PagedResponse shape doesn't apply.
+export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(path, { signal, headers: withAuthHeaders() });
+  handleAuthStatus(res);
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`${res.status} ${res.statusText}: ${body.slice(0, 200)}`);
+  }
+  return res.json() as Promise<T>;
 }

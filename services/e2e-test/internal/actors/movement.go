@@ -31,12 +31,14 @@ type driverPosition struct {
 	lastAdvance time.Time
 }
 
-// newDriverPosition starts a driver at a random point in the box with a random bearing/speed;
-// now is passed in (not read internally) so construction and the first advance share one timestamp.
-func newDriverPosition(rnd *rand.Rand, boxLat, boxLon, spanDeg float64, now time.Time) *driverPosition {
+// newDriverPosition starts a driver at a random point in the Prague box with a random
+// bearing/speed; now is passed in (not read internally) so construction and the first
+// advance share one timestamp.
+func newDriverPosition(rnd *rand.Rand, now time.Time) *driverPosition {
+	lat, lon := randomBoxPoint(rnd)
 	return &driverPosition{
-		lat:         boxLat + rnd.Float64()*spanDeg,
-		lon:         boxLon + rnd.Float64()*spanDeg,
+		lat:         lat,
+		lon:         lon,
 		bearingDeg:  rnd.Float64() * 360,
 		speedMps:    minSpeedMps + rnd.Float64()*(maxSpeedMps-minSpeedMps),
 		lastAdvance: now,
@@ -45,6 +47,9 @@ func newDriverPosition(rnd *rand.Rand, boxLat, boxLon, spanDeg float64, now time
 
 // advanceTo moves the position forward based on real elapsed time, applying an occasional random turn.
 // The longitude step divides by cos(latitude), or eastbound drivers would look faster than northbound (LOCATION_SPEC.md §14).
+// A driver that would step outside the Prague box instead bounces off that edge (clamped position,
+// bearing mirrored across the edge it hit) — without this a long-running driver's random walk would
+// eventually wander out of Prague entirely, since nothing else bounds advanceTo's displacement.
 func (p *driverPosition) advanceTo(now time.Time, rnd *rand.Rand) (lat, lon float64) {
 	dt := now.Sub(p.lastAdvance)
 	p.lastAdvance = now
@@ -58,8 +63,18 @@ func (p *driverPosition) advanceTo(now time.Time, rnd *rand.Rand) (lat, lon floa
 
 	metersPerDegreeLon := metersPerDegreeLat * math.Cos(p.lat*math.Pi/180)
 
-	p.lat += (distanceM * math.Cos(bearingRad)) / metersPerDegreeLat
-	p.lon += (distanceM * math.Sin(bearingRad)) / metersPerDegreeLon
+	newLat := p.lat + (distanceM*math.Cos(bearingRad))/metersPerDegreeLat
+	newLon := p.lon + (distanceM*math.Sin(bearingRad))/metersPerDegreeLon
 
+	if newLat > pragueBoxMaxLat || newLat < pragueBoxMinLat {
+		newLat = clamp(newLat, pragueBoxMinLat, pragueBoxMaxLat)
+		p.bearingDeg = 180 - p.bearingDeg // mirror the north-south component
+	}
+	if newLon > pragueBoxMaxLon || newLon < pragueBoxMinLon {
+		newLon = clamp(newLon, pragueBoxMinLon, pragueBoxMaxLon)
+		p.bearingDeg = -p.bearingDeg // mirror the east-west component
+	}
+
+	p.lat, p.lon = newLat, newLon
 	return p.lat, p.lon
 }

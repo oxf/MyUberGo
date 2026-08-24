@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	app "location-service/internal/application"
 	"location-service/internal/application/command"
 	"location-service/internal/infrastructure/cache"
 	"location-service/internal/infrastructure/metrics"
+	"log"
 	"os"
 	"sync/atomic"
 	"testing"
@@ -23,8 +23,14 @@ import (
 )
 
 // Re-joining the hardcoded GroupID per test was flaky (slow member reap), so
-// this consumer starts once per package run on one fixed topic.
-const shiftUpdatedTestTopic = "shift.updated.pkgtest"
+// each consumer starts once per package run on one fixed topic.
+const (
+	shiftUpdatedTestTopic  = "shift.updated.pkgtest"
+	rideRequestedTestTopic = "ride.requested.pkgtest"
+	rideAcceptedTestTopic  = "ride.accepted.pkgtest"
+	rideCompletedTestTopic = "ride.completed.pkgtest"
+	rideCancelledTestTopic = "ride.cancelled.pkgtest"
+)
 
 func testLogger() *logrus.Entry {
 	l := logrus.New()
@@ -33,8 +39,9 @@ func testLogger() *logrus.Entry {
 }
 
 var (
-	testRedis   *redisgo.Client
-	kafkaBroker string
+	testRedis    *redisgo.Client
+	kafkaBroker  string
+	testTracking *cache.TrackingRepository
 )
 
 var seedSeq atomic.Int64
@@ -89,21 +96,34 @@ func runTests(m *testing.M) int {
 	}
 	kafkaBroker = brokers[0]
 
-	if err := createTopicNoTest(shiftUpdatedTestTopic); err != nil {
-		log.Fatalf("create topic %s: %v", shiftUpdatedTestTopic, err)
+	for _, topic := range []string{shiftUpdatedTestTopic, rideRequestedTestTopic, rideAcceptedTestTopic, rideCompletedTestTopic, rideCancelledTestTopic} {
+		if err := createTopicNoTest(topic); err != nil {
+			log.Fatalf("create topic %s: %v", topic, err)
+		}
 	}
 
 	ownerRepo := cache.NewOwnerRepository(testRedis)
+	trackingRepo := cache.NewTrackingRepository(testRedis)
 	application := app.Application{
 		Commands: app.Commands{
-			UpsertOwner: command.NewUpsertOwnerHandler(ownerRepo, testLogger(), metrics.NewNoopMetricsClient()),
+			UpsertOwner:         command.NewUpsertOwnerHandler(ownerRepo, testLogger(), metrics.NewNoopMetricsClient()),
+			RecordRideRequested: command.NewRecordRideRequestedHandler(trackingRepo, testLogger(), metrics.NewNoopMetricsClient()),
+			RecordRideAccepted:  command.NewRecordRideAcceptedHandler(trackingRepo, testLogger(), metrics.NewNoopMetricsClient()),
+			CloseTrackingWindow: command.NewCloseTrackingWindowHandler(trackingRepo, testLogger(), metrics.NewNoopMetricsClient()),
 		},
 	}
+	testTracking = trackingRepo
 
 	consumerCtx, cancelConsumers := context.WithCancel(context.Background())
 	defer cancelConsumers()
 
+	socketCloser := NoopSocketCloser()
+
 	go NewShiftUpdatedConsumer(application, kafkaBroker, testLogger()).Run(consumerCtx, shiftUpdatedTestTopic)
+	go NewRideRequestedConsumer(application, kafkaBroker, testLogger()).Run(consumerCtx, rideRequestedTestTopic)
+	go NewRideAcceptedConsumer(application, kafkaBroker, testLogger()).Run(consumerCtx, rideAcceptedTestTopic)
+	go NewRideCompletedConsumer(application, socketCloser, kafkaBroker, testLogger()).Run(consumerCtx, rideCompletedTestTopic)
+	go NewRideCancelledConsumer(application, socketCloser, kafkaBroker, testLogger()).Run(consumerCtx, rideCancelledTestTopic)
 
 	return m.Run()
 }

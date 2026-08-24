@@ -13,10 +13,16 @@ type Application struct {
 }
 
 type Commands struct {
-	IngestPings decorator.CommandHandler[command.IngestPings, command.IngestPingsResult]
-	UpsertOwner decorator.CommandHandlerNoResult[command.UpsertOwner]
+	IngestPings         decorator.CommandHandler[command.IngestPings, command.IngestPingsResult]
+	IngestClientPing    decorator.CommandHandler[command.IngestClientPing, command.IngestPingsResult]
+	UpsertOwner         decorator.CommandHandlerNoResult[command.UpsertOwner]
+	RecordRideRequested decorator.CommandHandlerNoResult[command.RecordRideRequested]
+	RecordRideAccepted  decorator.CommandHandlerNoResult[command.RecordRideAccepted]
+	CloseTrackingWindow decorator.CommandHandlerNoResult[command.CloseTrackingWindow]
 }
 
 type Queries struct {
-	FindNearbyDrivers decorator.QueryHandler[query.FindNearbyDrivers, []domain.NearbyDriver]
+	FindNearbyDrivers       decorator.QueryHandler[query.FindNearbyDrivers, []domain.NearbyDriver]
+	GetCounterpartyPosition decorator.QueryHandler[query.GetCounterpartyPosition, query.CounterpartyPositionResult]
+	ListLivePositions       decorator.QueryHandler[query.ListLivePositions, query.LivePositionsResult]
 }

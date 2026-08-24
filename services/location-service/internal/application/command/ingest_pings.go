@@ -38,27 +38,31 @@ type IngestPingsResult struct {
 }
 
 type IngestPingsHandler struct {
-	owner   domain.OwnerRepository
-	drivers domain.DriverLocationRepository
-	config  domain.ValidationConfig
-	logger  *logrus.Entry
-	metrics decorator.MetricsClient
+	owner     domain.OwnerRepository
+	drivers   domain.DriverLocationRepository
+	tracking  domain.TrackingRepository
+	publisher domain.PositionPublisher
+	config    domain.ValidationConfig
+	logger    *logrus.Entry
+	metrics   decorator.MetricsClient
 }
 
 func NewIngestPingsHandler(
 	owner domain.OwnerRepository,
 	drivers domain.DriverLocationRepository,
+	tracking domain.TrackingRepository,
+	publisher domain.PositionPublisher,
 	config domain.ValidationConfig,
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandler[IngestPings, IngestPingsResult] {
-	if owner == nil || drivers == nil {
+	if owner == nil || drivers == nil || tracking == nil || publisher == nil {
 		panic("nil repo")
 	}
 	if metricsClient == nil {
 		metricsClient = metrics.NewNoopMetricsClient()
 	}
-	handler := &IngestPingsHandler{owner: owner, drivers: drivers, config: config, logger: logger, metrics: metricsClient}
+	handler := &IngestPingsHandler{owner: owner, drivers: drivers, tracking: tracking, publisher: publisher, config: config, logger: logger, metrics: metricsClient}
 	return decorator.ApplyCommandDecorators[IngestPings, IngestPingsResult](handler, logger, metricsClient)
 }
 
@@ -109,7 +113,24 @@ func (h *IngestPingsHandler) Handle(ctx context.Context, cmd IngestPings) (Inges
 			return IngestPingsResult{}, err
 		}
 		h.metrics.RecordDuration(ctx, "myubergo.location.ingest_lag", now.Sub(latestAccepted.DeviceTs))
+
+		if err := h.publishIfTracked(ctx, driverID, *latestAccepted); err != nil {
+			h.logger.WithError(err).WithField("driver_id", driverID).Warn("failed to publish position to tracking window")
+		}
 	}
 
 	return result, nil
+}
+
+// publishIfTracked fans out over Pub/Sub only if a window is open — the
+// common no-op path. Publish failure is logged, not propagated: the write already succeeded.
+func (h *IngestPingsHandler) publishIfTracked(ctx context.Context, driverID string, pos domain.Position) error {
+	rideID, err := h.tracking.ActiveRideForDriver(ctx, driverID)
+	if err != nil {
+		return err
+	}
+	if rideID == "" {
+		return nil
+	}
+	return h.publisher.Publish(ctx, domain.PositionUpdate{RideID: rideID, Subject: domain.SubjectDriver, Position: pos})
 }

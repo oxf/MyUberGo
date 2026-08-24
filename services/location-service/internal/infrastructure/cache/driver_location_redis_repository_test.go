@@ -267,6 +267,71 @@ func TestStaleDriverIDsAndEvict(t *testing.T) {
 	}
 }
 
+func TestAllPositions_ReturnsAllNonStaleDrivers(t *testing.T) {
+	ctx := context.Background()
+	repo := NewDriverLocationRepository(testRedis, testStalenessThreshold)
+
+	coord := mustCoord(t, 34.707, 33.022)
+	fresh1 := nextCacheID("driver")
+	fresh2 := nextCacheID("driver")
+	stale := nextCacheID("driver")
+
+	now := time.Now().UTC()
+	if err := repo.UpsertPosition(ctx, fresh1, domain.Position{Coordinate: coord, DeviceTs: now, ServerTs: now}); err != nil {
+		t.Fatalf("upsert fresh1: %v", err)
+	}
+	if err := repo.UpsertPosition(ctx, fresh2, domain.Position{Coordinate: coord, DeviceTs: now, ServerTs: now}); err != nil {
+		t.Fatalf("upsert fresh2: %v", err)
+	}
+	if err := repo.UpsertPosition(ctx, stale, domain.Position{
+		Coordinate: coord, DeviceTs: now.Add(-10 * time.Minute), ServerTs: now.Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("upsert stale: %v", err)
+	}
+
+	positions, err := repo.AllPositions(ctx)
+	if err != nil {
+		t.Fatalf("all positions: %v", err)
+	}
+
+	var gotFresh1, gotFresh2, gotStale bool
+	for _, p := range positions {
+		switch p.DriverID {
+		case fresh1:
+			gotFresh1 = true
+		case fresh2:
+			gotFresh2 = true
+		case stale:
+			gotStale = true
+		}
+	}
+	if !gotFresh1 || !gotFresh2 {
+		t.Fatalf("expected both fresh drivers in results, got %+v", positions)
+	}
+	if gotStale {
+		t.Fatal("stale driver (past the staleness threshold) should have been excluded")
+	}
+}
+
+func TestAllPositions_NeverPingedDriverIsAbsent(t *testing.T) {
+	ctx := context.Background()
+	repo := NewDriverLocationRepository(testRedis, testStalenessThreshold)
+
+	// testRedis is shared across this file's tests (no flush between them, by
+	// design — see nextCacheID's doc), so assert the never-pinged id
+	// specifically is absent rather than asserting a globally empty result.
+	positions, err := repo.AllPositions(ctx)
+	if err != nil {
+		t.Fatalf("all positions: %v", err)
+	}
+	neverPinged := nextCacheID("never-pinged")
+	for _, p := range positions {
+		if p.DriverID == neverPinged {
+			t.Fatal("never-pinged driver should not appear in AllPositions")
+		}
+	}
+}
+
 func TestEvict_EmptyIsNoop(t *testing.T) {
 	if err := NewDriverLocationRepository(testRedis, testStalenessThreshold).Evict(context.Background(), nil); err != nil {
 		t.Fatalf("expected no-op, got error: %v", err)

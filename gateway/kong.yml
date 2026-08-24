@@ -276,6 +276,100 @@ services:
           header_name: X-User-Id
           minute: 600
 
+  # -- location-service: WS live-tracking upgrade (Slice 2, LOCATION_SPEC.md §7.3). No
+  # per-message JWT/rate-limit past the upgrade, hence WSHandler's own token bucket. --
+  - name: location-service-ws
+    url: http://location-service:8004/ws
+    read_timeout: 120000
+    routes:
+      - name: location-ws
+        paths:
+          - ~/api/location/ws$
+        methods:
+          - GET
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 600
+
+  # -- location-service: counterparty fallback (Slice 2). strip_path:false, not the usual
+  # true+url-suffix pattern — a variable {rideId} segment, see LOCATION_SPEC.md §0.1. --
+  - name: location-service-counterparty
+    url: http://location-service:8004
+    routes:
+      - name: location-counterparty
+        paths:
+          - ~/api/location/rides/[^/]+/counterparty$
+        methods:
+          - GET
+        strip_path: false
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 600
+
+  # -- location-service: admin-only fleet-wide live-positions snapshot for the ops
+  # dashboard map (all drivers + all clients with a currently-open tracking window).
+  # GET-and-path-anchored so it ranks above the broader /api/location routes above —
+  # same admin-gating pattern as the admin-list routes below. --
+  - name: location-service-admin-positions
+    url: http://location-service:8004/api/location/positions
+    routes:
+      - name: location-admin-positions
+        paths:
+          - ~/api/location/positions$
+        methods:
+          - GET
+        strip_path: true
+    plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          claims_to_verify:
+            - exp
+      - name: post-function
+        config:
+          access:
+            - *inject_user_headers
+            - *require_admin
+      - name: rate-limiting
+        config:
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: header
+          header_name: X-User-Id
+          minute: 300
+
   # -- Admin-only list routes: match on paths AND methods, which Kong ranks above the paths-only
   # routes above, so a GET here is gated to Admin; every other method/path is untouched. --
   - name: ride-service-admin-list

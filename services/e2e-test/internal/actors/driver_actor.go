@@ -243,7 +243,7 @@ func (a *DriverActor) pollForOffer(ctx context.Context, window time.Duration) bo
 func (a *DriverActor) emitLocationPing(ctx context.Context) {
 	now := time.Now().UTC()
 	if a.position == nil {
-		a.position = newDriverPosition(a.Rnd, rideBoxLat, rideBoxLon, rideBoxSpanDeg, now)
+		a.position = newDriverPosition(a.Rnd, now)
 	}
 	lat, lon := a.position.advanceTo(now, a.Rnd)
 

@@ -7,6 +7,7 @@ import { DriversPage } from './pages/DriversPage';
 import { ShiftsPage } from './pages/ShiftsPage';
 import { RidesPage } from './pages/RidesPage';
 import { InvoicesPage } from './pages/InvoicesPage';
+import { LivePositionsPage } from './pages/LivePositionsPage';
 import './index.css';
 
 createRoot(document.getElementById('root')!).render(
@@ -20,6 +21,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/shifts" element={<ShiftsPage />} />
           <Route path="/rides" element={<RidesPage />} />
           <Route path="/invoices" element={<InvoicesPage />} />
+          <Route path="/live-positions" element={<LivePositionsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>
