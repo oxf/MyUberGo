@@ -42,6 +42,7 @@ type IngestPingsHandler struct {
 	drivers   domain.DriverLocationRepository
 	tracking  domain.TrackingRepository
 	publisher domain.PositionPublisher
+	tracks    domain.RideTrackRepository
 	config    domain.ValidationConfig
 	logger    *logrus.Entry
 	metrics   decorator.MetricsClient
@@ -52,17 +53,18 @@ func NewIngestPingsHandler(
 	drivers domain.DriverLocationRepository,
 	tracking domain.TrackingRepository,
 	publisher domain.PositionPublisher,
+	tracks domain.RideTrackRepository,
 	config domain.ValidationConfig,
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandler[IngestPings, IngestPingsResult] {
-	if owner == nil || drivers == nil || tracking == nil || publisher == nil {
+	if owner == nil || drivers == nil || tracking == nil || publisher == nil || tracks == nil {
 		panic("nil repo")
 	}
 	if metricsClient == nil {
 		metricsClient = metrics.NewNoopMetricsClient()
 	}
-	handler := &IngestPingsHandler{owner: owner, drivers: drivers, tracking: tracking, publisher: publisher, config: config, logger: logger, metrics: metricsClient}
+	handler := &IngestPingsHandler{owner: owner, drivers: drivers, tracking: tracking, publisher: publisher, tracks: tracks, config: config, logger: logger, metrics: metricsClient}
 	return decorator.ApplyCommandDecorators[IngestPings, IngestPingsResult](handler, logger, metricsClient)
 }
 
@@ -122,8 +124,11 @@ func (h *IngestPingsHandler) Handle(ctx context.Context, cmd IngestPings) (Inges
 	return result, nil
 }
 
-// publishIfTracked fans out over Pub/Sub only if a window is open — the
-// common no-op path. Publish failure is logged, not propagated: the write already succeeded.
+// publishIfTracked fans out over Pub/Sub and archives to the ride's track
+// stream only if a window is open — the common no-op path. Both a track
+// Append failure and a publish failure are logged, not propagated: the
+// position write already succeeded, and ingest latency must never depend on
+// either the tracking window or the archive path (LOCATION_SPEC.md §6.2).
 func (h *IngestPingsHandler) publishIfTracked(ctx context.Context, driverID string, pos domain.Position) error {
 	rideID, err := h.tracking.ActiveRideForDriver(ctx, driverID)
 	if err != nil {
@@ -131,6 +136,9 @@ func (h *IngestPingsHandler) publishIfTracked(ctx context.Context, driverID stri
 	}
 	if rideID == "" {
 		return nil
+	}
+	if err := h.tracks.Append(ctx, rideID, domain.SubjectDriver, pos); err != nil {
+		h.logger.WithError(err).WithField("ride_id", rideID).Warn("failed to append position to ride track")
 	}
 	return h.publisher.Publish(ctx, domain.PositionUpdate{RideID: rideID, Subject: domain.SubjectDriver, Position: pos})
 }

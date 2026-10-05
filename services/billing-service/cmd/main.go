@@ -133,6 +133,7 @@ func main() {
 			FinalizeChargeFailed: command.NewFinalizeChargeFailedHandler(
 				invoiceRepo, paymentRepo, ledgerRepo, outboxRepo, transactionManager, maxAttempts, backoff, logger, metricsClient,
 			),
+			RecordRideActuals: command.NewRecordRideActualsHandler(invoiceRepo, logger, metricsClient),
 		},
 		Queries: app.Queries{
 			GetInvoice:         query.NewGetInvoiceHandler(invoiceRepo, logger, metricsClient),
@@ -235,6 +236,15 @@ func main() {
 	health.GoSafe(logger, healthChecker, workerCtx, "ride-cancelled-consumer", func() {
 		defer shutdownManager.Done()
 		rideCancelledConsumer.Run(workerCtx, "ride.cancelled")
+	})
+
+	// ride.summary.ready consumer: records location-service's actual
+	// distance/duration onto the ride's invoice — never re-prices.
+	rideSummaryReadyConsumer := consumers.NewRideSummaryReadyConsumer(application, kafkaBroker, logger)
+	shutdownManager.Add(1)
+	health.GoSafe(logger, healthChecker, workerCtx, "ride-summary-ready-consumer", func() {
+		defer shutdownManager.Done()
+		rideSummaryReadyConsumer.Run(workerCtx, "ride.summary.ready")
 	})
 
 	health.GoSafe(logger, healthChecker, nil, "http-server", func() {

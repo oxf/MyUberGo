@@ -39,6 +39,7 @@ func newInstance(t *testing.T, ownerSeed func(owner *cache.OwnerRepository)) *in
 	driverRepo := cache.NewDriverLocationRepository(rdb, 120*time.Second)
 	clientRepo := cache.NewClientLocationRepository(rdb)
 	trackingRepo := cache.NewTrackingRepository(rdb)
+	rideTrackRepo := cache.NewRideTrackRepository(rdb)
 	ownerRepo := cache.NewOwnerRepository(rdb)
 	if ownerSeed != nil {
 		ownerSeed(ownerRepo)
@@ -53,8 +54,8 @@ func newInstance(t *testing.T, ownerSeed func(owner *cache.OwnerRepository)) *in
 
 	application := app.Application{
 		Commands: app.Commands{
-			IngestPings:      command.NewIngestPingsHandler(ownerRepo, driverRepo, trackingRepo, publisher, validationConfig, logger, noopMetrics),
-			IngestClientPing: command.NewIngestClientPingHandler(trackingRepo, clientRepo, publisher, validationConfig, logger, noopMetrics),
+			IngestPings:      command.NewIngestPingsHandler(ownerRepo, driverRepo, trackingRepo, publisher, rideTrackRepo, validationConfig, logger, noopMetrics),
+			IngestClientPing: command.NewIngestClientPingHandler(trackingRepo, clientRepo, publisher, rideTrackRepo, validationConfig, logger, noopMetrics),
 		},
 	}
 
@@ -64,7 +65,10 @@ func newInstance(t *testing.T, ownerSeed func(owner *cache.OwnerRepository)) *in
 	ctx, cancel := context.WithCancel(context.Background())
 	go dispatcher.Run(ctx, hub)
 
-	healthChecker := health.NewChecker(rdb, time.Minute)
+	// nil *sql.DB is safe here: this test never calls healthChecker.Start(),
+	// so the Postgres pinger is never invoked — only WSHandler's
+	// MarkNotLive/MarkNotReady calls are exercised.
+	healthChecker := health.NewChecker(rdb, nil, time.Minute)
 	shutdownManager := shutdown.NewManager(&http.Server{}, 5*time.Second)
 
 	wsHandler := NewWSHandler(application, trackingRepo, ownerRepo, hub, healthChecker, shutdownManager, logger, noopMetrics, 25*time.Second)

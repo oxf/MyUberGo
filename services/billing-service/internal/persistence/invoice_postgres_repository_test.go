@@ -44,6 +44,56 @@ func TestCreate_PopulatesDriverIDWhenPresent(t *testing.T) {
 	}
 }
 
+func TestRecordActuals_UpdatesExistingInvoice(t *testing.T) {
+	ctx := context.Background()
+	repo := NewPostgresInvoiceRepository(testDB)
+	clientID := seedClient(t, testDB)
+	driverID := seedDriver(t, testDB)
+	rideID := seedRide(t, testDB, clientID, driverID)
+
+	inv := newOpenInvoice(rideID, clientID)
+	inv.DriverID = &driverID
+	id, err := repo.Create(ctx, inv)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	recorded, err := repo.RecordActuals(ctx, rideID, 1500, 600)
+	if err != nil {
+		t.Fatalf("RecordActuals: %v", err)
+	}
+	if !recorded {
+		t.Fatal("expected recorded=true for an existing invoice")
+	}
+
+	var distanceM, durationS int64
+	if err := testDB.QueryRowContext(ctx,
+		`SELECT actual_distance_m, actual_duration_s FROM billing.invoice WHERE id = $1`, id,
+	).Scan(&distanceM, &durationS); err != nil {
+		t.Fatalf("read actuals: %v", err)
+	}
+	if distanceM != 1500 || durationS != 600 {
+		t.Fatalf("got distance=%d duration=%d, want 1500/600", distanceM, durationS)
+	}
+}
+
+// TestRecordActuals_NoInvoiceReturnsFalseNotError guards the race between
+// ride.completed (invoice creation) and ride.summary.ready arriving on
+// separate topics with no ordering guarantee — a summary can legitimately
+// arrive before, or with no, matching invoice.
+func TestRecordActuals_NoInvoiceReturnsFalseNotError(t *testing.T) {
+	ctx := context.Background()
+	repo := NewPostgresInvoiceRepository(testDB)
+
+	recorded, err := repo.RecordActuals(ctx, fmt.Sprintf("11111111-1111-1111-1111-%012d", nextSeq()), 1500, 600)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if recorded {
+		t.Fatal("expected recorded=false when no invoice exists for this ride")
+	}
+}
+
 func TestCreate_DuplicateRideAndType_ReturnsErrDuplicateInvoice(t *testing.T) {
 	ctx := context.Background()
 	repo := NewPostgresInvoiceRepository(testDB)

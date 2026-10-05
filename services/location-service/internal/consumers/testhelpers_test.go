@@ -7,10 +7,12 @@ import (
 	"io"
 	app "location-service/internal/application"
 	"location-service/internal/application/command"
+	"location-service/internal/domain"
 	"location-service/internal/infrastructure/cache"
 	"location-service/internal/infrastructure/metrics"
 	"log"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +23,55 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/kafka"
 	"github.com/testcontainers/testcontainers-go/modules/redis"
 )
+
+// fakeSummaryRepo/fakeOutboxRepo/noopTxManager are in-memory stand-ins for
+// BuildRideSummary's Postgres dependencies — this package's containers are
+// Redis+Kafka only (consumer wiring is what's under test here, not
+// persistence, which internal/persistence covers against a real Postgres).
+type fakeSummaryRepo struct {
+	domain.RideSummaryRepository
+	mu        sync.Mutex
+	summaries map[string]domain.RideSummary
+}
+
+func (f *fakeSummaryRepo) Insert(ctx context.Context, summary domain.RideSummary) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.summaries == nil {
+		f.summaries = map[string]domain.RideSummary{}
+	}
+	if _, exists := f.summaries[summary.RideID]; exists {
+		return false, nil
+	}
+	f.summaries[summary.RideID] = summary
+	return true, nil
+}
+
+func (f *fakeSummaryRepo) get(rideID string) (domain.RideSummary, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.summaries[rideID]
+	return s, ok
+}
+
+type fakeOutboxRepo struct {
+	domain.OutboxRepository
+	mu       sync.Mutex
+	inserted []*domain.OutboxMessage
+}
+
+func (f *fakeOutboxRepo) Insert(ctx context.Context, message *domain.OutboxMessage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inserted = append(f.inserted, message)
+	return nil
+}
+
+type noopTxManager struct{}
+
+func (noopTxManager) WithinTransaction(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
 
 // Re-joining the hardcoded GroupID per test was flaky (slow member reap), so
 // each consumer starts once per package run on one fixed topic.
@@ -39,9 +90,12 @@ func testLogger() *logrus.Entry {
 }
 
 var (
-	testRedis    *redisgo.Client
-	kafkaBroker  string
-	testTracking *cache.TrackingRepository
+	testRedis     *redisgo.Client
+	kafkaBroker   string
+	testTracking  *cache.TrackingRepository
+	testTracks    *cache.RideTrackRepository
+	testSummaries *fakeSummaryRepo
+	testOutbox    *fakeOutboxRepo
 )
 
 var seedSeq atomic.Int64
@@ -104,15 +158,23 @@ func runTests(m *testing.M) int {
 
 	ownerRepo := cache.NewOwnerRepository(testRedis)
 	trackingRepo := cache.NewTrackingRepository(testRedis)
+	rideTrackRepo := cache.NewRideTrackRepository(testRedis)
+	testSummaries = &fakeSummaryRepo{}
+	testOutbox = &fakeOutboxRepo{}
 	application := app.Application{
 		Commands: app.Commands{
 			UpsertOwner:         command.NewUpsertOwnerHandler(ownerRepo, testLogger(), metrics.NewNoopMetricsClient()),
 			RecordRideRequested: command.NewRecordRideRequestedHandler(trackingRepo, testLogger(), metrics.NewNoopMetricsClient()),
 			RecordRideAccepted:  command.NewRecordRideAcceptedHandler(trackingRepo, testLogger(), metrics.NewNoopMetricsClient()),
 			CloseTrackingWindow: command.NewCloseTrackingWindowHandler(trackingRepo, testLogger(), metrics.NewNoopMetricsClient()),
+			BuildRideSummary: command.NewBuildRideSummaryHandler(
+				trackingRepo, rideTrackRepo, testSummaries, testOutbox, noopTxManager{},
+				nil, 5, testLogger(), metrics.NewNoopMetricsClient(),
+			),
 		},
 	}
 	testTracking = trackingRepo
+	testTracks = rideTrackRepo
 
 	consumerCtx, cancelConsumers := context.WithCancel(context.Background())
 	defer cancelConsumers()

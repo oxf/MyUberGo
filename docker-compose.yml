@@ -45,6 +45,16 @@ services:
       timeout: 3s
       retries: 5
 
+  # location-service's raw-history tier (LOCATION_SPEC.md §6.2) — chosen for
+  # learning value, not scale necessity; a partitioned Postgres table with a
+  # BRIN index would handle this workload fine at this project's scale.
+  # No published host port — only location-service reaches it.
+  dynamodb-local:
+    image: amazon/dynamodb-local:2.5.2
+    restart: unless-stopped
+    mem_limit: 256m
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+
   kafka:
     image: confluentinc/cp-kafka:7.7.7
     hostname: kafka
@@ -363,9 +373,12 @@ services:
       retries: 5
       start_period: 10s
     environment:
+      PG_DSN: 'postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-postgres}?sslmode=disable'
+      APP_ENV: '${APP_ENV:-}'
       KAFKA_BROKER: kafka:29092
       SERVICE_PORT: '8004'
       REDIS_URL: redis://redis:6379
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
       LOCATION_STALENESS_SECONDS: '120'
       LOCATION_SWEEP_INTERVAL_SECONDS: '30'
       LOCATION_MAX_ACCURACY_M: '100'
@@ -373,6 +386,10 @@ services:
       LOCATION_MAX_FUTURE_SKEW_SECONDS: '120'
       LOCATION_MAX_PAST_SKEW_SECONDS: '600'
       LOCATION_WS_PING_SECONDS: '25'
+      LOCATION_ARCHIVE_INTERVAL_SECONDS: '30'
+      LOCATION_ARCHIVE_BATCH: '500'
+      LOCATION_HISTORY_TTL_DAYS: '30'
+      LOCATION_RDP_EPSILON_M: '5'
       OTEL_SERVICE_NAME: location-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
@@ -380,12 +397,19 @@ services:
       OTEL_TRACES_SAMPLER: parentbased_always_on
       LOG_LEVEL: '${LOG_LEVEL:-info}'
     # No published host port (Kong is the sole ingress); GET /internal/drivers/nearby is never
-    # Kong-routed, reachable only from matching-service. Redis + Kafka only — Postgres arrives in Slice 3.
+    # Kong-routed, reachable only from matching-service. Slice 3: Postgres (summary tier) and
+    # DynamoDB Local (raw-history tier) join Redis + Kafka.
     depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      dynamodb-local:
+        condition: service_started
       otel-collector:
         condition: service_started
 

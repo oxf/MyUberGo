@@ -151,6 +151,52 @@ func (h *LocationHandler) GetCounterparty(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// GetRideTrack handles GET /api/location/rides/{rideId}/track, a past
+// ride's summary polyline. Full path, not a bare /rides/{rideId}/track —
+// same Kong strip_path:false reasoning as GetCounterparty (a regex route
+// with a variable segment strips the whole matched path under strip_path:true).
+func (h *LocationHandler) GetRideTrack(w http.ResponseWriter, r *http.Request) {
+	userID, ok := kongheaders.RequireUserID(w, r)
+	if !ok {
+		return
+	}
+	clientID, _ := kongheaders.ClientID(r)
+
+	rideID := r.PathValue("rideId")
+	if rideID == "" {
+		httpresponse.WriteError(w, "rideId is required", http.StatusBadRequest)
+		return
+	}
+
+	summary, err := h.app.Queries.GetRideTrack.Handle(r.Context(), query.GetRideTrack{
+		RideID:         rideID,
+		CallerUserID:   userID,
+		CallerClientID: clientID,
+	})
+	switch {
+	case errors.Is(err, cmnerrors.ErrForbidden):
+		httpresponse.WriteError(w, "not a participant of this ride", http.StatusForbidden)
+		return
+	case errors.Is(err, cmnerrors.ErrNotFound):
+		httpresponse.WriteError(w, "no summary available for this ride", http.StatusNotFound)
+		return
+	case err != nil:
+		httpresponse.WriteInternalError(w, r, err, h.logger)
+		return
+	}
+
+	httpresponse.WriteJSON(w, http.StatusOK, contracts.RideTrackResponse{
+		RideID:     summary.RideID,
+		StartedAt:  summary.StartedAt.UTC().Format(time.RFC3339),
+		EndedAt:    summary.EndedAt.UTC().Format(time.RFC3339),
+		Polyline:   summary.Polyline,
+		DistanceM:  summary.DistanceM,
+		DurationS:  summary.DurationS,
+		PointCount: summary.PointCount,
+		Source:     string(summary.Source),
+	})
+}
+
 // ListLivePositions handles GET /api/location/positions — the admin
 // fleet-wide live-positions map snapshot. Admin-only at Kong (require_admin,
 // see gateway/kong.yml); no caller-identity-dependent logic here, so unlike

@@ -135,6 +135,10 @@ func (r *fakeInvoiceRepo) MarkUncollectible(ctx context.Context, id string) (boo
 	return true, nil
 }
 
+func (r *fakeInvoiceRepo) RecordActuals(ctx context.Context, rideID string, distanceM int64, durationS int) (bool, error) {
+	panic("not used")
+}
+
 // --- fakePaymentRepo ---------------------------------------------------
 
 type fakePaymentRepo struct {

@@ -199,6 +199,19 @@ func (r *PostgresInvoiceRepository) MarkPaid(ctx context.Context, id, paidAt str
 	return n > 0, err
 }
 
+func (r *PostgresInvoiceRepository) RecordActuals(ctx context.Context, rideID string, distanceM int64, durationS int) (bool, error) {
+	executor := Executor(ctx, r.db)
+	res, err := executor.ExecContext(ctx, `
+		UPDATE billing.invoice SET actual_distance_m = $2, actual_duration_s = $3, updated_at = NOW()
+		WHERE ride_id = $1
+	`, rideID, distanceM, durationS)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 func (r *PostgresInvoiceRepository) SetNextAttemptAt(ctx context.Context, id string, nextAttemptAt *string) error {
 	executor := Executor(ctx, r.db)
 	_, err := executor.ExecContext(ctx, `

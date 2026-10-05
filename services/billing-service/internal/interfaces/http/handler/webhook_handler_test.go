@@ -77,6 +77,10 @@ func (r *whInvoiceRepo) MarkUncollectible(ctx context.Context, id string) (bool,
 	panic("not used")
 }
 
+func (r *whInvoiceRepo) RecordActuals(ctx context.Context, rideID string, distanceM int64, durationS int) (bool, error) {
+	panic("not used")
+}
+
 type whPaymentRepo struct {
 	mu       sync.Mutex
 	payments map[string]*domain.Payment

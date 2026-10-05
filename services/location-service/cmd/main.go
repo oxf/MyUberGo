@@ -14,23 +14,31 @@ import (
 	"location-service/internal/domain"
 	"location-service/internal/infrastructure/cache"
 	"location-service/internal/infrastructure/health"
+	"location-service/internal/infrastructure/history"
 	"location-service/internal/infrastructure/metrics"
 	"location-service/internal/infrastructure/pubsub"
 	"location-service/internal/infrastructure/shutdown"
 	"location-service/internal/interfaces/http/handler"
 	"location-service/internal/interfaces/ws"
+	"location-service/internal/persistence"
 	"location-service/internal/workers"
 
+	"github.com/oxf/MyUber/common/dbconn"
 	"github.com/oxf/MyUber/common/envconfig"
 	httpmw "github.com/oxf/MyUber/common/httpmiddleware"
+	"github.com/oxf/MyUber/common/kafkapublisher"
+	"github.com/oxf/MyUber/common/outbox"
 	"github.com/oxf/MyUber/common/redisconn"
 	"github.com/oxf/MyUber/observability/obshttp"
 	"github.com/oxf/MyUber/observability/obslog"
 	"github.com/oxf/MyUber/observability/otelinit"
+
+	_ "github.com/lib/pq"
 )
 
 const serviceName = "location-service"
 const defaultRedisURL = "redis://redis:6379"
+const defaultPgDsn = "postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable"
 
 func main() {
 	// `app healthcheck` backs Docker's HEALTHCHECK: distroless has no shell/curl,
@@ -54,6 +62,14 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Slice 3: the summary tier (location.ride_summary + outbox_message).
+	// Redis/Kafka failures above are still fatal at boot, same as Slices 1-2;
+	// Postgres joins that list here for the first time.
+	db, err := dbconn.Open(defaultPgDsn)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	kafkaBroker := envconfig.String("KAFKA_BROKER", "kafka:29092")
 	port := envconfig.String("SERVICE_PORT", "8004")
 
@@ -66,11 +82,30 @@ func main() {
 	stalenessThreshold := time.Duration(envconfig.Int("LOCATION_STALENESS_SECONDS", 120)) * time.Second
 	sweepInterval := time.Duration(envconfig.Int("LOCATION_SWEEP_INTERVAL_SECONDS", 30)) * time.Second
 	wsPingInterval := time.Duration(envconfig.Int("LOCATION_WS_PING_SECONDS", 25)) * time.Second
+	archiveInterval := time.Duration(envconfig.Int("LOCATION_ARCHIVE_INTERVAL_SECONDS", 30)) * time.Second
+	archiveBatch := envconfig.Int("LOCATION_ARCHIVE_BATCH", 500)
+	historyTTLDays := envconfig.Int("LOCATION_HISTORY_TTL_DAYS", 30)
+	rdpEpsilonM := float64(envconfig.Int("LOCATION_RDP_EPSILON_M", 5))
+	dynamoEndpoint := envconfig.String("DYNAMODB_ENDPOINT", "")
+
+	// DynamoDB Local raw-history tier (LOCATION_SPEC.md §6.2) — an
+	// audit/verification input, never a system of record: EnsureTable's
+	// failure is logged, not fatal, so a slow/absent DynamoDB Local never
+	// blocks boot the way Redis/Kafka/Postgres above do.
+	dynamoClient, err := history.NewClient(ctx, dynamoEndpoint)
+	if err != nil {
+		log.Fatal(err)
+	}
+	historyRepo := history.NewRepository(dynamoClient, historyTTLDays, logger)
+	if err := historyRepo.EnsureTable(ctx); err != nil {
+		logger.WithError(err).Error("failed to ensure DynamoDB history table exists at boot; ArchiveWorker will keep retrying")
+	}
 
 	driverLocationRepo := cache.NewDriverLocationRepository(redisDb, stalenessThreshold)
 	ownerRepo := cache.NewOwnerRepository(redisDb)
 	trackingRepo := cache.NewTrackingRepository(redisDb)
 	clientLocationRepo := cache.NewClientLocationRepository(redisDb)
+	rideTrackRepo := cache.NewRideTrackRepository(redisDb)
 	positionPublisher := pubsub.NewRedisPublisher(redisDb)
 
 	// Dispatcher first, then Hub(dispatcher) — avoids circular construction,
@@ -93,26 +128,56 @@ func main() {
 		log.Fatal(err)
 	}
 
+	transactionManager := persistence.NewPostgresTransactionManager(db)
+	outboxRepo := persistence.NewPostgresOutboxRepository(db)
+	summaryRepo := persistence.NewPostgresRideSummaryRepository(db)
+
+	// Outbox worker: publishes location.outbox_message rows (ride.summary.ready) to Kafka.
+	publisher := kafkapublisher.New(kafkaBroker)
+	defer publisher.Close()
+	outboxWorker := outbox.New(serviceName, outboxRepo, publisher, transactionManager, logger, 2*time.Second)
+
+	if err := metricsClient.Gauge("myubergo.outbox.pending", nil, func(ctx context.Context) (int64, error) {
+		pending, _, err := outboxRepo.CountByRetries(ctx, outboxWorker.MaxRetries())
+		return pending, err
+	}); err != nil {
+		log.Fatal(err)
+	}
+	if err := metricsClient.Gauge("myubergo.outbox.parked", nil, func(ctx context.Context) (int64, error) {
+		_, parked, err := outboxRepo.CountByRetries(ctx, outboxWorker.MaxRetries())
+		return parked, err
+	}); err != nil {
+		log.Fatal(err)
+	}
+
 	application := app.Application{
 		Commands: app.Commands{
-			IngestPings:         command.NewIngestPingsHandler(ownerRepo, driverLocationRepo, trackingRepo, positionPublisher, validationConfig, logger, metricsClient),
-			IngestClientPing:    command.NewIngestClientPingHandler(trackingRepo, clientLocationRepo, positionPublisher, validationConfig, logger, metricsClient),
+			IngestPings:         command.NewIngestPingsHandler(ownerRepo, driverLocationRepo, trackingRepo, positionPublisher, rideTrackRepo, validationConfig, logger, metricsClient),
+			IngestClientPing:    command.NewIngestClientPingHandler(trackingRepo, clientLocationRepo, positionPublisher, rideTrackRepo, validationConfig, logger, metricsClient),
 			UpsertOwner:         command.NewUpsertOwnerHandler(ownerRepo, logger, metricsClient),
 			RecordRideRequested: command.NewRecordRideRequestedHandler(trackingRepo, logger, metricsClient),
 			RecordRideAccepted:  command.NewRecordRideAcceptedHandler(trackingRepo, logger, metricsClient),
 			CloseTrackingWindow: command.NewCloseTrackingWindowHandler(trackingRepo, logger, metricsClient),
+			// mapMatcher is nil: the Slice-4 Geoapify adapter doesn't exist
+			// yet, so every summary today is source=Simplified.
+			BuildRideSummary: command.NewBuildRideSummaryHandler(
+				trackingRepo, rideTrackRepo, summaryRepo, outboxRepo, transactionManager, nil, rdpEpsilonM, logger, metricsClient,
+			),
 		},
 		Queries: app.Queries{
 			FindNearbyDrivers:       query.NewFindNearbyDriversHandler(driverLocationRepo, logger, metricsClient),
 			GetCounterpartyPosition: query.NewGetCounterpartyPositionHandler(trackingRepo, ownerRepo, driverLocationRepo, clientLocationRepo, logger, metricsClient),
 			ListLivePositions:       query.NewListLivePositionsHandler(driverLocationRepo, clientLocationRepo, trackingRepo, logger, metricsClient),
+			GetRideTrack:            query.NewGetRideTrackHandler(summaryRepo, ownerRepo, logger, metricsClient),
 		},
 	}
 
 	locationHandler := handler.NewLocationHandler(application, logger)
 
-	// Initialize health checker (Redis-backed — location-service has no Postgres in Slice 1/2)
-	healthChecker := health.NewChecker(redisDb, 5*time.Second)
+	// Health checker: Redis + Postgres (Slice 3) — deliberately NOT the
+	// DynamoDB history tier, see internal/infrastructure/health.NewChecker's
+	// doc comment.
+	healthChecker := health.NewChecker(redisDb, db, 5*time.Second)
 	healthChecker.Start()
 	defer healthChecker.Stop()
 
@@ -127,6 +192,9 @@ func main() {
 	// Full client-facing path, not bare /rides/{rideId}/counterparty — Kong's route for
 	// this one uses strip_path:false, see gateway/kong.yml's location-service-counterparty.
 	mux.HandleFunc("GET /api/location/rides/{rideId}/counterparty", locationHandler.GetCounterparty)
+	// Same strip_path:false reasoning as counterparty — see gateway/kong.yml's
+	// location-service-track.
+	mux.HandleFunc("GET /api/location/rides/{rideId}/track", locationHandler.GetRideTrack)
 	// Admin-only fleet-wide snapshot — gated at Kong (require_admin), see
 	// gateway/kong.yml's location-service-admin-positions.
 	mux.HandleFunc("GET /api/location/positions", locationHandler.ListLivePositions)
@@ -226,6 +294,19 @@ func main() {
 	health.GoSafe(logger, healthChecker, bgCtx, "staleness-worker", func() {
 		defer shutdownManager.Done()
 		stalenessWorker.Run(bgCtx)
+	})
+
+	shutdownManager.Add(1)
+	health.GoSafe(logger, healthChecker, bgCtx, "outbox-worker", func() {
+		defer shutdownManager.Done()
+		outboxWorker.Run(bgCtx)
+	})
+
+	archiveWorker := workers.NewArchiveWorker(trackingRepo, rideTrackRepo, historyRepo, archiveInterval, archiveBatch, logger, metricsClient)
+	shutdownManager.Add(1)
+	health.GoSafe(logger, healthChecker, bgCtx, "archive-worker", func() {
+		defer shutdownManager.Done()
+		archiveWorker.Run(bgCtx)
 	})
 
 	// Start server in a goroutine

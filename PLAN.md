@@ -8,17 +8,19 @@
 
 ## Outbox maintenance
 
-- [ ] **No purge/archival job for processed `outbox_message` rows** — these tables only ever grow, in all three schemas (ride, driver, billing).
+- [ ] **No purge/archival job for processed `outbox_message` rows** — these tables only ever grow, in all four schemas (ride, driver, billing, location).
 
 ## Test coverage
 
-- [ ] **auth-service has no testcontainers-backed persistence test suite.** Every other Postgres-backed service does (ride, driver, billing).
+- [ ] **auth-service has no testcontainers-backed persistence test suite.** Every other Postgres-backed service does (ride, driver, billing, location).
+- [ ] **billing-service's `RideSummaryReadyConsumer` has no consumer test**, unlike its `ride.completed`/`ride.cancelled` siblings.
+- [ ] **e2e-test only covers location's `POST /batch`** — no coverage of `/ws`, `/rides/{id}/counterparty`, `/rides/{id}/track`, or admin `/positions`.
 - [ ] **e2e-test's cancellation coverage only exercises pre-match `Requested` rides.** A scenario asserting 409 when cancelling a driver-started `InProgress` ride is still missing.
 - [ ] **The location-radius e2e scenario isn't wired into CI** — it needs a live multi-service `docker-compose` stack, which no CI job in this repo brings up today.
 
 ## Dependency modernization
 
-- [ ] `segmentio/kafka-go` (never reached a stable v1) and `lib/pq` (archived upstream, community moved to `jackc/pgx`) are the highest-risk pins repo-wide. `x/sys`/`x/crypto` drift across `go.mod` files is also open. Multi-week migration — schedule separately from the smaller items above.
+- [ ] `segmentio/kafka-go` (never reached a stable v1) and `lib/pq` (archived upstream, community moved to `jackc/pgx`) are the highest-risk pins repo-wide. Multi-week migration — schedule separately from the smaller items above.
 
 ## Codegen (Stage 3, cross-cutting)
 
@@ -26,7 +28,7 @@
 
 ## Observability follow-ups
 
-- [ ] **Three different nil-metrics-guard idioms are scattered across services** (`if h.metrics != nil` in some, a noop-client fallback in others) — worth unifying to one pattern.
+- [ ] **Two location-service queries still use `if h.metrics != nil`** (`FindNearbyDriversHandler`, `ListLivePositionsHandler`) instead of the noop-client fallback every other handler uses.
 - [ ] `services/e2e-test` isn't instrumented with OpenTelemetry — its shared HTTP transport could pick up `otelhttp.NewTransport` to generate realistic demo traces against the observability stack.
 - [ ] No sampling strategy beyond `parentbased_always_on` — fine for a low-traffic learning-repo stack, but would need revisiting before any real load.
 
@@ -35,10 +37,14 @@
 - [ ] **TIERED broadcast strategy** (top 2 high-rated drivers first, escalating tiers on timeout) — only the simpler BROADCAST (top 5 at once) is implemented.
 - [ ] The ranking formula's third term, `acceptance_rate`, has no data source anywhere in the repo (current ranking is distance+rating only, 0.5/0.5).
 
-## location-service — Slices 2–4 (of 4)
+## location-service — Slice 4 (of 4)
 
-- [ ] **Slice 2 (WebSocket live tracking) is not started.** The `/ws` endpoint, `coder/websocket`, Redis Pub/Sub multi-instance fan-out, and `GET /rides/{rideId}/counterparty` are all open — see `docs/location/LOCATION_SPEC.md`'s own Slice 2 checklist.
-- [ ] Slice 3 (Postgres `location` schema, raw ping history, map-matched ride summaries) and Slice 4 (Geoapify geocoding/routing proxy) are both fully unbuilt.
+- [ ] Slice 4 (Geoapify geocoding/routing proxy) is fully unbuilt — `GeocodingProvider`/`RoutingProvider` ports, the Geoapify adapter (timeout/retry/circuit-break, `GEOAPIFY_API_KEY`), `GET /internal/distance`. Slice 3's summary builder already has a `domain.MapMatchingProvider` seam waiting for the same adapter's `MatchRoute` method — until then every summary is `source=Simplified` (RDP + Haversine), never `MapMatched`.
+
+- [ ] `POST /batch` (`LocationHandler`) still calls `Commands.IngestPings` directly instead of going through the `LocationIngestor` port the WS handler uses.
+- [ ] Decide on `docs/AUDIT_2026-08-15.md` #9 (the `loc:driver:{id}` 5m TTL vs. staleness sweep) and #10's remaining half (`SpeedMps`/`HeadingDeg` stored unvalidated — needs bounds in LOCATION_SPEC §5.5).
+- [ ] `NoopSocketCloser`'s "Stage 1 stand-in" comment (`internal/consumers/socket_closer.go`) is stale — the real WS hub is wired in `cmd/main.go`.
+- [ ] Bruno collection has no request for `GET /api/location/rides/{rideId}/counterparty`.
 
 ## billing-service — deferred per spec
 

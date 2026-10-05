@@ -4,7 +4,7 @@ Design spec for `services/location-service` (Phase 3 of the README roadmap). Tar
 
 Intended home: `docs/location/LOCATION_SPEC.md`, mirroring `docs/billing/BILLING_SPEC.md`.
 
-**Status: Slice 1 complete (2026-08-12), Slice 2 not started.** This document was originally written in a chat session without codebase access. It has since been checked against the actual repo (2026-08-12) and corrected in place — see §0.1. Do not assume any table, topic, Redis key, contract struct, or container named here is present until its slice in §13 is checked off — check `services/shared/migrations/sql/`, `services/contracts/`, `gateway/kong.yml`, and `docker-compose.yml` before writing code against anything.
+**Status: Slices 1–3 complete (Slice 1 2026-08-12, Slice 3 2026-08-26); Slice 4 (Geoapify) not started.** This document was originally written in a chat session without codebase access. It has since been checked against the actual repo (2026-08-12) and corrected in place — see §0.1. Do not assume any table, topic, Redis key, contract struct, or container named here is present until its slice in §13 is checked off — check `services/shared/migrations/sql/`, `services/contracts/`, `gateway/kong.yml`, and `docker-compose.yml` before writing code against anything.
 
 ---
 
@@ -16,12 +16,12 @@ The original draft got the *decisions* (§1–§3) right but several *repo-facin
 
 - **§13 replace directives**: `services/shared` is **not a Go module** (SQL migrations only, mounted into the `migrate` container). The three real directives are `contracts`, `observability`, `common`.
 - **§15 env var names**: repo convention is `SERVICE_PORT` (not `PORT`), `REDIS_URL=redis://redis:6379` (not `REDIS_ADDR`; parsed via `redis.ParseURL` — the `redis://` scheme is required), `KAFKA_BROKER` singular (not `KAFKA_BROKERS`), one `PG_DSN` (not `POSTGRES_*`).
-- **§6.1 migration number**: `0007_outbox_claimed_until` already exists; location's is `0008_location`. Its `outbox_message` table needs `claimed_until` and `trace_context` columns from day one, not just the ones shown — see the current `0006_billing.up.sql` for the up-to-date shape.
+- **§6.1 migration number**: `0007_outbox_claimed_until` already exists; location's turned out to be `0010_location` (0008/0009 were taken by other work first). Its `outbox_message` table needs `claimed_until` and `trace_context` columns from day one, not just the ones shown — see the current `0006_billing.up.sql` for the up-to-date shape.
 - **§7.1 paths**: Kong routes use `strip_path: true`, so service-side handlers register `/batch` etc. — not `/location/batch`. **Correction (Slice 2 implementation, verified against a real Kong 3.7 container):** this does *not* extend to `/rides/{rideId}/counterparty` — its route has a variable segment, and `strip_path: true` on a regex route strips the *entire* matched path, including the `{rideId}` capture, not just the static prefix (confirmed empirically: a request to `/api/location/rides/abc123/counterparty` arrived at the upstream as just `GET /rides`, with `abc123` gone). The deployed route uses `strip_path: false` instead, and the Go handler is registered at the full `/api/location/rides/{rideId}/counterparty` — see `gateway/kong.yml`'s `location-service-counterparty` route comment and `location-service/cmd/main.go`.
 - **§8.1**: `ride.started` **does exist** (`ride-service`'s `start_ride.go` publishes it via the outbox) — only `ride.finished` doesn't (the real completion event/topic is `ride.completed`). The conclusion (open the tracking window on `ride.accepted`, not `ride.started`) is unchanged; the reasoning is now "the passenger wants to watch the approach" rather than "the topic doesn't exist."
 - **§2.8 Stage-2 shape**: `internal/workers/outbox_worker.go`, the CQRS decorators, health, shutdown, the tx manager, and the Kafka consumer loop have all moved into `services/common` since this spec's shape was described. A new service's `internal/common/*` and `internal/infrastructure/{health,shutdown,metrics}` are now ~10-line type-alias shims (see `matching-service`'s versions) — scaffolding is cheaper than the original text implies.
 - **§11 gap**: `.github/workflows/ci.yml` runs a hardcoded matrix of service directories. A new service not added there is never built, vetted, tested, or linted — added as a required step.
-- **§12 readiness**: `common/health.Checker` takes exactly **one** `Pinger`. Moot for Slices 1–2 (Redis only); a Postgres-backed Slice 3 needs a composite pinger, which has no precedent in this repo yet.
+- **§12 readiness**: `common/health.Checker` takes exactly **one** `Pinger`. Moot for Slices 1–2 (Redis only); Slice 3 added `common/health.MultiPinger` for this (see §12).
 - **§7.3 danger, now fixed**: the original text said to reflect WS socket-pump goroutine health in the liveness checker "the way the other services do for workers." That would be a bug, not a feature — `health.GoSafe(logger, checker, workerCtx, name, fn)` flips the service to `Live: false` when `fn` returns before `workerCtx` is cancelled. A per-connection WS pump *legitimately* returns on every normal client disconnect. Wired like a worker, the first driver closing their app marks the whole service dead and Docker restarts it. **Per-connection pumps must pass `nil` for `workerCtx`**, exactly like the existing HTTP-server goroutine does in every service's `cmd/main.go` — only the sweeper, consumers, and the Slice-2 Pub/Sub dispatcher are real long-lived workers.
 - **New, not in the original draft**: `obshttp.Handler` wraps handlers in `otelhttp`, which would hold one span open for a WebSocket connection's entire lifetime — `/ws` needs the same exclusion `/health/` already gets. `services/common` has no HTTP client package; §2.2's synchronous call is the repo's first service-to-service HTTP call, built as a new shared `services/common/httpclient` (timeout + otelhttp transport) since ride-service wants the same thing in Slice 4. §5.1's keys are actually prefixed `loc:` (see §17 decisions below) to avoid colliding with matching-service's `driver:*`/`ride:*` keys in the same shared Redis DB 0.
 
@@ -254,9 +254,7 @@ Reject (count by reason, don't just drop silently):
 
 ### §6.1 Postgres — `location` schema
 
-**Not needed until Slice 3.** Slices 1–2 are Redis + Kafka only, same shape as matching-service — no `PG_DSN`, no `migrate` dependency in `docker-compose.yml`.
-
-When Slice 3 lands: new migration pair `services/shared/migrations/sql/0008_location.{up,down}.sql` — `0007_outbox_claimed_until` is the current highest number (added 2026-08-08, retrofits `claimed_until` onto every existing outbox table). Check the highest existing number again before creating this file; do not renumber existing ones.
+Added in Slice 3 as `services/shared/migrations/sql/0010_location.{up,down}.sql` (Slices 1–2 were Redis + Kafka only). location-service now has a `PG_DSN` and a `migrate` dependency in `docker-compose.yml`.
 
 ```
 location.ride_summary
@@ -312,13 +310,15 @@ README calls this `RIDE_SUMMARY_LOCATION`; `location.ride_summary` is more consi
 
 ### §7.1 HTTP — client-facing (via Kong, `/api/location`)
 
-Kong's routes here mostly use `strip_path: true` (same as every other service's route in `gateway/kong.yml`), so those rows' Service path is what the service registers — the client-facing path is `/api/location` + that column, e.g. `POST /api/location/batch`. Don't register `/location/batch` inside the service itself; that would double the prefix. **Exception: `/rides/{rideId}/counterparty` uses `strip_path: false`** (see §0.1's correction) — its Service path column is the full client-facing path, registered verbatim.
+Kong's routes here mostly use `strip_path: true` (same as every other service's route in `gateway/kong.yml`), so those rows' Service path is what the service registers — the client-facing path is `/api/location` + that column, e.g. `POST /api/location/batch`. Don't register `/location/batch` inside the service itself; that would double the prefix. **Exceptions: `/rides/{rideId}/counterparty` and `/rides/{rideId}/track` use `strip_path: false`** (see §0.1's correction — any route with a variable segment) — their Service path column is the full client-facing path, registered verbatim.
 
 | Method | Service path | Client-facing path | Auth | Purpose |
 |---|---|---|---|---|
 | `POST` | `/batch` | `/api/location/batch` | any authenticated | ping fallback / e2e-test driver |
 | `GET` | `/api/location/rides/{rideId}/counterparty`* | `/api/location/rides/{rideId}/counterparty` | participant only | one-shot position (UC3/UC4 without WS) |
-| `GET` | `/rides/{rideId}/track` | `/api/location/rides/{rideId}/track` | participant or Admin | summary polyline for a past ride |
+| `GET` | `/api/location/rides/{rideId}/track`* | `/api/location/rides/{rideId}/track` | participant only (checked against the persisted summary's `client_id`/`driver_id`; no Admin bypass in code) | summary polyline for a past ride |
+| `GET` | `/api/location/positions` | `/api/location/positions` | Admin (Kong `require_admin`) | live positions of all tracked drivers/clients |
+| `GET` | `/ws` | `/api/location/ws` | any authenticated | WebSocket: pings in, counterparty updates out |
 | `GET` | `/geocode?text=` | `/api/location/geocode?text=` | any authenticated | Geoapify forward geocode, cached |
 | `GET` | `/geocode/reverse?lat=&lon=` | `/api/location/geocode/reverse?lat=&lon=` | any authenticated | reverse geocode, cached |
 | `GET` | `/autocomplete?text=` | `/api/location/autocomplete?text=` | any authenticated | address autocomplete, cached |
@@ -373,7 +373,8 @@ Distances follow the money-convention discipline: integer metres, field named `d
 
 | Topic | Exists today? | Action |
 |---|---|---|
-| `ride.accepted` | ✅ yes | open tracking window: write `loc:ride:{id}:participants`, start `loc:ride:{id}:track` |
+| `ride.requested` | ✅ yes | record the client side of the tracking window (pending key) |
+| `ride.accepted` | ✅ yes | record the driver side; whichever of `ride.requested`/`ride.accepted` lands second completes the window (`loc:ride:{id}:participants`, start `loc:ride:{id}:track`) — no cross-topic ordering is assumed |
 | `ride.completed` | ✅ yes | close window, archive, build summary, publish, clean up Redis |
 | `ride.cancelled` | ✅ yes | close window, archive, clean up; summary only if the ride actually started |
 | `shift.updated` | ✅ yes | cache both `loc:driver:{id}:owner` → `userID` and `loc:user:{userId}:driver` → `driverID` (§9) |
@@ -465,7 +466,7 @@ Everything goes through the existing OTel pipeline; handlers get the standard lo
 | Geoapify calls, cache hit ratio, errors, circuit state | counter/gauge | cost control |
 | summary build duration and failures by source | histogram/counter | `Simplified` rate = map-matching health |
 
-Health: readiness checks Redis + Postgres + history store. Liveness reflects real worker-goroutine state (sweeper, archiver, outbox, WS pumps) — the repo already fixed the `defer ticker.Stop()` bug across all services; don't reintroduce that shape.
+Health: readiness checks Redis + Postgres — **deliberately not the history store** (correction, Slice 3 implementation: gating readiness on DynamoDB would contradict §6.2's own rule that ingest latency must never depend on the archive store being healthy; a Dynamo outage now surfaces as `ArchiveWorker` errors/metrics instead of pulling the whole service out of rotation). `common/health.MultiPinger` fans the check across Redis + Postgres; no precedent for this existed in the repo before Slice 3. Liveness reflects real worker-goroutine state (sweeper, archiver, outbox, consumers, Pub/Sub dispatcher — **not** per-connection WS pumps, see §0.1) — the repo already fixed the `defer ticker.Stop()` bug across all services; don't reintroduce that shape.
 
 ---
 
@@ -478,7 +479,7 @@ Each slice ends with something that builds, runs, and is exercised by `e2e-test`
 Unblocks matching's geo discovery, which is the highest-value open item in the backlog.
 
 - [x] Scaffold `services/location-service` (Stage 2 shape per §2.8), own Go module, `replace` directives for `contracts`/`observability`/`common` (**not** `shared` — that directory has no `go.mod`), Dockerfile copying the whole service dir (not just `cmd` — see the auth-service Dockerfile bug in `CLAUDE.md`)
-- [x] `LocationIngestor` port; `POST /batch` adapter first (testable without a WS client) — no `driverId` in the request body (§9)
+- [x] `LocationIngestor` port; `POST /batch` adapter first (testable without a WS client) — no `driverId` in the request body (§9). Note: the port exists and the WS adapter uses it, but the batch handler still calls `Commands.IngestPings` directly
 - [x] Ping validation (§5.5) with per-reason rejection metrics
 - [x] `GEOADD loc:drivers:geo` + `ZADD loc:drivers:lastseen` + `loc:driver:{id}` hash, pipelined
 - [x] `StalenessWorker` (§5.3) — **this slice, not later**
@@ -492,23 +493,23 @@ Unblocks matching's geo discovery, which is the highest-value open item in the b
 
 ### Slice 2 — WebSocket + live tracking *(must have)*
 
-- [ ] WS upgrade endpoint, connect-time auth binding, in-process rate cap
-- [ ] WS ingest adapter behind the same `LocationIngestor` port
-- [ ] `ride.accepted` consumer → open tracking window
-- [ ] `ride.completed` / `ride.cancelled` consumers → close window, terminate sockets
-- [ ] Redis Pub/Sub fan-out `loc:ride:{id}:positions` (§7.3) — multi-instance from the start
-- [ ] `GET /rides/{rideId}/counterparty` one-shot fallback
-- [ ] Heartbeat + Kong WS timeout config + WS-aware graceful shutdown
+- [x] WS upgrade endpoint, connect-time auth binding, in-process rate cap (`golang.org/x/time/rate`, 2/s burst 10 — Kong can't enforce anything post-upgrade)
+- [x] WS ingest adapter behind the same `LocationIngestor` port
+- [x] `ride.accepted` consumer → open tracking window
+- [x] `ride.completed` / `ride.cancelled` consumers → close window, terminate sockets
+- [x] Redis Pub/Sub fan-out `loc:ride:{id}:positions` (§7.3) — multi-instance from the start
+- [x] `GET /rides/{rideId}/counterparty` one-shot fallback
+- [x] Heartbeat + Kong WS timeout config + WS-aware graceful shutdown
 
 ### Slice 3 — History + summary *(nice to have)*
 
-- [ ] DynamoDB Local in compose; `LocationHistoryRepository` port + adapter; TTL configured
-- [ ] `loc:ride:{id}:track` Redis Stream; `ArchiveWorker` batch drain
-- [ ] `0007_location` migration: `ride_summary` + `outbox_message`
-- [ ] Map-matched summary build at ride end, RDP + Haversine fallback, `source` recorded
-- [ ] `ride.summary.ready` via outbox worker
-- [ ] `GET /rides/{rideId}/track`
-- [ ] billing-service consumes and records actual (no re-pricing)
+- [x] DynamoDB Local in compose; `domain.LocationHistoryRepository` port + `infrastructure/history` adapter; `LOCATION_HISTORY_TTL_DAYS` (30) as the `expires_at` TTL attribute
+- [x] `loc:ride:{id}:track` Redis Stream (`XADD ... MAXLEN ~5000`, 24h TTL); `ArchiveWorker` batch drain, checkpointed via `loc:ride:{id}:archived_id`
+- [x] `0010_location` migration (renumbered from this section's stale `0007` — `0007`/`0008`/`0009` were already taken by the time this slice landed): `ride_summary` + `outbox_message`
+- [x] Summary build at ride end, RDP + Haversine fallback, `source` recorded — **`MapMatched` is not reachable yet**: `domain.MapMatchingProvider` is a real port `BuildRideSummaryHandler` calls, but no adapter implements it (that's Slice 4's Geoapify adapter), so every summary today is `source=Simplified`
+- [x] `ride.summary.ready` via outbox worker
+- [x] `GET /rides/{rideId}/track` — `strip_path: false`, same reasoning as `/counterparty` (§0.1)
+- [x] billing-service consumes (`RideSummaryReadyConsumer` → `RecordRideActuals`) and records actual (no re-pricing) — `billing.invoice.actual_distance_m`/`actual_duration_s`, migration `0011_billing_actuals`
 
 ### Slice 4 — Geoapify proxy *(nice to have)*
 
@@ -563,9 +564,9 @@ Corrected 2026-08-12 to match repo convention (verified against `docker-compose.
 |---|---|---|
 | `SERVICE_PORT` | `8004` | not `PORT` |
 | `REDIS_URL` | `redis://redis:6379` | not `REDIS_ADDR`; shared instance, as matching-service uses; parsed via `redis.ParseURL` (`services/common/redisconn`), so the `redis://` scheme is required |
-| `PG_DSN` | | Slice 3 only, once the `location` schema exists; not `POSTGRES_*` |
+| `PG_DSN` | | since Slice 3; not `POSTGRES_*` |
 | `KAFKA_BROKER` | `kafka:29092` | singular, not `KAFKA_BROKERS`; consumer group `location-service` |
-| `DYNAMODB_ENDPOINT` | | Slice 3 only, local endpoint in compose |
+| `DYNAMODB_ENDPOINT` | | since Slice 3; DynamoDB Local in compose |
 | `GEOAPIFY_API_KEY` | | Slice 4 only |
 | `LOCATION_STALENESS_SECONDS` | `120` | sweeper threshold |
 | `LOCATION_SWEEP_INTERVAL_SECONDS` | `30` | |
@@ -574,7 +575,10 @@ Corrected 2026-08-12 to match repo convention (verified against `docker-compose.
 | `LOCATION_MAX_FUTURE_SKEW_SECONDS` | `120` | reject a ping whose `deviceTs` is this far in the future |
 | `LOCATION_MAX_PAST_SKEW_SECONDS` | `600` | reject a ping whose `deviceTs` is this far in the past |
 | `LOCATION_WS_PING_SECONDS` | `25` | Slice 2; under Kong's 60 s read timeout |
-| `LOCATION_HISTORY_TTL_DAYS` | `30` | Slice 3 only |
+| `LOCATION_HISTORY_TTL_DAYS` | `30` | Slice 3 |
+| `LOCATION_ARCHIVE_INTERVAL_SECONDS` | `30` | Slice 3; `ArchiveWorker` tick |
+| `LOCATION_ARCHIVE_BATCH` | `500` | Slice 3; stream entries drained per ride per tick |
+| `LOCATION_RDP_EPSILON_M` | `5` | Slice 3; polyline simplification tolerance |
 
 ---
 

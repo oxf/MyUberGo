@@ -125,6 +125,99 @@ func TestGetCounterparty_SuccessReturnsPosition(t *testing.T) {
 	}
 }
 
+type fakeRideTrackQuery struct {
+	result domain.RideSummary
+	err    error
+}
+
+func (f *fakeRideTrackQuery) Handle(ctx context.Context, q query.GetRideTrack) (domain.RideSummary, error) {
+	return f.result, f.err
+}
+
+func newTestLocationHandlerForRideTrack(q *fakeRideTrackQuery) *LocationHandler {
+	application := app.Application{
+		Queries: app.Queries{GetRideTrack: q},
+	}
+	logger := logrus.NewEntry(logrus.New())
+	return NewLocationHandler(application, logger)
+}
+
+func newRideTrackRouter(h *LocationHandler) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/location/rides/{rideId}/track", h.GetRideTrack)
+	return mux
+}
+
+func TestGetRideTrack_MissingUserIDIsBadRequest(t *testing.T) {
+	h := newTestLocationHandlerForRideTrack(&fakeRideTrackQuery{})
+	req := httptest.NewRequest(http.MethodGet, "/api/location/rides/ride-1/track", nil)
+	rr := httptest.NewRecorder()
+
+	newRideTrackRouter(h).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("got status %d, want 400", rr.Code)
+	}
+}
+
+func TestGetRideTrack_ForbiddenMapsTo403(t *testing.T) {
+	h := newTestLocationHandlerForRideTrack(&fakeRideTrackQuery{err: cmnerrors.ErrForbidden})
+	req := httptest.NewRequest(http.MethodGet, "/api/location/rides/ride-1/track", nil)
+	req.Header.Set(kongheaders.HeaderUserID, "user-1")
+	rr := httptest.NewRecorder()
+
+	newRideTrackRouter(h).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("got status %d, want 403", rr.Code)
+	}
+}
+
+func TestGetRideTrack_NotFoundMapsTo404(t *testing.T) {
+	h := newTestLocationHandlerForRideTrack(&fakeRideTrackQuery{err: cmnerrors.ErrNotFound})
+	req := httptest.NewRequest(http.MethodGet, "/api/location/rides/ride-1/track", nil)
+	req.Header.Set(kongheaders.HeaderUserID, "user-1")
+	rr := httptest.NewRecorder()
+
+	newRideTrackRouter(h).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("got status %d, want 404", rr.Code)
+	}
+}
+
+func TestGetRideTrack_SuccessReturnsSummary(t *testing.T) {
+	h := newTestLocationHandlerForRideTrack(&fakeRideTrackQuery{
+		result: domain.RideSummary{
+			RideID: "ride-1", Polyline: "_p~iF~ps|U", DistanceM: 1500, DurationS: 600,
+			PointCount: 42, Source: domain.SourceSimplified,
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/location/rides/ride-1/track", nil)
+	req.Header.Set(kongheaders.HeaderUserID, "user-1")
+	req.Header.Set(kongheaders.HeaderClientID, "client-1")
+	rr := httptest.NewRecorder()
+
+	newRideTrackRouter(h).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var body struct {
+		RideID    string `json:"rideId"`
+		Polyline  string `json:"polyline"`
+		DistanceM int64  `json:"distanceM"`
+		Source    string `json:"source"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.RideID != "ride-1" || body.DistanceM != 1500 || body.Source != "Simplified" {
+		t.Fatalf("got %+v, want rideId=ride-1 distanceM=1500 source=Simplified", body)
+	}
+}
+
 func TestListLivePositions_ReturnsDriversAndClients(t *testing.T) {
 	h := newTestLocationHandlerForLivePositions(&fakeLivePositionsQuery{
 		result: query.LivePositionsResult{

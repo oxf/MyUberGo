@@ -23,6 +23,7 @@ type IngestClientPingHandler struct {
 	tracking  domain.TrackingRepository
 	clients   domain.ClientLocationRepository
 	publisher domain.PositionPublisher
+	tracks    domain.RideTrackRepository
 	config    domain.ValidationConfig
 	logger    *logrus.Entry
 }
@@ -31,17 +32,18 @@ func NewIngestClientPingHandler(
 	tracking domain.TrackingRepository,
 	clients domain.ClientLocationRepository,
 	publisher domain.PositionPublisher,
+	tracks domain.RideTrackRepository,
 	config domain.ValidationConfig,
 	logger *logrus.Entry,
 	metricsClient decorator.MetricsClient,
 ) decorator.CommandHandler[IngestClientPing, IngestPingsResult] {
-	if tracking == nil || clients == nil || publisher == nil {
+	if tracking == nil || clients == nil || publisher == nil || tracks == nil {
 		panic("nil repo")
 	}
 	if metricsClient == nil {
 		metricsClient = metrics.NewNoopMetricsClient()
 	}
-	handler := &IngestClientPingHandler{tracking: tracking, clients: clients, publisher: publisher, config: config, logger: logger}
+	handler := &IngestClientPingHandler{tracking: tracking, clients: clients, publisher: publisher, tracks: tracks, config: config, logger: logger}
 	return decorator.ApplyCommandDecorators[IngestClientPing, IngestPingsResult](handler, logger, metricsClient)
 }
 
@@ -73,8 +75,12 @@ func (h *IngestClientPingHandler) Handle(ctx context.Context, cmd IngestClientPi
 		return IngestPingsResult{}, err
 	}
 
-	// Publish failure doesn't fail the ingest — the write above already
-	// succeeded (same reasoning as IngestPingsHandler.publishIfTracked).
+	// A track-append failure or a publish failure doesn't fail the ingest —
+	// the write above already succeeded (same reasoning as
+	// IngestPingsHandler.publishIfTracked).
+	if err := h.tracks.Append(ctx, rideID, domain.SubjectClient, pos); err != nil {
+		h.logger.WithError(err).WithField("ride_id", rideID).Warn("failed to append position to ride track")
+	}
 	if err := h.publisher.Publish(ctx, domain.PositionUpdate{RideID: rideID, Subject: domain.SubjectClient, Position: pos}); err != nil {
 		h.logger.WithError(err).WithField("client_id", cmd.ClientID).Warn("failed to publish position to tracking window")
 	}

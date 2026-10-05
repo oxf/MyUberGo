@@ -25,6 +25,16 @@ type fakeClients struct {
 	upserted []domain.Position
 }
 
+type fakeTracks struct {
+	domain.RideTrackRepository
+	appended []domain.TrackEntry
+}
+
+func (f *fakeTracks) Append(ctx context.Context, rideID string, subject domain.SubjectType, pos domain.Position) error {
+	f.appended = append(f.appended, domain.TrackEntry{Subject: subject, Position: pos})
+	return nil
+}
+
 func (f *fakeClients) LastPosition(ctx context.Context, clientID string) (*domain.Position, error) {
 	return f.last, nil
 }
@@ -54,11 +64,13 @@ func TestIngestClientPingHandler_NoOpenWindowIsForbidden(t *testing.T) {
 func TestIngestClientPingHandler_AcceptsValidPingWithinOpenWindow(t *testing.T) {
 	clients := &fakeClients{}
 	publisher := &fakePublisher{}
+	tracks := &fakeTracks{}
 	h := &IngestClientPingHandler{
 		tracking:  &fakeTrackingForIngest{activeRideByClient: map[string]string{"client-1": "ride-1"}},
 		clients:   clients,
 		config:    testCfg(),
 		publisher: publisher,
+		tracks:    tracks,
 	}
 
 	result, err := h.Handle(context.Background(), IngestClientPing{
@@ -76,6 +88,9 @@ func TestIngestClientPingHandler_AcceptsValidPingWithinOpenWindow(t *testing.T) 
 	}
 	if len(publisher.published) != 1 || publisher.published[0].RideID != "ride-1" || publisher.published[0].Subject != domain.SubjectClient {
 		t.Fatalf("got published %+v, want one update for ride-1/client", publisher.published)
+	}
+	if len(tracks.appended) != 1 || tracks.appended[0].Subject != domain.SubjectClient {
+		t.Fatalf("got appended %+v, want one client track entry", tracks.appended)
 	}
 }
 

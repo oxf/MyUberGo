@@ -213,6 +213,7 @@ func TestIngestPingsHandler_PublishesWhenWindowOpen(t *testing.T) {
 	now := time.Now().UTC()
 	drivers := &fakeDrivers{}
 	publisher := &fakePublisher{}
+	tracks := &fakeTracks{}
 	h := &IngestPingsHandler{
 		owner:     &fakeOwner{driverByUser: map[string]string{"user-1": "driver-1"}},
 		drivers:   drivers,
@@ -220,6 +221,7 @@ func TestIngestPingsHandler_PublishesWhenWindowOpen(t *testing.T) {
 		metrics:   metrics.NewNoopMetricsClient(),
 		tracking:  fakeOpenWindowTracking{rideID: "ride-1"},
 		publisher: publisher,
+		tracks:    tracks,
 	}
 
 	_, err := h.Handle(context.Background(), IngestPings{
@@ -235,6 +237,9 @@ func TestIngestPingsHandler_PublishesWhenWindowOpen(t *testing.T) {
 	got := publisher.published[0]
 	if got.RideID != "ride-1" || got.Subject != domain.SubjectDriver {
 		t.Fatalf("got %+v, want rideID=ride-1 subject=driver", got)
+	}
+	if len(tracks.appended) != 1 || tracks.appended[0].Subject != domain.SubjectDriver {
+		t.Fatalf("got appended %+v, want one driver track entry", tracks.appended)
 	}
 }
 

@@ -102,3 +102,21 @@ type LivePositionsResponse struct {
 	Drivers []LiveDriverPositionDto `json:"drivers"`
 	Clients []LiveClientPositionDto `json:"clients"`
 }
+
+// RideTrackResponse answers GET /api/location/rides/{rideId}/track — a past
+// ride's summary polyline, distinct from CounterpartyPositionResponse's
+// live one-shot pull: this outlives the tracking window, since it's reading
+// a persisted summary, not live position. DistanceM is integer metres (the
+// repo's money-convention discipline applied to distance), never a float.
+// Source is "MapMatched" or "Simplified" — a degraded (Simplified) summary
+// is visible to the caller, not silently indistinguishable from a good one.
+type RideTrackResponse struct {
+	RideID     string `json:"rideId"`
+	StartedAt  string `json:"startedAt"`
+	EndedAt    string `json:"endedAt"`
+	Polyline   string `json:"polyline"`
+	DistanceM  int64  `json:"distanceM"`
+	DurationS  int    `json:"durationS"`
+	PointCount int    `json:"pointCount"`
+	Source     string `json:"source"`
+}

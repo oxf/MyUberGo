@@ -21,6 +21,7 @@ type Commands struct {
 	// shared code path — see finalize_charge_succeeded.go's comment.
 	FinalizeChargeSucceeded decorator.CommandHandlerNoResult[command.FinalizeChargeSucceeded]
 	FinalizeChargeFailed    decorator.CommandHandlerNoResult[command.FinalizeChargeFailed]
+	RecordRideActuals       decorator.CommandHandlerNoResult[command.RecordRideActuals]
 }
 
 type Queries struct {

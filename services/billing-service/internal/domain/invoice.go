@@ -83,4 +83,10 @@ type InvoiceRepository interface {
 	// sweeping while a webhook-only "processing" outcome is pending).
 	SetNextAttemptAt(ctx context.Context, id string, nextAttemptAt *string) error
 	MarkUncollectible(ctx context.Context, id string) (bool, error)
+	// RecordActuals stores actual distance/duration from location-service's
+	// ride.summary.ready event — records only, never re-prices (the quoted
+	// price at ride request stays binding, LOCATION_SPEC.md §2.4). rows=0
+	// is a valid outcome (no invoice exists yet for this ride, or ever —
+	// e.g. a pre-fee cancellation), not an error.
+	RecordActuals(ctx context.Context, rideID string, distanceM int64, durationS int) (bool, error)
 }

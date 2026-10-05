@@ -3,6 +3,7 @@ package consumers
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	app "location-service/internal/application"
 	"location-service/internal/application/command"
@@ -12,8 +13,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// RideCancelledConsumer closes a ride's tracking window and force-closes any
-// live WS connections — see RideCompletedConsumer for why CloseRide always runs.
+// RideCancelledConsumer builds a route summary (only if the ride actually
+// had a driver — LOCATION_SPEC.md §8.1), closes a ride's tracking window,
+// and force-closes any live WS connections — see RideCompletedConsumer for
+// why CloseRide always runs.
 type RideCancelledConsumer struct {
 	runner *kafkaconsumer.Runner[contractsKafka.RideCancelledEvent]
 }
@@ -27,6 +30,18 @@ func NewRideCancelledConsumer(app app.Application, closer SocketCloser, broker s
 				return event, err
 			},
 			func(ctx context.Context, event contractsKafka.RideCancelledEvent) error {
+				// A summary only makes sense once the ride was matched — a
+				// pre-match cancellation (DriverID nil) never opened a window.
+				if event.DriverID != nil {
+					cancelledAt, err := time.Parse(time.RFC3339, event.CancelledAt)
+					if err != nil {
+						cancelledAt = time.Now().UTC()
+					}
+					// Must run before CloseTrackingWindow — see RideCompletedConsumer.
+					if err := app.Commands.BuildRideSummary.Handle(ctx, command.BuildRideSummary{RideID: event.RideID, EndedAt: cancelledAt}); err != nil {
+						return err
+					}
+				}
 				if err := app.Commands.CloseTrackingWindow.Handle(ctx, command.CloseTrackingWindow{RideID: event.RideID}); err != nil {
 					return err
 				}

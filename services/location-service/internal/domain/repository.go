@@ -62,3 +62,37 @@ type ClientLocationRepository interface {
 	// UpsertPosition writes the client's position hash.
 	UpsertPosition(ctx context.Context, clientID string, pos Position) error
 }
+
+// HistoryEntry is one archived raw ping, shaped for the DynamoDB adapter
+// (PK=SubjectID, SK=timestamp_ms) with a GSI on RideID.
+type HistoryEntry struct {
+	SubjectID   string
+	SubjectType SubjectType
+	RideID      string
+	Position    Position
+}
+
+// LocationHistoryRepository archives raw pings to the long-retention,
+// eventually-consistent history store (DynamoDB Local in this repo — see
+// LOCATION_SPEC.md §6.2). This tier is an audit/verification input, never a
+// system of record for money: it may be lossy under load, and callers must
+// never let ingest latency depend on it being healthy.
+type LocationHistoryRepository interface {
+	// PutBatch archives entries in bulk — called by ArchiveWorker on a
+	// ticker, never from the synchronous ingest path.
+	PutBatch(ctx context.Context, entries []HistoryEntry) error
+}
+
+// RideSummaryRepository persists the one-row-per-ride summary
+// (location.ride_summary).
+type RideSummaryRepository interface {
+	// Insert is idempotent against ride.completed/ride.cancelled
+	// redelivery (ON CONFLICT (ride_id) DO NOTHING) — same idiom as
+	// billing.invoice's UNIQUE(ride_id, type) guard. inserted=false means a
+	// summary already existed for this ride: the caller must not also
+	// re-publish ride.summary.ready in that case, or a redelivered event
+	// republishes forever.
+	Insert(ctx context.Context, summary RideSummary) (inserted bool, err error)
+	// GetByRideID returns ErrNotFound if no summary exists yet.
+	GetByRideID(ctx context.Context, rideID string) (RideSummary, error)
+}
