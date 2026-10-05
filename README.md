@@ -10,7 +10,7 @@ The system is designed as 8 services communicating asynchronously via **Apache K
 
 ### System Architecture Diagram (target design)
 
-![Ride-Hailing Microservices Architecture](content/diagram.png)
+![Ride-Hailing Microservices Architecture](content/diagram-2.png)
 
 ---
 
